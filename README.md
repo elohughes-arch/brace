@@ -1,37 +1,34 @@
-# Brace app — the private game book
+# Brace — The Modern Shooting Log (landing page)
 
-The authenticated **Brace** product: a member's private shooting log. Self-contained
-static SPA (no build step) that reuses the landing-page design system. Lives at `/app`
-on the deployed site; separate from the existing Opus app in the repo root.
+A redesign of [braceshooting.com](https://braceshooting.com)'s marketing site.
 
-## What it does
+**Brace** turns a day's POV footage into a private, heritage **game book**, automatically —
+*"Wear the camera. Shoot the day."* This is a self-contained static landing page; it does not
+touch the existing app in the repo root.
 
-- **Auth** — sign-in / create-account front door (demo: any email signs you in).
-- **Season** dashboard — days in the line, season bag, your bag & shots-to-bag, best day,
-  and a bag-by-species breakdown for the whole season.
-- **Game Book** — every recorded day as a card → a full game-book entry (drives, the bag
-  by species, conditions, the line, a footage timeline with the auto-detected moments).
-- **Add a day** — drop in footage and watch *"Brace is reading your day"* turn it into a
-  finished entry that's saved to your book.
-- **Settings** — your details, kit & cameras, and privacy controls.
+## Design system
 
-## Data
-
-A mock data layer (`data.js`) stands in for the backend; session + any days you add are
-kept in `localStorage`. The shapes mirror a real game-book record so a live API (e.g.
-Supabase) can drop in later.
+- **Concept:** *the leather game book, re-cut in midnight and brass — a precision instrument that writes itself.*
+- **Colour (60 / 30 / 8 / 2):** Midnight `#0B1B2D` · Warm ivory `#F4EEE1` · Field green `#34503C`
+  (Sage `#7E9B82` for legible green on dark) · Brass `#B8995A` as a precious ~2% accent only.
+- **Type:** Cormorant Garamond (display, with the signature ivory headline + one brass-italic word),
+  Inter (body), IBM Plex Mono (ledger/data).
+- **Craft:** no photography — all richness is CSS/SVG (estate-map contours, blueprint grid, the
+  game-book card). Responsive, accessible (WCAG AA), and honours `prefers-reduced-motion`.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `index.html` | SPA shell + SVG icon sprite |
-| `app.js` | Hash router + all views + interactions (ES module) |
-| `data.js` | Mock data + session/persistence helpers |
-| `app.css` | App shell + screens (reuses the Brace tokens) |
+| `index.html` | The full landing page + inline SVG icon sprite/logo |
+| `styles.css` | Tokenised design system + every section |
+| `script.js`  | Sticky header, scroll reveals, count-up, FAQ, mobile nav, founding-member form |
 
-## Preview
+## Preview locally
 
 ```bash
-cd app && python3 -m http.server 8000   # open http://localhost:8000
+cd brace
+python3 -m http.server 8000   # then open http://localhost:8000
 ```
+
+No build step. Deployed to GitHub Pages via `.github/workflows/pages.yml`.

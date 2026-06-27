@@ -4,11 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Brace — The Modern Shooting Log</title>
-  <meta name="description" content="Brace quietly reads your POV footage, finds the key moments, and writes the day into your own private game book. No desk work. No fuss in the field. Now in development — claim your founding place." />
+  <meta name="description" content="Record your shooting through Meta smart glasses. Brace turns the footage into your shots, hits and metrics — with playback to learn from. Now in development." />
   <meta name="theme-color" content="#0B1B2D" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="Brace — The Modern Shooting Log" />
-  <meta property="og:description" content="Wear the camera. Shoot the day. Brace builds your game book for you — automatic, private, and properly kept. Now in development." />
+  <meta property="og:description" content="Press record on your glasses, shoot your day, and Brace turns the footage into metrics, stats and playback. Now in development." />
   <meta property="og:url" content="https://braceshooting.com" />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230B1B2D'/%3E%3Cg fill='none' stroke='%23B8995A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M11 6 V26'/%3E%3Cpath d='M11 6 H19 a5 5 0 0 1 0 10 H11'/%3E%3Cpath d='M11 16 H20 a5.4 5.4 0 0 1 0 10 H11'/%3E%3C/g%3E%3C/svg%3E" />
@@ -23,56 +23,21 @@
   <!-- ============ SVG SPRITE ============ -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
     <defs>
-      <symbol id="logo-b" viewBox="0 0 28 32">
-        <g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M9 4 V28" />
-          <path d="M9 4 H18 a6 6 0 0 1 0 12 H9" />
-          <path d="M9 16 H19 a6.4 6.4 0 0 1 0 12 H9" />
-        </g>
-      </symbol>
-      <symbol id="i-camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 8a2 2 0 0 1 2-2h2l1.2-1.8A1 1 0 0 1 9 4h4a1 1 0 0 1 .8.4L15 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-        <circle cx="11" cy="12.5" r="3.2" /><path d="M19.5 9.5 22 8.5v7l-2.5-1" />
-      </symbol>
-      <symbol id="i-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 5.5C10.5 4.5 8 4 4 4.5v14C8 18 10.5 18.5 12 19.5" /><path d="M12 5.5C13.5 4.5 16 4 20 4.5v14C16 18 13.5 18.5 12 19.5" />
-        <path d="M7 9h2.5M7 12h2.5M14.5 9H17M14.5 12H17" /><path d="M15 18.5v2l1.4-.8 1.4.8v-2" />
-      </symbol>
-      <symbol id="i-feather" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M19 5c-6 0-11 4-11 10v3l-3 1" /><path d="M19 5c1 5-1 11-8 12" /><path d="M16 8l-6 6M17 11l-4 4" />
-      </symbol>
-      <symbol id="i-drive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M2 18c4-1 7-4 10-4s6 3 10 4" /><path d="M5 9l2-2 2 2M11 7l2-2 2 2M17 9l2-2 2 2" />
-      </symbol>
-      <symbol id="i-conditions" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M7 16a4 4 0 0 1 .5-8 5 5 0 0 1 9.5 1.5A3.5 3.5 0 0 1 16.5 16z" /><path d="M5 20h6M9 20h9" />
-      </symbol>
-      <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="5" y="10.5" width="14" height="9.5" rx="2" /><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" /><circle cx="12" cy="15" r="1.3" />
-      </symbol>
-      <symbol id="i-compass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="9" /><path d="M15.5 8.5 13 13l-4.5 2.5L11 11z" />
-      </symbol>
-      <symbol id="i-gridref" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="2.2" /><path d="M12 3v4M12 17v4M3 12h4M17 12h4" />
-      </symbol>
-      <symbol id="i-cartridge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="9" y="3" width="6" height="13" rx="3" /><path d="M9 8h6" /><rect x="9.5" y="16" width="5" height="5" rx="1" /><path d="M9.5 18.5h5" />
-      </symbol>
-      <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" />
-      </symbol>
-      <symbol id="i-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 3v18M3 12h18M6 6l12 12M18 6 6 18" />
-      </symbol>
-      <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" />
-      </symbol>
-      <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></symbol>
-      <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></symbol>
-      <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7" /></symbol>
-      <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
-      <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18" /></symbol>
+      <symbol id="logo-b" viewBox="0 0 28 32"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4 V28" /><path d="M9 4 H18 a6 6 0 0 1 0 12 H9" /><path d="M9 16 H19 a6.4 6.4 0 0 1 0 12 H9" /></g></symbol>
+      <symbol id="i-glasses" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="13" r="3.3"/><circle cx="17.5" cy="13" r="3.3"/><path d="M9.8 13c.6-1 1.5-1.2 2.2-1.2s1.6.2 2.2 1.2"/><path d="M3.2 13 2.2 9.5M20.8 13 21.8 9.5"/></symbol>
+      <symbol id="i-camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8a2 2 0 0 1 2-2h2l1.2-1.8A1 1 0 0 1 9 4h4a1 1 0 0 1 .8.4L15 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="11" cy="12.5" r="3.2"/><path d="M19.5 9.5 22 8.5v7l-2.5-1"/></symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20h18"/><path d="M4 17l5-5 4 3 6-8"/><path d="M19 7h0.01"/></symbol>
+      <symbol id="i-target" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.6"/><circle cx="12" cy="12" r="1"/></symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 3 7.5 12 12l9-4.5L12 3z"/><path d="M3.5 12 12 16l8.5-4M3.5 16.5 12 20.5l8.5-4"/></symbol>
+      <symbol id="i-share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><path d="M8.1 11 15.9 7.1M8.1 13l7.8 3.9"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/><circle cx="12" cy="15" r="1.3"/></symbol>
+      <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3 8"/><path d="M3 4v4h4"/><path d="M12 8v4.5l3 1.8"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
     </defs>
   </svg>
 
@@ -81,25 +46,19 @@
     <div class="wrap">
       <a class="brandmark" href="#" aria-label="Brace — The Modern Shooting Log">
         <svg class="logo-svg" aria-hidden="true"><use href="#logo-b" /></svg>
-        <span class="lockup">
-          <span class="wordmark">BRACE</span>
-          <span class="mono-tag">The Modern Shooting Log</span>
-        </span>
+        <span class="lockup"><span class="wordmark">BRACE</span><span class="mono-tag">The Modern Shooting Log</span></span>
       </a>
       <nav class="nav" aria-label="Primary">
         <ul class="nav-links">
           <li><a href="#how-it-works">How it works</a></li>
-          <li><a href="#game-book">The Game Book</a></li>
+          <li><a href="#metrics">Metrics</a></li>
           <li><a href="#features">Features</a></li>
-          <li><a href="#privacy">Privacy</a></li>
-          <li><a href="#faq">FAQ</a></li>
+          <li><a href="#pricing">Pricing</a></li>
         </ul>
         <div class="nav-actions">
           <a class="btn-link" href="app/">Sign in</a>
-          <a class="btn btn-primary" href="#early-access">Create free account</a>
-          <button class="nav-toggle" id="navToggle" aria-label="Open menu" aria-expanded="false" aria-controls="mobileNav">
-            <svg aria-hidden="true"><use href="#i-menu" /></svg>
-          </button>
+          <a class="btn btn-primary" href="app/">Create free account</a>
+          <button class="nav-toggle" id="navToggle" aria-label="Open menu" aria-expanded="false" aria-controls="mobileNav"><svg aria-hidden="true"><use href="#i-menu" /></svg></button>
         </div>
       </nav>
     </div>
@@ -109,122 +68,142 @@
   <div class="mobile-nav" id="mobileNav" role="dialog" aria-modal="true" aria-label="Menu" aria-hidden="true">
     <button class="nav-toggle" id="navClose" aria-label="Close menu" style="position:absolute;top:26px;right:var(--pad-x)"><svg aria-hidden="true"><use href="#i-close" /></svg></button>
     <a href="#how-it-works">How it works</a>
-    <a href="#game-book">The Game Book</a>
+    <a href="#metrics">Metrics</a>
     <a href="#features">Features</a>
-    <a href="#privacy">Privacy</a>
-    <a href="#faq">FAQ</a>
+    <a href="#pricing">Pricing</a>
     <div class="cta-row">
       <a class="btn btn-ghost" href="app/">Sign in</a>
-      <a class="btn btn-primary" href="#early-access">Create free account</a>
+      <a class="btn btn-primary" href="app/">Create free account</a>
     </div>
   </div>
 
   <main id="main">
-    <!-- ============ HERO ============ -->
+    <!-- ============ 1 · HERO (the journey video) ============ -->
     <section class="hero ground-midnight" aria-labelledby="hero-h">
       <div class="bp-grid" aria-hidden="true"></div>
       <div class="glow" aria-hidden="true"></div>
       <div class="vignette" aria-hidden="true"></div>
-      <svg class="contour" aria-hidden="true" viewBox="0 0 400 300" style="bottom:-40px;right:-60px;width:520px;height:380px;opacity:.5">
-        <ellipse cx="200" cy="150" rx="180" ry="120" /><ellipse cx="200" cy="150" rx="140" ry="92" style="opacity:.7" />
-        <ellipse cx="200" cy="150" rx="100" ry="66" style="opacity:.55" /><ellipse cx="200" cy="150" rx="62" ry="40" style="opacity:.4" />
-        <ellipse cx="200" cy="150" rx="28" ry="18" style="opacity:.3" />
-      </svg>
       <div class="wrap">
         <div class="hero-inner">
           <span class="pill" data-reveal><span class="dot"></span>Now in development</span>
           <h1 class="display" id="hero-h" data-reveal>The Modern <em class="accent">Shooting Log</em></h1>
-          <p class="lead" data-reveal>Wear the camera. Shoot the day. Brace quietly reads your footage, finds the moments that mattered, and writes them into a game book that is wholly your own. No desk work. No fuss in the field.</p>
-          <div class="cta-row" data-reveal>
-            <a class="btn btn-primary" href="#early-access">Create free account <svg aria-hidden="true"><use href="#i-arrow" /></svg></a>
-            <a class="btn btn-ghost" href="#early-access">Sign in</a>
-          </div>
-          <p class="strapline" data-reveal>A centuries-old record, kept the modern way</p>
+          <p class="lead" data-reveal style="margin:0 auto var(--sp-6)">Press record on your glasses. Shoot your day. Brace turns the footage into your shots, your hits and your metrics — with the playback to learn from. See it, end to end.</p>
         </div>
 
-        <!-- Hero stage: the game book, gilt-edged and ajar -->
-        <div class="hero-stage" aria-label="A sample Brace game-book entry">
-          <div style="transform:rotateX(3deg) rotateY(-6deg);transform-style:preserve-3d" class="gb-tilt">
-            <!-- GAME-BOOK CARD -->
-            <article class="gamebook" id="gamebookCard">
-              <svg class="gb-contour" aria-hidden="true" viewBox="0 0 240 200">
-                <g fill="none" stroke="currentColor"><ellipse cx="150" cy="70" rx="110" ry="70" /><ellipse cx="150" cy="70" rx="80" ry="50" /><ellipse cx="150" cy="70" rx="52" ry="32" /><ellipse cx="150" cy="70" rx="26" ry="16" /></g>
-              </svg>
-              <div class="gb-pad">
-                <div class="gb-head">
+        <!-- Hero video. Drop the finished film in: replace this placeholder with
+             <video controls poster="hero-poster.jpg"><source src="hero.mp4" type="video/mp4"></video> -->
+        <div class="video-frame" data-reveal role="img" aria-label="Journey film coming soon: press your Meta glasses to record, shoot the day, process it in the Brace app, and review your metrics and footage.">
+          <div class="vf-grid" aria-hidden="true"></div>
+          <svg class="vf-reticle" aria-hidden="true" viewBox="0 0 100 56" preserveAspectRatio="xMidYMid meet"><circle cx="50" cy="28" r="9" fill="none" stroke="currentColor" stroke-width="0.4"/><path d="M50 14v6M50 36v6M36 28h6M58 28h6" stroke="currentColor" stroke-width="0.4"/></svg>
+          <svg class="vf-arc" aria-hidden="true" viewBox="0 0 100 56" preserveAspectRatio="none"><path d="M8 50 Q40 4 92 20" fill="none" stroke="currentColor" stroke-width="0.5" stroke-dasharray="2 2"/></svg>
+          <span class="vf-bracket tl" aria-hidden="true"></span><span class="vf-bracket tr" aria-hidden="true"></span>
+          <span class="vf-bracket bl" aria-hidden="true"></span><span class="vf-bracket br" aria-hidden="true"></span>
+          <div class="vf-hud" aria-hidden="true">
+            <span class="rec"><span class="d"></span>REC · 00:14:22</span>
+            <span class="lbl">Meta glasses · POV</span>
+          </div>
+          <button class="play-btn" aria-label="Watch the Brace journey film (coming soon)"></button>
+          <div class="vf-foot" aria-hidden="true">
+            <span class="t">A day with Brace, peg to playback</span>
+            <span class="s">Film in production</span>
+          </div>
+        </div>
+
+        <!-- journey stages -->
+        <div class="stage-strip" data-reveal>
+          <div class="stage"><div class="n">01</div><div class="t">Record</div><div class="d">Press your glasses</div></div>
+          <div class="stage"><div class="n">02</div><div class="t">Shoot</div><div class="d">Shoot your day</div></div>
+          <div class="stage"><div class="n">03</div><div class="t">Process</div><div class="d">Brace reads it</div></div>
+          <div class="stage"><div class="n">04</div><div class="t">Review</div><div class="d">Metrics &amp; footage</div></div>
+        </div>
+
+        <div class="cta-row" data-reveal style="justify-content:center;margin-top:var(--sp-7)">
+          <a class="btn btn-primary" href="app/">Create free account <svg aria-hidden="true"><use href="#i-arrow" /></svg></a>
+          <a class="btn btn-ghost" href="app/">Sign in</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 2 · HOW IT WORKS (paper) ============ -->
+    <section class="section ground-paper edge" id="how-it-works" aria-labelledby="how-h">
+      <span class="gridref-edge" aria-hidden="true">Press · Shoot · Process · Review</span>
+      <div class="bp-grid" aria-hidden="true"></div>
+      <div class="wrap">
+        <div style="text-align:center;max-width:740px;margin:0 auto" data-reveal>
+          <span class="overline">How it works</span>
+          <h2 class="title" style="margin-top:1rem">From your glasses to your <em class="accent">stats</em>.</h2>
+          <p class="lead" style="margin:1.25rem auto 0;color:rgba(11,27,45,.75)">Three steps — and the only one you do is the shooting.</p>
+        </div>
+        <div class="steps">
+          <div class="step-connector" aria-hidden="true"></div>
+          <div class="step" data-reveal data-stagger style="--i:0">
+            <div class="num">01</div>
+            <h3>Record with your glasses</h3>
+            <p>Press the button on your Meta smart glasses and shoot. Hands-free POV capture from your own eyeline — no rig to carry, nothing to aim but your gun.</p>
+          </div>
+          <div class="step" data-reveal data-stagger style="--i:1">
+            <div class="num">02</div>
+            <h3>Brace processes your day</h3>
+            <p>Open the app and process the session. Brace reads every second of footage and finds the shooting — each target, each hit and miss, your timing and your mount.</p>
+          </div>
+          <div class="step" data-reveal data-stagger style="--i:2">
+            <div class="num">03</div>
+            <h3>Review your metrics &amp; footage</h3>
+            <p>Your numbers update and your footage is ready. Play any shot back, see where the day was won or lost, and shoot it better next time.</p>
+          </div>
+        </div>
+        <p style="text-align:center;max-width:660px;margin:var(--sp-7) auto 0;color:rgba(11,27,45,.7);font-size:var(--t-small)" data-reveal>
+          <strong style="color:var(--c-field)">How the metrics are recorded:</strong> Brace reads your POV footage frame by frame — detecting the moment of each shot, the target, the break and your timing — so the numbers come from what actually happened, not what you remember.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ 3 · THE METRICS ============ -->
+    <section class="section ground-midnight" id="metrics" aria-labelledby="metrics-h">
+      <div class="glow" aria-hidden="true" style="opacity:.5"></div>
+      <div class="bp-grid bp-grid--faint" aria-hidden="true"></div>
+      <div class="wrap">
+        <div class="metrics">
+          <div class="copy" data-reveal>
+            <span class="overline">The metrics you can see</span>
+            <h2 class="title" id="metrics-h">Every shot, <em class="accent">measured</em>.</h2>
+            <p class="lead">Brace turns a day's footage into a clear read on your shooting — what you hit, what you missed, and where to find the difference. The numbers that used to live only in your memory, kept for every session.</p>
+            <div class="metric-list">
+              <div class="mi"><svg class="ic" aria-hidden="true"><use href="#i-target" /></svg><div><div class="t">Hits &amp; misses</div><div class="d">Every target, called from the footage.</div></div></div>
+              <div class="mi"><svg class="ic" aria-hidden="true"><use href="#i-clock" /></svg><div><div class="t">Timing &amp; mount</div><div class="d">Time to break, and how consistent your mount is.</div></div></div>
+              <div class="mi"><svg class="ic" aria-hidden="true"><use href="#i-layers" /></svg><div><div class="t">Stand by stand</div><div class="d">Where you're strong, and where you leak targets.</div></div></div>
+              <div class="mi"><svg class="ic" aria-hidden="true"><use href="#i-history" /></svg><div><div class="t">Season trends</div><div class="d">Every session kept, so you can see yourself improve.</div></div></div>
+            </div>
+          </div>
+          <div class="mcard-wrap" data-reveal>
+            <article class="mcard">
+              <div class="pad">
+                <div class="mcard-head">
                   <div>
-                    <p class="ovl">Game Book · Driven Day</p>
-                    <h3 class="gb-estate">Bolton <em class="accent">Abbey</em></h3>
-                    <p class="gb-county">Wharfedale · North Yorkshire</p>
-                    <span class="gb-seal"><span class="dot"></span>Verified from footage</span>
+                    <p class="overline no-dot" style="color:var(--c-sage)">Sporting · 8 stands</p>
+                    <div class="e">Sunday <em class="accent">Sporting</em></div>
+                    <div class="c">West Wycombe · 100 targets</div>
                   </div>
-                  <div class="gb-margin">
-                    <div><span class="b">Sat 14 Nov 2026</span></div>
-                    <div>54.0156°N 1.8889°W</div>
-                    <div>OS · SE 074 542</div>
-                  </div>
+                  <div class="sc"><div class="v"><span data-count="84">0</span>%</div><div class="l">Hit rate</div></div>
                 </div>
-
-                <div class="gb-drives">
-                  <div class="gb-drive">
-                    <span class="no">01</span>
-                    <div><div class="name">The Hag</div><div class="detail">08:52 · NW wind · 11 guns</div></div>
-                    <span class="gb-pips"><i class="pip pheasant"></i><i class="pip pheasant"></i><i class="pip partridge"></i></span>
-                    <span class="bag"><span data-count="38">0</span><span class="u">head</span></span>
-                  </div>
-                  <div class="gb-drive">
-                    <span class="no">02</span>
-                    <div><div class="name">Strid Wood</div><div class="detail">10:05 · high birds · 11 guns</div></div>
-                    <span class="gb-pips"><i class="pip pheasant"></i><i class="pip pheasant"></i><i class="pip pheasant"></i></span>
-                    <span class="bag"><span data-count="61">0</span><span class="u">head</span></span>
-                  </div>
-                  <div class="gb-drive">
-                    <span class="no">03</span>
-                    <div><div class="name">Pickles Beck</div><div class="detail">11:40 · steady · 11 guns</div></div>
-                    <span class="gb-pips"><i class="pip pheasant"></i><i class="pip partridge"></i><i class="pip woodcock"></i></span>
-                    <span class="bag"><span data-count="44">0</span><span class="u">head</span></span>
-                  </div>
-                  <div class="gb-drive">
-                    <span class="no">04</span>
-                    <div><div class="name">Barden Tower</div><div class="detail">14:10 · last drive · 11 guns</div></div>
-                    <span class="gb-pips"><i class="pip pheasant"></i><i class="pip pheasant"></i><i class="pip partridge"></i></span>
-                    <span class="bag"><span data-count="53">0</span><span class="u">head</span></span>
-                  </div>
+                <div class="mstat-grid">
+                  <div class="mstat"><div class="v"><span data-count="100">0</span></div><div class="l">Targets</div></div>
+                  <div class="mstat"><div class="v"><span data-count="84">0</span></div><div class="l">Hit</div></div>
+                  <div class="mstat"><div class="v"><span data-count="14">0</span></div><div class="l">Best run</div></div>
                 </div>
-
-                <div class="gb-legend mono" aria-hidden="true" style="display:flex;gap:1.1rem;padding:0.55rem 0 0;font-size:0.625rem;letter-spacing:0.08em;color:var(--c-ivory-60);text-transform:uppercase">
-                  <span style="display:flex;align-items:center;gap:.4rem"><i class="pip pheasant"></i>Pheasant</span>
-                  <span style="display:flex;align-items:center;gap:.4rem"><i class="pip partridge"></i>Partridge</span>
-                  <span style="display:flex;align-items:center;gap:.4rem"><i class="pip woodcock"></i>Woodcock</span>
+                <div class="acc-block">
+                  <div class="acc-top"><span class="l">Hit rate vs last session</span><span class="v">84%<span style="font-size:.8rem;color:var(--c-sage);margin-left:.5rem">+6%</span></span></div>
+                  <div class="acc-bar"><i style="width:84%"></i></div>
                 </div>
-                <div class="gb-tally" role="img" aria-label="Bag by species: 163 pheasant, 28 partridge, 5 woodcock. Total bag 196.">
-                  <div class="cell"><div class="lbl">Pheasant</div><div class="num" data-count="163">0</div></div>
-                  <div class="cell"><div class="lbl">Partridge</div><div class="num" data-count="28">0</div></div>
-                  <div class="cell"><div class="lbl">Woodcock</div><div class="num" data-count="5">0</div></div>
-                  <div class="cell total"><div class="lbl">Total Bag</div><div class="num" data-count="196">0</div></div>
-                </div>
-
-                <div class="gb-lower">
-                  <div class="gb-block">
-                    <p class="ovl">The Day</p>
-                    <dl class="gb-kv">
-                      <dt>Conditions</dt><dd>4°C · NW 12mph</dd>
-                      <dt>Guns in line</dt><dd>11</dd>
-                      <dt>Your bag</dt><dd>22 head · 31 shots</dd>
-                      <dt>Gun</dt><dd>Beretta 687</dd>
-                      <dt>Load</dt><dd>Hull 30g · No.5</dd>
-                    </dl>
-                  </div>
-                  <div class="gb-block">
-                    <p class="ovl">Notable Moments · auto-detected</p>
-                    <div class="gb-moment"><span class="t">10:14</span><span class="x"><b>Right-and-left</b> on curling birds, Strid Wood.</span></div>
-                    <div class="gb-moment"><span class="t">11:58</span><span class="x">Woodcock in front — <b>first of the season</b>.</span></div>
-                    <div class="gb-moment"><span class="t">14:22</span><span class="x">Tall cock pheasant, <b>peg 7</b>, last drive.</span></div>
+                <div class="shot-line">
+                  <div class="l">The session · hit / miss</div>
+                  <div class="shot-bar" role="img" aria-label="Session shot map: 84 of 100 targets hit.">
+                    <i class="hit"></i><i class="hit"></i><i class="hit"></i><i class="miss"></i><i class="hit"></i><i class="hit"></i><i class="hit"></i><i class="hit"></i><i class="hit"></i><i class="miss"></i><i class="hit"></i><i class="hit"></i><i class="hit"></i><i class="hit"></i><i class="hit"></i><i class="hit"></i><i class="miss"></i><i class="hit"></i><i class="hit"></i><i class="hit"></i><i class="hit"></i><i class="miss"></i><i class="hit"></i><i class="hit"></i><i class="hit"></i>
                   </div>
                 </div>
               </div>
-              <div class="gb-foot">
-                <span class="by"><span class="ast">✳</span> Written by Brace from 6h 12m of footage</span>
+              <div class="mcard-foot">
+                <span class="by"><span class="ast">✳</span> Read by Brace from 1h 48m of POV footage</span>
                 <span class="sig">— logged automatically</span>
               </div>
             </article>
@@ -233,205 +212,123 @@
       </div>
     </section>
 
-    <!-- ============ PROBLEM ============ -->
-    <section class="section ground-midnight" aria-labelledby="problem-h">
-      <div class="bp-grid bp-grid--faint" aria-hidden="true"></div>
-      <div class="wrap">
-        <div class="split">
-          <div class="head-col" data-reveal>
-            <span class="overline">The old way</span>
-            <h2 class="title" id="problem-h">The day was always the easy part. Writing it up was <em class="accent">not</em>.</h2>
-            <p class="lead">You come in off the last drive — boots wet, dogs tired, the light going. The day deserves a record: the estate, the drives, the bag by species, the wind, the one shot you'll talk about for years.</p>
-            <p style="margin-top:1.25rem;color:var(--c-ivory-60)">But the notebook stays in the Land Rover. Memory blurs by the second peg. Weeks later the season is a handful of half-remembered dates and a few photographs with no story attached. The traditional game book is a beautiful thing — and a quiet burden.</p>
-            <p class="pullquote">Brace removes the desk.</p>
-          </div>
-          <div class="compare" data-reveal>
-            <div class="compare-card old">
-              <p class="tag">The notebook that stays empty</p>
-              <div class="ruled"></div><div class="ruled"></div><div class="ruled"></div>
-              <p style="font-size:var(--t-small);color:var(--c-ivory-60);margin-top:.75rem">Good intentions rarely survive a long day in the field. Most days go unrecorded — and memory does the rest.</p>
-            </div>
-            <div class="compare-card new">
-              <p class="tag">The day, written for you</p>
-              <p class="line"><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg> Estate, drives and the bag by species</p>
-              <p class="line"><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg> Conditions, the line, the notable moments</p>
-              <p class="line"><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg> Set down the moment your footage is read</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ HOW IT WORKS (paper) ============ -->
-    <section class="section ground-paper edge" id="how-it-works" aria-labelledby="how-h">
-      <span class="gridref-edge" aria-hidden="true">52.1307° N / 1.7470° W</span>
-      <div class="bp-grid" aria-hidden="true"></div>
-      <div class="wrap">
-        <div style="text-align:center;max-width:720px;margin:0 auto" data-reveal>
-          <span class="overline">How it works</span>
-          <h2 class="title" style="margin-top:1rem">Three steps. You only do the <em class="accent">first</em> one.</h2>
-          <p class="lead" style="margin:1.25rem auto 0;color:rgba(11,27,45,.75)">From the field to the page, with nothing in between for you to do.</p>
-        </div>
-        <div class="steps">
-          <div class="step-connector" aria-hidden="true"></div>
-          <div class="step" data-reveal data-stagger style="--i:0">
-            <div class="num">01</div>
-            <h3>Wear the camera and shoot the day</h3>
-            <p>Clip your POV or action camera to your cap, vest or stock and shoot as you always have. That's the whole of your part — no app to fumble between drives, no buttons to press as a bird comes over.</p>
-          </div>
-          <div class="step" data-reveal data-stagger style="--i:1">
-            <div class="num">02</div>
-            <h3>Brace reads it and finds what mattered</h3>
-            <p>Once you're home, Brace quietly works through your footage and picks out the key moments — the shots, the rhythm of each drive, the conditions and the ground you covered — so you never scrub through hours to find the day.</p>
-          </div>
-          <div class="step" data-reveal data-stagger style="--i:2">
-            <div class="num">03</div>
-            <h3>Your day is written into your game book</h3>
-            <p>Those moments become a proper entry: the date and estate, the drives in order, the bag by species, the weather and light, the guns in the line. You arrive to a finished page, not a blank one.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ GAME BOOK SHOWCASE ============ -->
-    <section class="section ground-midnight" id="game-book" aria-labelledby="gb-h">
-      <div class="glow" aria-hidden="true" style="opacity:.5"></div>
-      <div class="bp-grid bp-grid--faint" aria-hidden="true"></div>
-      <div class="wrap">
-        <div class="showcase">
-          <div class="copy" data-reveal>
-            <span class="overline">The Game Book</span>
-            <h2 class="title" id="gb-h">The record a shoot has always kept — now it <em class="accent">keeps itself</em>.</h2>
-            <p class="lead">For generations, the game book has been the truest record of a sporting life — the date, the moor or estate, each drive, the bag by species, the conditions, and the moments worth remembering. Brace carries that tradition forward and writes it for you.</p>
-            <div class="facts">
-              <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-compass" /></svg><div><div class="ft">Date &amp; ground</div><div class="fx">Every entry placed in time and place.</div></div></div>
-              <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-feather" /></svg><div><div class="ft">The bag, by species</div><div class="fx">Laid out clearly and totalled.</div></div></div>
-              <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-drive" /></svg><div><div class="ft">Drives in order</div><div class="fx">The shape of the day, drawn from footage.</div></div></div>
-              <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-conditions" /></svg><div><div class="ft">Conditions &amp; light</div><div class="fx">The texture that makes a day memorable.</div></div></div>
-              <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-spark" /></svg><div><div class="ft">Notable moments</div><div class="fx">The shots worth marking, found and kept.</div></div></div>
-              <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-lock" /></svg><div><div class="ft">Yours to keep</div><div class="fx">A lasting account, entirely your own.</div></div></div>
-            </div>
-          </div>
-          <div class="ledger-wrap" data-reveal>
-            <!-- species feather-bar: the bag at a glance -->
-            <div style="background:var(--c-midnight-raised);border:1px solid var(--c-midnight-hairline);border-radius:var(--r-lg);padding:clamp(1.5rem,4vw,2.25rem);box-shadow:var(--e-1);position:relative;overflow:hidden">
-              <div style="position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--c-brass),transparent)"></div>
-              <p class="overline no-dot" style="color:var(--c-sage)">A season at a glance · 2026</p>
-              <div style="display:flex;justify-content:space-between;align-items:flex-end;margin:1.25rem 0 .5rem">
-                <span class="mono" style="font-size:.75rem;color:var(--c-ivory-48)">BAG BY SPECIES</span>
-                <span class="display" style="font-size:2.6rem;color:var(--c-ivory)" aria-label="1,842 head"><span data-count="1842">0</span></span>
-              </div>
-              <div style="display:flex;height:10px;border-radius:6px;overflow:hidden;margin-bottom:1.25rem;gap:2px">
-                <span style="flex:1512;background:var(--c-brass);opacity:.85"></span>
-                <span style="flex:248;background:var(--c-sage);opacity:.85"></span>
-                <span style="flex:82;background:rgba(244,238,225,.5)"></span>
-              </div>
-              <div class="gb-kv" style="grid-template-columns:auto 1fr auto;gap:.7rem 1rem">
-                <dt style="display:flex;align-items:center;gap:.5rem;color:var(--c-ivory-72)"><i class="pip pheasant"></i>Pheasant</dt><dd></dd><dd>1,512</dd>
-                <dt style="display:flex;align-items:center;gap:.5rem;color:var(--c-ivory-72)"><i class="pip partridge"></i>Partridge</dt><dd></dd><dd>248</dd>
-                <dt style="display:flex;align-items:center;gap:.5rem;color:var(--c-ivory-72)"><i class="pip woodcock"></i>Woodcock &amp; other</dt><dd></dd><dd>82</dd>
-              </div>
-              <div style="margin-top:1.5rem;padding-top:1.25rem;border-top:1px solid var(--c-sage-hairline);display:flex;justify-content:space-between;align-items:center">
-                <span class="mono" style="font-size:.6875rem;color:var(--c-sage);letter-spacing:.1em">14 DAYS IN THE LINE · 7 ESTATES</span>
-                <span style="font-family:var(--f-display);font-style:italic;color:var(--c-ivory-72)">your season, written for you</span>
-              </div>
-            </div>
-            <p style="text-align:center;margin-top:1.25rem;font-size:var(--t-small);color:var(--c-ivory-60)">A full day's entry sits at the top of the page.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ FEATURES ============ -->
+    <!-- ============ 4 · OTHER FEATURES ============ -->
     <section class="section ground-midnight" id="features" aria-labelledby="feat-h">
       <div class="bp-grid bp-grid--faint" aria-hidden="true"></div>
       <div class="wrap">
         <div style="max-width:680px" data-reveal>
-          <span class="overline">What Brace does</span>
-          <h2 class="title" id="feat-h" style="margin-top:1rem">Built around one promise: you shoot, <em class="accent">Brace writes</em>.</h2>
-          <p class="lead" style="margin-top:1.25rem">Everything here serves the day, and stays out of the way.</p>
+          <span class="overline">More in the app</span>
+          <h2 class="title" id="feat-h" style="margin-top:1rem">Everything else the <em class="accent">app</em> does.</h2>
+          <p class="lead" style="margin-top:1.25rem">Built around one loop — record, process, review — and packed with the things that make a session worth keeping.</p>
         </div>
         <div class="feature-grid">
-          <article class="feature" data-reveal data-stagger style="--i:0"><span class="corner mono">AUTO</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-book" /></svg></div><h3>Automatic write-up</h3><p>The day is read from your footage and set down for you. No forms, no tagging, no end-of-day admin.</p></article>
-          <article class="feature" data-reveal data-stagger style="--i:1"><span class="corner mono">FOUND</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-clock" /></svg></div><h3>Key-moment detection</h3><p>Brace finds the moments that matter in hours of footage, so you reach the day without the scrubbing.</p></article>
-          <article class="feature" data-reveal data-stagger style="--i:2"><span class="corner mono">SEASON</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-feather" /></svg></div><h3>A self-building game book</h3><p>Each day adds a page. Over a season, your record assembles itself into something complete.</p></article>
-          <article class="feature" data-reveal data-stagger style="--i:3"><span class="corner mono">FIELD</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-camera" /></svg></div><h3>Nothing to do in the field</h3><p>No app to touch between drives. Wear the camera and shoot. Brace waits until you're home.</p></article>
-          <article class="feature" data-reveal data-stagger style="--i:4"><span class="corner mono">RECALL</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-search" /></svg></div><h3>Search your seasons</h3><p>Find a drive, an estate, a species or a particular day across everything you've ever recorded.</p></article>
-          <article class="feature" data-reveal data-stagger style="--i:5"><span class="corner mono">PRIVATE</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-lock" /></svg></div><h3>Privately yours</h3><p>Your footage and your game book are yours alone — discreet by design, shared only if you choose.</p></article>
-          <article class="feature" data-reveal data-stagger style="--i:6"><span class="corner mono">SET</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-book" /></svg></div><h3>Set with care</h3><p>Every page is typeset to be read and kept, not buried in a feed. A record worthy of the days in it.</p></article>
-          <article class="feature" data-reveal data-stagger style="--i:7"><span class="corner mono">ANY CAM</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-camera" /></svg></div><h3>Camera-agnostic</h3><p>Works with the POV and action cameras guns already wear. No proprietary hardware to buy.</p></article>
+          <article class="feature" data-reveal data-stagger style="--i:0"><span class="corner mono">PLAYBACK</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-camera" /></svg></div><h3>Footage playback</h3><p>Watch any shot back with the moment of the break marked, so you can see exactly what happened.</p></article>
+          <article class="feature" data-reveal data-stagger style="--i:1"><span class="corner mono">TRENDS</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-history" /></svg></div><h3>Session history</h3><p>Every session kept and trended, so a season reads as progress rather than scattered scores.</p></article>
+          <article class="feature" data-reveal data-stagger style="--i:2"><span class="corner mono">INSIGHT</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-chart" /></svg></div><h3>Coaching insight</h3><p>See the patterns — the targets, stands and angles where you lose the most ground.</p></article>
+          <article class="feature" data-reveal data-stagger style="--i:3"><span class="corner mono">COMPARE</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-layers" /></svg></div><h3>Disciplines &amp; comparison</h3><p>Sporting, Trap, Skeet and more — compared like for like across your sessions.</p></article>
+          <article class="feature" data-reveal data-stagger style="--i:4"><span class="corner mono">CAPTURE</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-glasses" /></svg></div><h3>Built for Meta glasses</h3><p>Made for the smart glasses you can wear; works with other POV and action cameras too.</p></article>
+          <article class="feature" data-reveal data-stagger style="--i:5"><span class="corner mono">PRIVATE</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-lock" /></svg></div><h3>Private by default</h3><p>Your footage and your stats are yours alone — discreet by design, shared only if you choose.</p></article>
+          <article class="feature" data-reveal data-stagger style="--i:6"><span class="corner mono">SHARE</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-share" /></svg></div><h3>Share a session</h3><p>Send a great bird or a tricky stand to a coach or a fellow gun when you want a second eye.</p></article>
+          <article class="feature" data-reveal data-stagger style="--i:7"><span class="corner mono">NO RIG</span><div class="ic-frame"><svg class="ic" aria-hidden="true"><use href="#i-target" /></svg></div><h3>Nothing to carry</h3><p>No bulky camera, no rig, no second pair of hands. Press your glasses and shoot.</p></article>
         </div>
       </div>
     </section>
 
-    <!-- ============ WHO IT'S FOR (field green) ============ -->
-    <section class="section ground-field edge" aria-labelledby="who-h">
-      <svg class="contour" aria-hidden="true" viewBox="0 0 400 300" style="top:0;left:50%;transform:translateX(-50%);width:700px;height:300px;color:var(--c-ivory);opacity:.06">
-        <ellipse cx="200" cy="150" rx="190" ry="120" /><ellipse cx="200" cy="150" rx="140" ry="88" /><ellipse cx="200" cy="150" rx="92" ry="58" /><ellipse cx="200" cy="150" rx="48" ry="30" />
-      </svg>
+    <!-- ============ 5 · META GLASSES (field green) ============ -->
+    <section class="section ground-field edge" aria-labelledby="glasses-h">
+      <svg class="contour" aria-hidden="true" viewBox="0 0 400 300" style="top:0;left:50%;transform:translateX(-50%);width:700px;height:300px;color:var(--c-ivory);opacity:.06"><ellipse cx="200" cy="150" rx="190" ry="120"/><ellipse cx="200" cy="150" rx="140" ry="88"/><ellipse cx="200" cy="150" rx="92" ry="58"/><ellipse cx="200" cy="150" rx="48" ry="30"/></svg>
       <div class="wrap">
         <div class="who-head" data-reveal>
-          <span class="overline no-dot" style="justify-content:center">Who it's for</span>
-          <h2 class="title" id="who-h">For guns who'd rather <em class="accent" style="color:var(--c-ivory);font-style:italic">shoot the day</em> than write it up.</h2>
-          <p class="lead" style="margin:1.25rem auto 0;color:var(--c-ivory-90)">If you've ever meant to keep a game book and never quite managed it, Brace is for you.</p>
+          <span class="overline no-dot" style="justify-content:center">Hands-free capture</span>
+          <h2 class="title" id="glasses-h">Built for the glasses you can <em class="accent" style="color:var(--c-ivory);font-style:italic">wear</em>.</h2>
+          <p class="lead" style="margin:1.25rem auto 0;color:var(--c-ivory-90)">Brace is made for Meta smart glasses — press the button, shoot your day, and the footage is captured straight from your own eyeline. No rig, no second pair of hands. Or bring your own POV camera; Brace reads them all.</p>
         </div>
         <div class="audience" data-reveal>
-          <div class="aud"><div class="at">Driven &amp; game shooters</div><div class="ax">A true record of every day in the line, from the first drive to the last — without lifting a pen.</div></div>
-          <div class="aud"><div class="at">Syndicate guns</div><div class="ax">Your own private account of every day with the syndicate: your bag, your moments, your season.</div></div>
-          <div class="aud"><div class="at">Keepers of the tradition</div><div class="ax">Those who value the heritage of the game book but haven't the evenings to keep one by hand.</div></div>
-          <div class="aud"><div class="at">Anyone keeping a record</div><div class="ax">If the days are worth doing, they're worth keeping. Brace makes keeping them effortless.</div></div>
+          <div class="aud"><div class="at">Press once</div><div class="ax">One button on the glasses starts the day. Nothing to fiddle with between stands.</div></div>
+          <div class="aud"><div class="at">Your eyeline</div><div class="ax">POV from where you actually look — the truest record of the shot you took.</div></div>
+          <div class="aud"><div class="at">Bring your own</div><div class="ax">Already wear a POV or action camera? Brace works with those too.</div></div>
         </div>
       </div>
     </section>
 
-    <!-- ============ PRIVACY ============ -->
-    <section class="section ground-midnight" id="privacy" aria-labelledby="priv-h">
-      <svg class="privacy-lock" aria-hidden="true"><use href="#i-lock" /></svg>
+    <!-- ============ 6 · PRICING / OPTIONS ============ -->
+    <section class="section ground-midnight" id="pricing" aria-labelledby="pricing-h">
+      <div class="bp-grid bp-grid--faint" aria-hidden="true"></div>
       <div class="wrap">
-        <div class="privacy-block" data-reveal>
-          <span class="overline">Discretion by design</span>
-          <h2 class="title" id="priv-h">A game book is a <em class="accent">private thing</em>. Yours stays that way.</h2>
-          <p class="lead">A game book has always been a personal record, kept for the gun and shared at the gun's discretion. Brace holds to that. Your footage is read to build your book, and your book belongs to you — discreet by default, never a feed, never on show.</p>
-          <div class="assurances">
-            <div class="assurance"><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg><div><div class="at">Yours by default</div><div class="ax">Your game book is private from the first page. Nothing is shared without your say-so.</div></div></div>
-            <div class="assurance"><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg><div><div class="at">Footage in service of the record</div><div class="ax">Your footage is read to write your day — to build your book, and for nothing else.</div></div></div>
-            <div class="assurance"><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg><div><div class="at">Shared only by choice</div><div class="ax">Hand a day to a fellow gun if you wish, or keep your whole season to yourself. The decision is always yours.</div></div></div>
+        <div style="text-align:center;max-width:680px;margin:0 auto" data-reveal>
+          <span class="overline" style="justify-content:center">Options</span>
+          <h2 class="title" id="pricing-h" style="margin-top:1rem">Choose how you shoot with <em class="accent">Brace</em>.</h2>
+          <p class="lead" style="margin:1.25rem auto 0">Two ways in — bring your own glasses, or get them with us.</p>
+        </div>
+        <div class="pricing-grid">
+          <div class="price-card" data-reveal>
+            <div class="price-head">
+              <div class="kicker">Subscription</div>
+              <div class="name">Brace Software</div>
+              <div class="price"><span class="tba">Founding pricing</span></div>
+              <div class="sub">Use the Meta glasses or POV camera you already have.</div>
+            </div>
+            <ul class="price-feats">
+              <li><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg>The full Brace app</li>
+              <li><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg>Automatic shot detection &amp; metrics</li>
+              <li><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg>Footage playback, shot by shot</li>
+              <li><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg>Session history &amp; season trends</li>
+              <li><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg>Works with your own Meta glasses or POV camera</li>
+            </ul>
+            <a class="btn btn-ghost btn-block" href="app/">Create free account</a>
+          </div>
+          <div class="price-card featured" data-reveal data-stagger style="--i:1">
+            <span class="price-badge">Most complete</span>
+            <div class="price-head">
+              <div class="kicker">Subscription + hardware</div>
+              <div class="name">Brace + Meta glasses</div>
+              <div class="price"><span class="tba">Founding pricing</span></div>
+              <div class="sub">The app and the glasses to record it with, together.</div>
+            </div>
+            <ul class="price-feats">
+              <li><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg>Everything in Brace Software</li>
+              <li><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg>Meta smart glasses included</li>
+              <li><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg>Set up and ready to record out of the box</li>
+              <li><svg class="tick" aria-hidden="true"><use href="#i-check" /></svg>Priority founding access</li>
+            </ul>
+            <a class="btn btn-primary btn-block" href="app/">Create free account</a>
           </div>
         </div>
+        <p class="pricing-note" data-reveal>Now in development — founding pricing is set at launch, and founding members are locked in first. No card required to claim your place.</p>
       </div>
     </section>
 
-    <!-- ============ EARLY ACCESS (paper) ============ -->
+    <!-- ============ 7 · FOUNDING / EARLY ACCESS (paper) ============ -->
     <section class="section ground-paper warm edge" id="early-access" aria-labelledby="ea-h">
       <span class="gridref-edge" aria-hidden="true">Founding members · No. 001</span>
       <div class="bp-grid" aria-hidden="true"></div>
       <div class="wrap">
         <div style="text-align:center;max-width:640px;margin:0 auto" data-reveal>
           <span class="overline" style="justify-content:center">Now in development</span>
-          <h2 class="title" id="ea-h" style="margin-top:1rem">Take a founding <em class="accent">place</em> before the first season.</h2>
-          <p class="lead" style="margin:1.25rem auto 0;color:rgba(11,27,45,.78)">Brace is in development now. Founding members get early access and a hand in shaping it. Creating an account costs nothing.</p>
+          <h2 class="title" id="ea-h" style="margin-top:1rem">Take a founding <em class="accent">place</em> before launch.</h2>
+          <p class="lead" style="margin:1.25rem auto 0;color:rgba(11,27,45,.78)">Founding members get early access, founding pricing, and a hand in shaping it. Creating an account costs nothing.</p>
         </div>
         <div class="signup-plate" data-reveal>
           <form class="signup-form" id="signupForm" novalidate>
             <div class="field">
               <label for="email">Email address</label>
-              <input type="email" id="email" name="email" placeholder="you@estate.co.uk" autocomplete="email" aria-describedby="email-err" required />
+              <input type="email" id="email" name="email" placeholder="you@shootingclub.co.uk" autocomplete="email" aria-describedby="email-err" required />
             </div>
             <button class="btn btn-primary" type="submit">Create free account</button>
           </form>
           <p class="field-err" id="email-err" role="alert" hidden>Please enter a valid email address.</p>
           <p class="form-success" id="formSuccess" role="status" aria-live="polite" tabindex="-1"><svg class="tick" aria-hidden="true" style="color:var(--c-field);width:20px;height:20px"><use href="#i-check" /></svg> Your founding place is reserved.</p>
-          <p class="signup-sub">Already with us? <a href="#early-access">Sign in</a>. No notebook required — and nothing to do today but put your name down.</p>
+          <p class="signup-sub">Already with us? <a href="app/">Sign in</a>. Nothing to do today but put your name down.</p>
         </div>
         <div class="early-grid" data-reveal>
-          <div class="eg"><div class="et">Early access</div><div class="ex">Among the first guns to keep a season with Brace when it opens.</div></div>
-          <div class="eg"><div class="et">A hand in the build</div><div class="ex">Founding members shape what gets made first. Your shooting informs the work.</div></div>
-          <div class="eg"><div class="et">Free to claim now</div><div class="ex">Put your name down today. Creating a founding account costs nothing.</div></div>
+          <div class="eg"><div class="et">Early access</div><div class="ex">Among the first to shoot a season with Brace when it opens.</div></div>
+          <div class="eg"><div class="et">Founding pricing</div><div class="ex">Locked in first, and held for as long as you stay.</div></div>
+          <div class="eg"><div class="et">Free to claim now</div><div class="ex">Put your name down today. Creating an account costs nothing.</div></div>
         </div>
       </div>
     </section>
 
-    <!-- ============ FAQ ============ -->
+    <!-- ============ 8 · FAQ ============ -->
     <section class="section ground-midnight" id="faq" aria-labelledby="faq-h">
       <div class="bp-grid bp-grid--faint" aria-hidden="true"></div>
       <div class="wrap">
@@ -440,55 +337,50 @@
           <h2 class="title" id="faq-h" style="margin-top:1rem">The questions a <em class="accent">careful gun</em> would ask.</h2>
         </div>
         <div class="faq-list" id="faqList" data-reveal>
-          <!-- items injected statically below -->
           <div class="faq-item">
-            <button class="faq-q" aria-expanded="false">What camera do I need?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
-            <div class="faq-a"><div class="faq-a-inner">Brace is built to work with the POV and action cameras guns already wear in the field — clipped to a cap, vest or stock. There's no proprietary hardware to buy. We'll publish clear guidance on supported cameras and the best way to mount and record as we move toward launch.</div></div>
+            <button class="faq-q" aria-expanded="false">What do I need to record?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
+            <div class="faq-a"><div class="faq-a-inner">Meta smart glasses, or a POV / action camera you already wear. Press the button once and shoot — Brace handles the rest once you're home. If you'd rather get the glasses with us, that's the Brace + Meta glasses option.</div></div>
           </div>
           <div class="faq-item">
-            <button class="faq-q" aria-expanded="false">How does footage become a written-up day?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
-            <div class="faq-a"><div class="faq-a-inner">Brace reads the footage your camera records and works through it to find the day within it — the shots, the rhythm and timeline of each drive, the conditions and the ground covered. It marks the moments worth keeping and sets them into a structured game-book entry: date, estate, drives, the bag by species, the line and the notable moments. You do none of the writing.</div></div>
+            <button class="faq-q" aria-expanded="false">Do I have to buy Meta glasses?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
+            <div class="faq-a"><div class="faq-a-inner">No. Brace Software works with the Meta glasses or POV camera you already own. The Brace + Meta glasses option simply bundles the glasses in if you'd like everything set up and ready to record from day one.</div></div>
+          </div>
+          <div class="faq-item">
+            <button class="faq-q" aria-expanded="false">How are the metrics measured?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
+            <div class="faq-a"><div class="faq-a-inner">Brace reads your POV footage frame by frame and finds the shooting within it — the moment of each shot, the target, the break and your timing. Your shots, hits, hit rate, timing and stand-by-stand figures all come from what the footage actually shows, not from what you remember.</div></div>
           </div>
           <div class="faq-item">
             <button class="faq-q" aria-expanded="false">How accurate is it?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
-            <div class="faq-a"><div class="faq-a-inner">Brace is in active development, and accuracy is exactly what founding members help us refine against real days in the field. Every entry is yours to review and adjust — Brace writes the first draft of the day, and the final record is always in your hands. We won't overstate what it does; we'd rather earn your trust day by day.</div></div>
+            <div class="faq-a"><div class="faq-a-inner">Brace is in active development, and accuracy is exactly what founding members help us refine against real sessions. Every session is yours to review and adjust — Brace writes the first read of the day, and the final record is always in your hands.</div></div>
           </div>
           <div class="faq-item">
-            <button class="faq-q" aria-expanded="false">Who can see my game book and footage?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
-            <div class="faq-a"><div class="faq-a-inner">Only you, unless you choose otherwise. Your game book is private by default and your footage is read solely to build your record. There's no public feed and nothing is shared without your decision. If you ever want to share a day with a fellow gun, that's your choice to make and yours to undo.</div></div>
+            <button class="faq-q" aria-expanded="false">Who can see my footage and stats?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
+            <div class="faq-a"><div class="faq-a-inner">Only you, unless you choose otherwise. Your footage and your stats are private by default, with no public feed. If you want a second eye, you can share a session or a single clip with a coach or a friend — that choice is always yours.</div></div>
           </div>
           <div class="faq-item">
-            <button class="faq-q" aria-expanded="false">Does it work offline, out in the field?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
-            <div class="faq-a"><div class="faq-a-inner">Yes — the field stays simple. Your camera records on its own with no signal required, and there's nothing for you to do between drives. Brace reads the footage and builds your day once you're home and back online. Coverage at the peg is never something you need to think about.</div></div>
+            <button class="faq-q" aria-expanded="false">Does it work for my discipline?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
+            <div class="faq-a"><div class="faq-a-inner">Brace is built for clay shooting across the main disciplines — Sporting, Trap and Skeet among them — and compares your sessions like for like. We'll keep widening what it supports as we move toward launch, guided by what founding members actually shoot.</div></div>
           </div>
           <div class="faq-item">
-            <button class="faq-q" aria-expanded="false">When does it launch, and what will it cost?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
-            <div class="faq-a"><div class="faq-a-inner">Brace is now in development. We're not putting a date on it we can't honour, so rather than promise a day, we're inviting founding members in early. Creating a founding account today is free; we're still settling how Brace will be priced at launch, and founding members will hear it from us first — with the benefit of having been here from the start.</div></div>
-          </div>
-          <div class="faq-item">
-            <button class="faq-q" aria-expanded="false">Is this meant to replace the leather game book?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
-            <div class="faq-a"><div class="faq-a-inner">Not at all. Brace is the modern successor to a tradition we love — it carries the same record forward and keeps it for the days you'd otherwise never write up. If you keep a leather book too, all the better. Brace simply makes sure no day goes unrecorded for want of an evening at the desk.</div></div>
+            <button class="faq-q" aria-expanded="false">When does it launch, and what does it cost?<svg class="faq-toggle" aria-hidden="true"><use href="#i-chevron" /></svg></button>
+            <div class="faq-a"><div class="faq-a-inner">Brace is now in development. Rather than promise a date we can't honour, we're inviting founding members in early. Creating a founding account today is free; founding pricing is set at launch and founding members are locked in first — you'll hear it from us before anyone else.</div></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============ FINAL CTA ============ -->
+    <!-- ============ 9 · FINAL CTA ============ -->
     <section class="section final-cta ground-midnight" aria-labelledby="final-h">
       <div class="vignette" aria-hidden="true"></div>
       <div class="glow" aria-hidden="true"></div>
-      <svg class="compass-seal" aria-hidden="true" viewBox="0 0 100 100">
-        <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" stroke-width="1" />
-        <circle cx="50" cy="50" r="34" fill="none" stroke="currentColor" stroke-width="1" />
-        <path d="M50 6 L56 50 L50 94 L44 50 Z M6 50 L50 44 L94 50 L50 56 Z" fill="currentColor" />
-      </svg>
+      <svg class="compass-seal" aria-hidden="true" viewBox="0 0 100 100"><circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="50" cy="50" r="34" fill="none" stroke="currentColor" stroke-width="1"/><path d="M50 6 L56 50 L50 94 L44 50 Z M6 50 L50 44 L94 50 L50 56 Z" fill="currentColor"/></svg>
       <div class="wrap">
         <span class="overline" style="justify-content:center" data-reveal>The Modern Shooting Log</span>
-        <h2 class="title" id="final-h" data-reveal style="margin-top:1.25rem">Shoot the day. Brace keeps the <em class="accent">record</em>.</h2>
-        <p class="lead" data-reveal>A game book that writes itself, private to you, built for the way you already shoot.</p>
+        <h2 class="title" id="final-h" data-reveal style="margin-top:1.25rem">Shoot the day. See every <em class="accent">shot</em>.</h2>
+        <p class="lead" data-reveal>Record through your glasses, and let Brace show you the day you actually shot.</p>
         <div class="cta-row" data-reveal>
-          <a class="btn btn-primary" href="#early-access">Create free account <svg aria-hidden="true"><use href="#i-arrow" /></svg></a>
-          <a class="btn btn-ghost" href="#early-access">Sign in</a>
+          <a class="btn btn-primary" href="app/">Create free account <svg aria-hidden="true"><use href="#i-arrow" /></svg></a>
+          <a class="btn btn-ghost" href="app/">Sign in</a>
         </div>
       </div>
     </section>
@@ -509,25 +401,25 @@
         <div class="footer-col">
           <h3>Brace</h3>
           <a href="#how-it-works">How it works</a>
-          <a href="#game-book">The Game Book</a>
+          <a href="#metrics">Metrics</a>
           <a href="#features">Features</a>
+          <a href="#pricing">Pricing</a>
         </div>
         <div class="footer-col">
           <h3>Founding members</h3>
-          <a href="#early-access">Create free account</a>
+          <a href="app/">Create free account</a>
           <a href="app/">Sign in</a>
           <a href="#early-access">Early access</a>
         </div>
         <div class="footer-col">
           <h3>Trust</h3>
-          <a href="#privacy">Privacy</a>
           <a href="#faq">FAQ</a>
           <a href="mailto:hello@braceshooting.com">Contact</a>
         </div>
       </div>
       <div class="footer-bar">
         <span class="legal">© 2026 Brace · The Modern Shooting Log · braceshooting.com</span>
-        <span class="coord">54.0156° N / 1.8889° W</span>
+        <span class="coord">Press · Shoot · Process · Review</span>
       </div>
     </div>
   </footer>

@@ -1,450 +1,334 @@
 /* ============================================================================
-   BRACE app — SPA (hash router, mock-data backed)
+   BRACE app — simple WHOOP-style overview + process shooting
+   Real auth, storage and data via Supabase. CV model is stubbed (data.js).
    ========================================================================== */
-import { USER, SPECIES, seasonStats, session, loadDays, saveDay, findDay } from './data.js';
+import { supabase } from './supabase.js';
+import { processClip, PROC_STEPS, greeting } from './data.js';
 
 const root = document.getElementById('root');
 const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-const fmt = n => Number(n).toLocaleString('en-GB');
+const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 const ic = (id, w = 20) => `<svg width="${w}" height="${w}" aria-hidden="true"><use href="#i-${id}"/></svg>`;
-const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-const NAV = [
-  { id: 'dashboard', label: 'Season', icon: 'compass', route: '#/' },
-  { id: 'book', label: 'Game Book', icon: 'book', route: '#/book' },
-  { id: 'add', label: 'Add a day', icon: 'camera', route: '#/add' },
-  { id: 'settings', label: 'Settings', icon: 'cog', route: '#/settings' },
-];
+let state = { user: null, name: '', sessions: [], route: 'home', authMode: 'signin', busy: false };
 
-let sidebarOpen = false;
-
-/* ---------- routing ---------- */
-function parseHash() {
-  const h = (location.hash || '#/').replace(/^#/, '');
-  const parts = h.split('/').filter(Boolean); // ['book','id']
-  return { section: parts[0] || '', id: parts[1] || null };
+/* ---------- boot ---------- */
+init();
+async function init() {
+  root.innerHTML = `<div class="center-load">Loading…</div>`;
+  const { data: { session } } = await supabase.auth.getSession();
+  state.user = session?.user || null;
+  supabase.auth.onAuthStateChange((_e, s) => {
+    const was = state.user?.id;
+    state.user = s?.user || null;
+    if (state.user?.id !== was) { if (state.user) enter(); else renderAuth(); }
+  });
+  window.addEventListener('hashchange', route);
+  if (state.user) enter(); else renderAuth();
 }
 
-function go(route) { location.hash = route; }
-
-window.addEventListener('hashchange', render);
-window.addEventListener('DOMContentLoaded', render);
-
-/* ---------- render orchestrator ---------- */
-function render() {
-  const { section, id } = parseHash();
-  const signedIn = !!session.get();
-
-  if (!signedIn && section !== 'enter') { return renderAuth(); }
-  if (section === 'enter') { return renderAuth(); }
-
-  const days = loadDays();
-  let active = section || 'dashboard';
-  let title = 'Your season', subtitle = `${USER.plan} · ${new Date().getFullYear()} season`, body = '';
-
-  if (section === '' || section === 'dashboard') { body = viewDashboard(days); active = 'dashboard'; }
-  else if (section === 'book' && id) { const d = findDay(days, id); if (!d) { go('#/book'); return; } title = d.estate; subtitle = d.display; body = viewDay(d); active = 'book'; }
-  else if (section === 'book') { title = 'Game Book'; subtitle = `${days.length} days recorded`; body = viewBook(days); active = 'book'; }
-  else if (section === 'add') { title = 'Add a day'; subtitle = 'Let Brace read your footage'; body = viewAdd(); active = 'add'; }
-  else if (section === 'settings') { title = 'Settings'; subtitle = USER.name; body = viewSettings(); active = 'settings'; }
-  else { go('#/'); return; }
-
-  root.innerHTML = shell(active, title, subtitle, body);
-  afterRender(section, id, days);
+async function enter() {
+  state.name = await loadName();
+  await loadSessions();
+  route();
 }
 
-/* ---------- shell ---------- */
-function shell(active, title, subtitle, body) {
-  return `
-  <a class="skip-link" href="#main">Skip to content</a>
-  <div class="app">
-    <aside class="sidebar${sidebarOpen ? ' open' : ''}" id="sidebar">
-      <a class="brand" href="#/" aria-label="Brace">
-        <svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>
-        <span><span class="wm">BRACE</span><br><span class="tg">Shooting Log</span></span>
-      </a>
-      <nav aria-label="Primary">
-        ${NAV.map(n => `<a class="nav-item${active === n.id ? ' active' : ''}" href="${n.route}">${ic(n.icon)}<span>${n.label}</span></a>`).join('')}
-      </nav>
-      <div class="spacer"></div>
-      <div class="side-user">
-        <span class="avatar">${USER.initials}</span>
-        <span><span class="nm">${USER.name}</span><br><span class="pl">${USER.plan.toUpperCase()}</span></span>
-      </div>
-    </aside>
-    <div class="scrim" id="scrim"></div>
-    <div class="app-main">
-      <header class="topbar">
-        <div style="display:flex;align-items:center;gap:.5rem">
-          <button class="menu-btn" id="menuBtn" aria-label="Open menu">${ic('menu', 22)}</button>
-          <div><div class="tt">${title}</div><div class="ts">${subtitle}</div></div>
-        </div>
-        <a class="btn btn-primary btn-sm" href="#/add">${ic('camera', 16)} Add a day</a>
-      </header>
-      <main class="view" id="main">${body}</main>
-    </div>
-  </div>`;
+function route() {
+  if (!state.user) return renderAuth();
+  const m = (location.hash || '').match(/^#\/s\/(.+)$/);
+  if (m) { const s = state.sessions.find(x => x.id === m[1]); if (s) return renderDetail(s); }
+  renderHome();
 }
 
-/* ---------- Dashboard ---------- */
-function viewDashboard(days) {
-  const s = seasonStats(days);
-  const t = s.tally;
-  const order = ['pheasant', 'partridge', 'woodcock', 'pigeon', 'duck'];
-  const segs = order.filter(k => t[k]).map(k => `<span class="pip-seg" style="flex:${t[k]};background:var(--c-${SPECIES[k].pip === 'pheasant' ? 'brass' : SPECIES[k].pip === 'partridge' ? 'sage' : 'ivory-48'});opacity:.85"></span>`).join('');
-  const legend = order.filter(k => t[k]).map(k => `<span class="it"><i class="pip ${SPECIES[k].pip}"></i>${SPECIES[k].label} <span class="n">${fmt(t[k])}</span></span>`).join('');
-  const recent = days.slice(0, 3);
-  return `
-  <div class="grid" style="gap:1.25rem">
-    <div class="stat-grid">
-      ${stat('Days in the line', s.days, '', 'compass', `${s.estates} estates this season`)}
-      ${stat('Season bag', s.totalBag, 'head', 'feather', 'across every day recorded')}
-      ${stat('Your bag', s.yourBag, 'head', 'cartridge', `${s.yourShots} shots · ${s.pct}% to bag`, false)}
-      ${stat('Best day', s.best ? s.best.totalBag : 0, 'head', 'drive', s.best ? s.best.estate : '', true)}
-    </div>
-
-    <div class="two-col">
-      <div class="card card-pad rv">
-        <div class="section-label"><span class="a">The game book</span><a href="#/book">View all ${days.length} →</a></div>
-        <div class="day-list">${recent.map(dayCard).join('')}</div>
-      </div>
-      <div class="card card-pad rv" data-stagger style="--i:1">
-        <div class="section-label"><span class="a">Bag by species</span></div>
-        <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:.25rem">
-          <span class="overline">Season total</span>
-          <span class="serif" style="font-size:2.4rem;color:var(--c-ivory)" data-count="${s.totalBag}">0</span>
-        </div>
-        <div class="season-bar">${segs}</div>
-        <div class="legend">${legend}</div>
-        <div style="margin-top:1.5rem;padding-top:1.1rem;border-top:1px solid var(--c-sage-hairline);display:flex;justify-content:space-between;align-items:center">
-          <span class="mono" style="font-size:.65rem;color:var(--c-sage);letter-spacing:.1em">${s.days} DAYS · ${s.estates} ESTATES</span>
-          <span class="serif" style="font-style:italic;color:var(--c-ivory-72)">written for you</span>
-        </div>
-      </div>
-    </div>
-  </div>`;
+/* ---------- data ---------- */
+async function loadName() {
+  const { data } = await supabase.from('profiles').select('name').eq('id', state.user.id).maybeSingle();
+  return data?.name || (state.user.email || '').split('@')[0];
+}
+async function loadSessions() {
+  const { data } = await supabase.from('sessions').select('*').order('created_at', { ascending: false });
+  state.sessions = data || [];
 }
 
-function stat(lbl, num, unit, icon, sub, accent) {
-  return `<div class="card card-pad stat rv${accent ? ' accent-stat' : ''}" data-stagger>
-    <div class="ic">${ic(icon, 18)}</div>
-    <div class="lbl">${lbl}</div>
-    <div class="num"><span data-count="${num}">0</span>${unit ? `<span class="u">${unit}</span>` : ''}</div>
-    <div class="sub">${sub || ''}</div>
-  </div>`;
-}
-
-/* ---------- Game book list ---------- */
-function viewBook(days) {
-  return `<div class="day-list">${days.map((d, i) => dayCard(d, i)).join('')}</div>`;
-}
-
-function dayCard(d, i = 0) {
-  const dt = new Date(d.date + 'T00:00:00');
-  const pips = pipsFor(d).slice(0, 6).map(p => `<i class="pip ${p}"></i>`).join('');
-  return `<a class="day-card rv" data-stagger style="--i:${i}" href="#/book/${d.id}">
-    <span class="dc-date"><span class="d">${dt.getDate()}</span><span class="m">${MONTHS[dt.getMonth()]}</span></span>
-    <span class="dc-main">
-      <span class="e">${accentEstate(d)}</span>
-      <span class="c">${d.county}</span>
-      <span class="meta"><span>${d.dayType}</span><span>·</span><span>${d.drives.length} drives</span><span class="pips">${pips}</span></span>
-    </span>
-    <span class="dc-bag"><span class="b">${fmt(d.totalBag)}</span> <span class="l">head</span><span class="y">your bag · ${d.yourBag}</span></span>
-  </a>`;
-}
-
-function pipsFor(d) {
-  const out = [];
-  ['pheasant','partridge','woodcock','pigeon','duck'].forEach(k => { if (d.speciesTally[k]) out.push(SPECIES[k].pip); });
-  return out;
-}
-function accentEstate(d) {
-  if (!d.estateAccent || !d.estate.includes(d.estateAccent)) return d.estate;
-  return d.estate.replace(d.estateAccent, `<em class="accent" style="font-size:inherit">${d.estateAccent}</em>`);
-}
-
-/* ---------- Day detail (full game-book entry) ---------- */
-function viewDay(d) {
-  const drives = d.drives.map(dr => `
-    <div class="gb-drive">
-      <span class="no">${dr.no}</span>
-      <div><div class="name">${dr.name}</div><div class="detail">${dr.time} · ${dr.detail}</div></div>
-      <span class="pips">${dr.species.map(s => `<i class="pip ${SPECIES[s] ? SPECIES[s].pip : 'woodcock'}"></i>`).join('')}</span>
-      <span class="bag"><span data-count="${dr.bag}">0</span><span class="u">head</span></span>
-    </div>`).join('');
-
-  const order = ['pheasant','partridge','woodcock','pigeon','duck'];
-  const tallyCells = order.filter(k => d.speciesTally[k]).slice(0, 3).map(k =>
-    `<div class="cell"><div class="lbl">${SPECIES[k].label}</div><div class="num" data-count="${d.speciesTally[k]}">0</div></div>`).join('');
-
-  const moments = d.notableMoments.map(m => {
-    const x = m.emphasis ? m.text.replace(m.emphasis, `<b>${m.emphasis}</b>`) : m.text;
-    return `<div class="gb-moment"><span class="t">${m.time}</span><span class="x">${x}</span></div>`;
-  }).join('');
-
-  const wave = Array.from({ length: 64 }, (_, i) => `<i style="height:${20 + Math.round(40 * Math.abs(Math.sin(i * 0.7)) )}%"></i>`).join('');
-  const markers = d.notableMoments.map(m => `<span class="marker" style="left:${timeFrac(m.time)}%" title="${m.time}"></span>`).join('');
-
-  return `
-  <a href="#/book" class="overline" style="display:inline-flex;align-items:center;gap:.5rem;margin-bottom:1.25rem;color:var(--c-sage)">${ic('chevron-left', 14)} The game book</a>
-  <article class="gamebook rv">
-    <div class="gb-pad">
-      <div class="gb-head">
-        <div>
-          <p class="ovl">Game Book · ${d.dayType}</p>
-          <h2 class="gb-estate">${accentEstate(d)}</h2>
-          <p class="gb-county">${d.county}</p>
-          <span class="gb-seal"><span class="dot"></span>Verified from footage</span>
-        </div>
-        <div class="gb-margin">
-          <div><span class="b">${d.display}</span></div>
-          <div>${d.coords}</div>
-          <div>OS · ${d.gridRef}</div>
-        </div>
-      </div>
-      <div class="gb-drives">${drives}</div>
-      <div class="gb-tally" role="img" aria-label="${order.filter(k=>d.speciesTally[k]).map(k=>d.speciesTally[k]+' '+SPECIES[k].label).join(', ')}. Total bag ${d.totalBag}.">
-        ${tallyCells}
-        <div class="cell total"><div class="lbl">Total Bag</div><div class="num" data-count="${d.totalBag}">0</div></div>
-      </div>
-
-      <div class="footage">
-        <p class="overline" style="margin-bottom:.6rem">Footage · ${d.footageDuration} · ${d.notableMoments.length} moments found</p>
-        <div class="bar"><div class="wave">${wave}</div>${markers}</div>
-        <div class="scale"><span>00:00</span><span>${d.footageDuration}</span></div>
-      </div>
-
-      <div class="gb-lower">
-        <div class="gb-block">
-          <p class="ovl">The day</p>
-          <dl class="gb-kv">
-            <dt>Conditions</dt><dd>${d.conditions}</dd>
-            <dt>Guns in line</dt><dd>${d.gunsInLine}</dd>
-            <dt>Your bag</dt><dd>${d.yourBag} head · ${d.yourShots} shots</dd>
-            <dt>Gun</dt><dd>${d.gun.split(' · ')[0]}</dd>
-            <dt>Load</dt><dd>${d.load.split(' · ').slice(0,2).join(' · ')}</dd>
-          </dl>
-        </div>
-        <div class="gb-block">
-          <p class="ovl">Notable moments · auto-detected</p>
-          ${moments}
-        </div>
-      </div>
-    </div>
-    <div class="gb-foot">
-      <span class="by"><span class="ast">✳</span> ${d.footageSummary}</span>
-      <span class="sig">— logged automatically</span>
-    </div>
-  </article>`;
-}
-
-function timeFrac(t) {
-  const [h, m] = t.split(':').map(Number);
-  const mins = h * 60 + m;
-  return Math.max(2, Math.min(98, ((mins - 510) / (900 - 510)) * 100)).toFixed(1);
-}
-
-/* ---------- Add a day (upload + processing) ---------- */
-function viewAdd() {
-  return `
-  <div class="card card-pad upload-card rv" id="addCard">
-    <div id="addStage">
-      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Select footage">
-        <div class="ic">${ic('camera', 42)}</div>
-        <h3>Bring in a day's footage</h3>
-        <p>Drop your POV footage here, or choose a file. Brace will read it and write the day into your game book.</p>
-        <div style="margin-top:1.25rem"><span class="btn btn-primary">Choose footage</span></div>
-        <p style="margin-top:1rem;font-size:.75rem;color:var(--c-ivory-48)">Demo — selecting anything runs a sample day through Brace.</p>
-      </div>
-    </div>
-  </div>`;
-}
-
-const PROC_STEPS = [
-  'Reading footage…',
-  'Finding the drives and their order…',
-  'Counting the bag by species…',
-  'Marking the moments worth keeping…',
-  'Setting the page…',
-];
-
-// Templates for a freshly "read" day, chosen deterministically per session.
-const NEW_DAYS = [
-  { id: 'helmsley', estate: 'Helmsley', estateAccent: 'Helmsley', county: 'Rye Valley · North Yorkshire', coords: '54.2466°N, 1.0608°W', gridRef: 'SE 611 837',
-    drives: [
-      { no:'01', name:'Carlton Bank', time:'09:05', detail:'fresh W · 9 guns', bag:43, species:['pheasant','pheasant','partridge'] },
-      { no:'02', name:'Duncombe', time:'10:40', detail:'high birds · 9 guns', bag:57, species:['pheasant','pheasant','pheasant'] },
-      { no:'03', name:'Ash Dale', time:'12:20', detail:'last · 9 guns', bag:46, species:['pheasant','partridge','woodcock'] },
-    ], speciesTally:{ pheasant:118, partridge:24, woodcock:4 }, totalBag:146, conditions:'5°C · W 13mph · bright spells',
-    gunsInLine:9, yourBag:20, yourShots:29, notableMoments:[
-      { time:'10:58', text:'Right-and-left over Duncombe — a fine pair.', emphasis:'Right-and-left' },
-      { time:'12:34', text:'Woodcock flushed late on Ash Dale.', emphasis:'Woodcock' },
-    ], footageDuration:'5h 47m' },
-  { id: 'studley', estate: 'Studley Royal', estateAccent: 'Royal', county: 'Skell Valley · North Yorkshire', coords: '54.1339°N, 1.5783°W', gridRef: 'SE 278 702',
-    drives: [
-      { no:'01', name:'Lake Drive', time:'09:00', detail:'still · 8 guns', bag:39, species:['pheasant','partridge','partridge'] },
-      { no:'02', name:'Obelisk', time:'10:35', detail:'testing · 8 guns', bag:55, species:['pheasant','pheasant','pheasant'] },
-      { no:'03', name:'Seven Bridges', time:'12:10', detail:'steady · 8 guns', bag:48, species:['pheasant','partridge','pigeon'] },
-    ], speciesTally:{ pheasant:112, partridge:26, pigeon:4 }, totalBag:142, conditions:'7°C · SW 9mph · soft, grey',
-    gunsInLine:8, yourBag:22, yourShots:30, notableMoments:[
-      { time:'10:51', text:'Towering cock pheasant over the Obelisk.', emphasis:'Towering' },
-    ], footageDuration:'5h 22m' },
-];
-
-function makeNewDay() {
-  const seen = loadDays().map(d => d.id);
-  const tmpl = NEW_DAYS.find(t => !seen.includes(dayIdFor(t))) || NEW_DAYS[0];
-  const today = new Date();
-  const display = `${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][today.getDay()]} ${today.getDate()} ${MONTHS[today.getMonth()]} ${today.getFullYear()}`;
-  return {
-    ...tmpl, id: dayIdFor(tmpl), date: today.toISOString().slice(0, 10), display, day: '', dayType: 'Driven day',
-    status: 'written', gun: USER.gun, load: USER.cartridge,
-    footageSummary: `Written by Brace from ${tmpl.footageDuration} of footage`,
-  };
-}
-function dayIdFor(t) { return `${t.id}-new`; }
-
-/* ---------- Settings ---------- */
-function viewSettings() {
-  const priv = [
-    { k: 'Private by default', d: 'Your game book is visible only to you.', on: true },
-    { k: 'Footage used only to write your day', d: 'Your footage is read to build your record, and nothing else.', on: true },
-    { k: 'Allow sharing a day by link', d: 'Off until you choose to hand a day to a fellow gun.', on: false },
-  ];
-  return `
-  <div class="grid" style="gap:1.25rem;max-width:760px">
-    <div class="card card-pad rv">
-      <div class="section-label"><span class="a">Your details</span></div>
-      <div class="set-row"><div><div class="k">Name</div></div><div class="v">${USER.name}</div></div>
-      <div class="set-row"><div><div class="k">Email</div></div><div class="v">${USER.email}</div></div>
-      <div class="set-row"><div><div class="k">Membership</div></div><div class="v">${USER.plan} · since ${USER.since}</div></div>
-    </div>
-    <div class="card card-pad rv" data-stagger style="--i:1">
-      <div class="section-label"><span class="a">Your kit</span></div>
-      <div class="set-row"><div><div class="k">Gun</div></div><div class="v">${USER.gun}</div></div>
-      <div class="set-row"><div><div class="k">Cartridge</div></div><div class="v">${USER.cartridge}</div></div>
-      <div class="set-row"><div><div class="k">Cameras</div><div class="d">The POV cameras Brace reads</div></div><div class="v">${USER.cameras.join('<br>')}</div></div>
-    </div>
-    <div class="card card-pad rv" data-stagger style="--i:2">
-      <div class="section-label"><span class="a">Privacy</span></div>
-      ${priv.map((p, i) => `<div class="set-row"><div><div class="k">${p.k}</div><div class="d">${p.d}</div></div>
-        <button class="toggle" data-toggle aria-pressed="${p.on}" aria-label="${p.k}"></button></div>`).join('')}
-    </div>
-    <div>
-      <button class="btn btn-ghost" id="signOut">${ic('signout', 16)} Sign out</button>
-    </div>
-  </div>`;
-}
-
-/* ---------- Auth ---------- */
-let authMode = 'signin';
+/* ---------- AUTH ---------- */
 function renderAuth() {
-  const isSignup = authMode === 'signup';
+  const signup = state.authMode === 'signup';
   root.innerHTML = `
   <div class="auth">
     <div class="bp"></div><div class="glow"></div>
     <div class="auth-card">
-      <div class="brand">
+      <div class="auth-brand">
         <svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>
-        <span class="wm">BRACE</span>
-        <span class="tg">The Modern Shooting Log</span>
+        <span class="wm">BRACE</span><span class="tg">The Modern Shooting Log</span>
       </div>
       <div class="auth-panel">
-        <h1>${isSignup ? 'Create your account' : 'Welcome back'}</h1>
-        <p class="sub">${isSignup ? 'Take your founding place. Creating an account costs nothing.' : 'Sign in to your private game book.'}</p>
+        <h1>${signup ? 'Create your account' : 'Welcome back'}</h1>
+        <p class="sub">${signup ? 'Take your founding place — it costs nothing.' : 'Sign in to your shooting.'}</p>
         <form id="authForm" novalidate>
-          ${isSignup ? `<div class="field"><label for="name">Name</label><input id="name" type="text" placeholder="James Alderton" autocomplete="name"></div>` : ''}
-          <div class="field"><label for="email">Email address</label><input id="email" type="email" placeholder="you@estate.co.uk" autocomplete="email" required></div>
-          <div class="field"><label for="pw">Password</label><input id="pw" type="password" placeholder="••••••••" autocomplete="${isSignup ? 'new-password' : 'current-password'}"></div>
-          <button class="btn btn-primary btn-block" type="submit" style="margin-top:.5rem">${isSignup ? 'Create free account' : 'Sign in'} ${ic('arrow', 16)}</button>
+          ${signup ? `<div class="field"><label for="name">Name</label><input id="name" type="text" placeholder="James Alderton" autocomplete="name"></div>` : ''}
+          <div class="field"><label for="email">Email</label><input id="email" type="email" placeholder="you@shootingclub.co.uk" autocomplete="email" required></div>
+          <div class="field"><label for="pw">Password</label><input id="pw" type="password" placeholder="At least 6 characters" autocomplete="${signup ? 'new-password' : 'current-password'}" required></div>
+          <p class="auth-err" id="authErr" role="alert"></p>
+          <button class="btn btn-primary btn-block btn-lg" type="submit" id="authBtn">${signup ? 'Create account' : 'Sign in'}</button>
         </form>
-        <p style="text-align:center;margin-top:1rem;font-size:.72rem;color:var(--c-ivory-48)">Demo — any email signs you into a sample game book.</p>
-        <div class="auth-switch">${isSignup ? 'Already with us?' : 'No account yet?'}
-          <button id="authSwitch" type="button">${isSignup ? 'Sign in' : 'Create one'}</button>
+        <div class="auth-switch">${signup ? 'Already with us?' : 'No account yet?'}
+          <button id="authSwitch" type="button">${signup ? 'Sign in' : 'Create one'}</button>
         </div>
       </div>
+      <p class="auth-note">Your shooting is private to you · Brace is now in development</p>
     </div>
   </div>`;
+
   const form = document.getElementById('authForm');
-  form.addEventListener('submit', e => {
+  const err = document.getElementById('authErr');
+  const btn = document.getElementById('authBtn');
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const email = document.getElementById('email');
-    if (!email.value || !/.+@.+\..+/.test(email.value)) { email.focus(); email.style.borderColor = 'var(--c-brass-deep)'; return; }
-    session.signIn(email.value);
-    go('#/');
-    render();
-  });
-  document.getElementById('authSwitch').addEventListener('click', () => { authMode = isSignup ? 'signin' : 'signup'; renderAuth(); });
-}
-
-/* ---------- After-render wiring ---------- */
-function afterRender(section, id, days) {
-  // mobile sidebar
-  const menuBtn = document.getElementById('menuBtn');
-  const sidebar = document.getElementById('sidebar');
-  const scrim = document.getElementById('scrim');
-  function setSidebar(open) { sidebarOpen = open; sidebar.classList.toggle('open', open); scrim.classList.toggle('show', open); }
-  if (menuBtn) menuBtn.addEventListener('click', () => setSidebar(true));
-  if (scrim) scrim.addEventListener('click', () => setSidebar(false));
-  sidebar && sidebar.querySelectorAll('.nav-item, .brand').forEach(a => a.addEventListener('click', () => setSidebar(false)));
-
-  // reveals
-  const rv = Array.prototype.slice.call(document.querySelectorAll('.rv'));
-  if (reduce || !('IntersectionObserver' in window)) rv.forEach(e => e.classList.add('in'));
-  else {
-    const io = new IntersectionObserver((es, o) => es.forEach(en => { if (en.isIntersecting) { en.target.classList.add('in'); o.unobserve(en.target); } }), { threshold: 0.1 });
-    rv.forEach(e => io.observe(e));
-  }
-
-  // count-ups
-  document.querySelectorAll('[data-count]').forEach(el => {
-    const target = parseInt(el.getAttribute('data-count'), 10) || 0;
-    if (reduce) { el.textContent = fmt(target); return; }
-    let start = null;
-    const dur = 850;
-    function step(ts) { if (start === null) start = ts; const p = Math.min((ts - start) / dur, 1); const e = 1 - Math.pow(1 - p, 3); el.textContent = fmt(Math.round(target * e)); if (p < 1) requestAnimationFrame(step); else el.textContent = fmt(target); }
-    requestAnimationFrame(step);
-  });
-
-  // settings
-  document.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true')));
-  const so = document.getElementById('signOut');
-  if (so) so.addEventListener('click', () => { session.signOut(); authMode = 'signin'; go('#/'); render(); });
-
-  // add-a-day flow
-  const dz = document.getElementById('dropzone');
-  if (dz) {
-    const trigger = () => runProcessing();
-    dz.addEventListener('click', trigger);
-    dz.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); trigger(); } });
-    ['dragover','dragenter'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('drag'); }));
-    ['dragleave','drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('drag'); if (ev === 'drop') trigger(); }));
-  }
-}
-
-function runProcessing() {
-  const stage = document.getElementById('addStage');
-  if (!stage) return;
-  stage.innerHTML = `
-    <div class="proc" role="status" aria-live="polite">
-      <div class="ring">${ic('loader', 64)}</div>
-      <h3>Brace is reading your day</h3>
-      <p class="step-line" id="stepLine">${PROC_STEPS[0]}</p>
-      <div class="proc-bar"><i id="procBar"></i></div>
-    </div>`;
-  const line = document.getElementById('stepLine');
-  const bar = document.getElementById('procBar');
-  const total = PROC_STEPS.length;
-  let i = 0;
-  const tick = () => {
-    i++;
-    if (bar) bar.style.width = Math.round((i / total) * 100) + '%';
-    if (i < total) { if (line) line.textContent = PROC_STEPS[i]; setTimeout(tick, reduce ? 120 : 760); }
-    else {
-      const day = makeNewDay();
-      saveDay(day);
-      setTimeout(() => { go('#/book/' + day.id); render(); }, reduce ? 60 : 500);
+    err.textContent = '';
+    const email = document.getElementById('email').value.trim();
+    const pw = document.getElementById('pw').value;
+    const name = signup ? (document.getElementById('name').value.trim()) : '';
+    if (!/.+@.+\..+/.test(email)) { err.textContent = 'Enter a valid email address.'; return; }
+    if (pw.length < 6) { err.textContent = 'Password must be at least 6 characters.'; return; }
+    btn.disabled = true; btn.textContent = signup ? 'Creating…' : 'Signing in…';
+    try {
+      if (signup) {
+        const { data, error } = await supabase.auth.signUp({ email, password: pw, options: { data: { name } } });
+        if (error) throw error;
+        if (!data.session) {
+          // email confirmation is on — guide the user
+          root.querySelector('.auth-panel').innerHTML =
+            `<h1>Check your inbox</h1><p class="sub">We've sent a confirmation link to <b style="color:var(--c-ivory)">${email}</b>. Confirm it, then sign in.</p>
+             <button class="btn btn-ghost btn-block" id="backSignin">Back to sign in</button>`;
+          document.getElementById('backSignin').addEventListener('click', () => { state.authMode = 'signin'; renderAuth(); });
+          return;
+        }
+        // session present (confirmation off) → onAuthStateChange will enter()
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
+        if (error) throw error;
+      }
+    } catch (ex) {
+      err.textContent = friendlyErr(ex);
+      btn.disabled = false; btn.textContent = signup ? 'Create account' : 'Sign in';
     }
-  };
-  setTimeout(tick, reduce ? 120 : 760);
+  });
+  document.getElementById('authSwitch').addEventListener('click', () => { state.authMode = signup ? 'signin' : 'signup'; renderAuth(); });
 }
+function friendlyErr(ex) {
+  const m = (ex && ex.message) || 'Something went wrong.';
+  if (/invalid login/i.test(m)) return 'Email or password not recognised.';
+  if (/already registered/i.test(m)) return 'That email already has an account — sign in instead.';
+  return m;
+}
+
+/* ---------- HOME (overview) ---------- */
+function renderHome() {
+  const sessions = state.sessions;
+  const latest = sessions[0];
+  const score = latest ? (latest.score || 0) : 0;
+  const week = sessions.filter(s => Date.now() - new Date(s.created_at).getTime() < 7 * 864e5);
+  const avgRate = sessions.length ? Math.round(sessions.reduce((a, s) => a + (s.hit_rate || 0), 0) / sessions.length) : 0;
+  const bestRun = sessions.reduce((a, s) => Math.max(a, s.best_run || 0), 0);
+
+  root.innerHTML = shell(`
+    ${ovHero(latest, score)}
+    <div class="tiles rv">
+      ${tile('Avg hit rate', avgRate, '%', `${sessions.length} sessions`)}
+      ${tile('Best run', bestRun, '', 'straight targets', false)}
+      ${tile('This week', week.length, '', week.length === 1 ? 'session' : 'sessions', false)}
+    </div>
+
+    <div class="sec rv">
+      <div class="sec-head"><span class="t">Recent sessions</span></div>
+      ${sessions.length ? `<div class="sessions">${sessions.slice(0, 6).map(sessionRow).join('')}</div>`
+        : `<div class="empty">No sessions yet. Process your first below.</div>`}
+    </div>
+
+    ${processCard()}
+  `);
+  wireHome();
+}
+
+function shell(body) {
+  return `
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="app" id="main">
+    <header class="topbar">
+      <div class="who"><div class="g">${greeting()},</div><div class="n">${esc(state.name)}</div></div>
+      <button class="iconbtn" id="signOut" aria-label="Sign out">${ic('signout', 18)}</button>
+    </header>
+    ${body}
+  </div>`;
+}
+
+function ovHero(latest, score) {
+  const R = 92, C = 2 * Math.PI * R;
+  const off = C * (1 - Math.max(0, Math.min(100, score)) / 100);
+  const sub = latest
+    ? `Your last session — <b>${latest.ground || latest.discipline}</b>, ${latest.hit_rate}% on ${latest.targets}.`
+    : `Process a clip to see your first score.`;
+  return `
+  <section class="ov-hero rv">
+    <div class="glow"></div>
+    <div class="ring-wrap">
+      <svg class="ring" viewBox="0 0 220 220" aria-hidden="true">
+        <defs><linearGradient id="ringgrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#9C7E45"/><stop offset="1" stop-color="#C9A968"/></linearGradient></defs>
+        <circle class="track" cx="110" cy="110" r="${R}" stroke-width="12"/>
+        <circle class="bar" cx="110" cy="110" r="${R}" stroke-width="12"
+          stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${reduce ? off.toFixed(1) : C.toFixed(1)}" data-off="${off.toFixed(1)}"/>
+      </svg>
+      <div class="ring-center"><div class="v" data-count="${score}">${reduce ? score : 0}</div><div class="l">Form</div></div>
+    </div>
+    <p class="ov-sub">${sub}</p>
+  </section>`;
+}
+
+function tile(label, val, unit, sub, up = true) {
+  return `<div class="tile"><div class="l">${label}</div><div class="v">${val}${unit ? `<span class="u">${unit}</span>` : ''}</div><div class="d ${up && val ? 'up' : ''}">${sub}</div></div>`;
+}
+
+function sessionRow(s) {
+  const dt = new Date(s.created_at);
+  const proc = s.status !== 'done';
+  return `<a class="session-row" href="#/s/${s.id}">
+    <span class="date"><span class="d">${dt.getDate()}</span><span class="m">${MONTHS[dt.getMonth()]}</span></span>
+    <span class="mid"><span class="t">${esc(s.ground || s.discipline || 'Session')}</span><span class="s">${esc(s.discipline || '')}${s.ground ? ' · ' : ''}${s.targets ? s.targets + ' targets' : ''}</span></span>
+    <span class="end">${proc ? `<span class="pill proc"><span class="dot"></span>Processing</span>`
+      : `<span class="v score">${s.score || 0}</span><span class="l">${s.hit_rate}% hit</span>`}</span>
+  </a>`;
+}
+
+function processCard() {
+  return `
+  <section class="process rv" id="process">
+    <div id="procBody">
+      <div class="ic">${ic('upload', 20)}</div>
+      <h3>Process a session</h3>
+      <p>Pick a clip from your camera roll — the footage from your Meta glasses or POV camera. Brace reads it and turns it into your metrics.</p>
+      <button class="btn btn-primary btn-lg" id="pickBtn">${ic('upload', 16)} Choose a clip</button>
+      <input type="file" id="clipInput" accept="video/*" hidden />
+      <div class="hint">${ic('lock', 14)} Your footage is private to you.</div>
+    </div>
+  </section>`;
+}
+
+function wireHome() {
+  document.getElementById('signOut')?.addEventListener('click', async () => { await supabase.auth.signOut(); });
+  // animate ring + count
+  if (!reduce) requestAnimationFrame(() => {
+    const bar = root.querySelector('.ring .bar');
+    if (bar) bar.style.strokeDashoffset = bar.getAttribute('data-off');
+    countUp(root.querySelector('.ring-center .v'));
+  });
+  // Clip acquisition. Web = file picker (per-clip consent). For the real
+  // "Allow access to your photos & videos" permission grant, this is the single
+  // place to swap in the native Capacitor path — see NATIVE-SETUP.md.
+  const pick = document.getElementById('pickBtn');
+  const input = document.getElementById('clipInput');
+  if (pick && input) {
+    pick.addEventListener('click', () => input.click());
+    input.addEventListener('change', () => { if (input.files && input.files[0]) runProcess(input.files[0]); });
+  }
+}
+
+function countUp(el) {
+  if (!el) return;
+  const target = parseInt(el.getAttribute('data-count'), 10) || 0;
+  let start = null; const dur = 900;
+  function step(ts) { if (start === null) start = ts; const p = Math.min((ts - start) / dur, 1); const e = 1 - Math.pow(1 - p, 3); el.textContent = Math.round(target * e); if (p < 1) requestAnimationFrame(step); }
+  requestAnimationFrame(step);
+}
+
+/* ---------- process flow ---------- */
+async function runProcess(file) {
+  if (state.busy) return; state.busy = true;
+  const body = document.getElementById('procBody');
+  const steps = PROC_STEPS;
+  body.innerHTML = `
+    <div class="proc">
+      <div class="ring-mini">${ic('loader', 54)}</div>
+      <h3>Brace is reading your day</h3>
+      <p class="step" id="pStep">${steps[0]}</p>
+      <div class="proc-bar"><i id="pBar"></i></div>
+    </div>`;
+  const stepEl = document.getElementById('pStep');
+  const barEl = document.getElementById('pBar');
+
+  // kick off the real upload + the (stubbed) model in parallel with the animation
+  const work = (async () => {
+    let video_path = null;
+    try {
+      const ext = (file.name.split('.').pop() || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const path = `${state.user.id}/${cryptoId()}.${ext}`;
+      const { error: upErr } = await supabase.storage.from('clips').upload(path, file, { upsert: false, contentType: file.type || 'video/mp4' });
+      if (!upErr) video_path = path;
+    } catch (e) { /* upload best-effort; metrics still produced */ }
+    const m = await processClip(file); // PLACEHOLDER for the real CV model
+    const row = {
+      user_id: state.user.id, name: m.discipline + ' session', discipline: m.discipline, ground: m.ground,
+      targets: m.targets, hits: m.hits, hit_rate: m.hitRate, best_run: m.bestRun, score: m.score,
+      status: 'done', video_path, metrics: m.metrics,
+    };
+    const { data, error } = await supabase.from('sessions').insert(row).select().single();
+    if (error) throw error;
+    return data;
+  })();
+
+  // advance the visible steps over ~3.2s (or instantly under reduced motion)
+  for (let i = 0; i < steps.length; i++) {
+    if (stepEl) stepEl.textContent = steps[i];
+    if (barEl) barEl.style.width = Math.round(((i + 1) / steps.length) * 100) + '%';
+    await wait(reduce ? 40 : 640);
+  }
+
+  try {
+    const created = await work;
+    await loadSessions();
+    state.busy = false;
+    location.hash = `#/s/${created.id}`;
+    route();
+  } catch (ex) {
+    state.busy = false;
+    if (body) body.innerHTML = `<div class="ic">${ic('upload', 20)}</div><h3>That didn't process</h3>
+      <p>${esc(friendlyErr(ex))}</p><button class="btn btn-primary" id="retry">Try another clip</button>`;
+    document.getElementById('retry')?.addEventListener('click', renderHome);
+  }
+}
+
+/* ---------- SESSION DETAIL ---------- */
+function renderDetail(s) {
+  const m = s.metrics || {};
+  const map = Array.isArray(m.shotMap) ? m.shotMap : [];
+  const bars = (map.length ? map : Array.from({ length: 25 }, (_, i) => (i % 6 !== 5 ? 1 : 0)))
+    .slice(0, 60).map(h => `<i class="${h ? 'hit' : 'miss'}"></i>`).join('');
+  root.innerHTML = shell(`
+    <a class="back" href="#/">${ic('chevron-left', 14)} Overview</a>
+    <div class="detail-head rv">
+      <div><div class="t">${esc(s.ground || s.discipline || 'Session')}</div>
+        <div class="s">${esc(s.discipline || '')} · ${new Date(s.created_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })} · ${s.targets} targets</div></div>
+      <div class="score"><div class="v">${s.score || 0}</div><div class="l">Form</div></div>
+    </div>
+    <div class="rv">
+      <div class="overline" style="margin-bottom:.5rem">The session · hit / miss</div>
+      <div class="shot-bar" role="img" aria-label="${s.hits} of ${s.targets} targets hit.">${bars}</div>
+    </div>
+    <div class="kv rv">
+      ${cell('Hit rate', (s.hit_rate || 0) + '%')}
+      ${cell('Targets hit', `${s.hits}/${s.targets}`)}
+      ${cell('Best run', s.best_run || 0)}
+      ${cell('Time to break', (m.timeToBreak ? m.timeToBreak + 's' : '—'))}
+      ${cell('Mount', (m.mount ? m.mount + '%' : '—'))}
+      ${cell('Discipline', esc(s.discipline || '—'))}
+    </div>
+    <div class="clip-note rv">${ic('film', 18)} ${s.video_path ? 'Your clip is stored privately. Playback with shot markers is coming as the model is wired in.' : 'No clip stored for this session.'}</div>
+  `);
+  document.getElementById('signOut')?.addEventListener('click', async () => { await supabase.auth.signOut(); });
+}
+function cell(l, v) { return `<div class="cell"><div class="l">${l}</div><div class="v">${v}</div></div>`; }
+
+/* ---------- utils ---------- */
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function cryptoId() { try { return crypto.randomUUID(); } catch (e) { return 'id-' + Date.now() + '-' + Math.floor(Math.random() * 1e6); } }

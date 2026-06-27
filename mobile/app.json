@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "Brace",
+    "slug": "brace",
+    "scheme": "brace",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B0E12",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.braceshooting.app",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Brace reads your shooting footage from your photo library to turn it into your performance metrics.",
+        "NSPhotoLibraryAddUsageDescription": "Brace saves processed clips back to your library when you choose to.",
+        "NSCameraUsageDescription": "Brace can record a session directly through the camera."
+      }
+    },
+    "android": {
+      "package": "com.braceshooting.app",
+      "permissions": ["READ_MEDIA_VIDEO", "READ_MEDIA_IMAGES"],
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0E12",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": { "favicon": "./assets/favicon.png" },
+    "plugins": [
+      ["expo-image-picker", { "photosPermission": "Brace accesses your photos to import shooting footage to analyse." }],
+      ["expo-media-library", {
+        "photosPermission": "Brace accesses your photos and videos to import shooting footage.",
+        "savePhotosPermission": "Brace saves processed clips to your library when you choose to.",
+        "isAccessMediaLocationEnabled": true
+      }],
+      "expo-video"
+    ]
+  }
+}
