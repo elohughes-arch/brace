@@ -56,7 +56,8 @@ function renderSignIn(err = '') {
       password: document.getElementById('pw').value,
     });
     if (error) { busy(btn, false, 'Continue'); setErr(error.message); return; }
-    boot();                       // password done — boot decides the next factor
+    sessionStorage.setItem('brace-portal-pw', '1');   // first factor satisfied
+    boot();                       // boot decides the next factor
   });
 
   document.getElementById('first').addEventListener('click', (e) => { e.preventDefault(); renderBootstrap(); });
@@ -120,9 +121,10 @@ function renderSetPassword(err = '') {
       password: a, data: { portal_password_set: true },
     });
     if (error) { busy(btn, false, 'Save password'); return setErr(error.message); }
+    sessionStorage.setItem('brace-portal-pw', '1');
     boot();
   });
-  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); await supabase.auth.signOut(); boot(); });
+  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
 }
 
 /* ---------- 3 · enrol an authenticator ---------- */
@@ -135,7 +137,7 @@ async function renderEnrol(err = '') {
   if (error) {
     gate(`<h1>Add your authenticator</h1><div class="err">${esc(error.message)}</div>
           <button class="btn btn-ghost" id="out">Sign out</button>`);
-    document.getElementById('out').addEventListener('click', async () => { await supabase.auth.signOut(); boot(); });
+    document.getElementById('out').addEventListener('click', async () => { sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
     return;
   }
   const factorId = data.id;
@@ -164,7 +166,7 @@ async function renderEnrol(err = '') {
     if (v.error) { busy(btn, false, 'Verify and finish'); return setErr(v.error.message); }
     boot();
   });
-  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); await supabase.auth.signOut(); boot(); });
+  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
 }
 
 /* ---------- 4 · the second factor, every sign-in ---------- */
@@ -193,7 +195,7 @@ function renderChallenge(factorId, err = '') {
     if (v.error) { busy(btn, false, 'Unlock'); return setErr(v.error.message); }
     boot();
   });
-  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); await supabase.auth.signOut(); boot(); });
+  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
 }
 
 function renderDenied(email) {
@@ -203,7 +205,7 @@ function renderDenied(email) {
        add it to <code>portal_owners</code> in Supabase.</p>
     <a class="btn" href="../">Back to Brace</a>
     <button class="btn btn-ghost" id="out" style="margin-top:10px">Sign out</button>`);
-  document.getElementById('out').addEventListener('click', async () => { await supabase.auth.signOut(); boot(); });
+  document.getElementById('out').addEventListener('click', async () => { sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
 }
 
 /* ---------- dashboard data ---------- */
@@ -339,10 +341,11 @@ async function boot() {
   const { data: isOwnerEmail } = await supabase.rpc('is_portal_owner_email');
   if (!isOwnerEmail) return renderDenied(email);
 
-  // A link-only session has no password yet. We record that one was set in
-  // the user's own metadata; it only routes the UI, since the database is
-  // what actually grants access.
-  if (session.user?.user_metadata?.portal_password_set !== true) {
+  // Only the link route lands here without a password having been typed, and
+  // the one reason to use the link is 'first time, or forgotten it'. A session
+  // that came through the password form skips straight to the second factor.
+  // Routing only — the database is what actually grants access.
+  if (sessionStorage.getItem('brace-portal-pw') !== '1') {
     return renderSetPassword();
   }
 
