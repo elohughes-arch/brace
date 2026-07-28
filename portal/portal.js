@@ -435,8 +435,13 @@ async function runStage(stage, query = {}) {
     });
     let res = await call(`/api/run/${stage}`);
     if (res.status === 404 || res.status === 405) res = await call(`/api/run/${stage}/`);
+    // Read it as text first. A platform-level 404 is an HTML page, and
+    // res.json() throwing on it is how "failed (404) — no detail" happened:
+    // the one case where the body was the whole explanation.
+    const text = await res.text().catch(() => '');
     let body = {};
-    try { body = await res.json(); } catch { /* empty body */ }
+    try { body = text ? JSON.parse(text) : {}; } catch { /* not ours */ }
+    const plain = () => text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
     if (res.status === 202) {
       note(`${stage} is still running on Modal — the counts will catch up.`);
     } else if (res.ok) {
@@ -444,7 +449,7 @@ async function runStage(stage, query = {}) {
       const said = Object.entries(rest).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`).join(' · ');
       note(`${stage} finished${said ? ` — ${said}` : ''}`, 'good');
     } else {
-      note(`${stage} failed (${res.status}) — ${body.error || body.detail || 'no detail'}`, 'bad');
+      note(`${stage} failed (${res.status}) — ${body.error || body.detail || plain() || 'no detail'}`, 'bad');
     }
   } catch (e) {
     note(`${stage} could not be reached — ${e.message || e}`, 'bad');
