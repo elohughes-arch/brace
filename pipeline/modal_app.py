@@ -112,6 +112,7 @@ def triage(request: fastapi.Request):
 
     import subprocess
     import tempfile
+
     from pathlib import Path
     from triage import sample_frames, score_frames, KEEP_THRESHOLD
 
@@ -168,6 +169,8 @@ def clip(request: fastapi.Request):
     from pathlib import Path
     from clipper import extract_audio, detect_shots, group_pairs, cut_clip
     import tempfile
+
+    volume.reload()   # triage committed these from a different container
 
     # Approved in the portal's review queue. Pass ?unreviewed=1 to clip
     # everything that survived triage without waiting for a human.
@@ -238,6 +241,8 @@ def prelabel(request: fastapi.Request):
     import torch
     from pathlib import Path
     from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+
+    volume.reload()   # see what the previous stage committed from its own container
 
     DETECT_PROMPT = "flying clay pigeon. small orange disc. small black disc in sky."
     sb = _sb()

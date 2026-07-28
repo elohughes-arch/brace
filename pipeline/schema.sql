@@ -10,7 +10,8 @@ create table if not exists pipeline_videos (
     duration_s    integer,
     view_count    integer,
     status        text not null default 'discovered',
-    -- discovered -> triaged -> rejected | downloaded -> clipped
+    -- discovered -> downloaded (triaged, awaiting review) -> approved
+    --            -> clipped | rejected | error
     triage_score  real,                       -- 0-10 from vision model
     triage_notes  text,
     local_path    text,
@@ -28,7 +29,7 @@ create table if not exists pipeline_clips (
     pair_gap_s     real,                      -- gap to companion shot if pair
     file_path      text,
     label_status   text not null default 'pending',
-    -- pending -> prelabelled -> uploaded -> verified | rejected
+    -- pending -> prelabelled | rejected   (Roboflow owns what happens next)
     roboflow_id    text,
     created_at     timestamptz default now()
 );
@@ -46,3 +47,40 @@ create table if not exists pipeline_labels (
 
 create index if not exists idx_videos_status on pipeline_videos(status);
 create index if not exists idx_clips_status  on pipeline_clips(label_status);
+
+-- ---------------------------------------------------------------------------
+-- Row Level Security.
+--
+-- Without this the tables are readable by anyone holding the anon key, which
+-- ships in the browser. The Brace project already has these applied as the
+-- `pipeline_tables` migration; this block is here so the file stands a database
+-- up correctly on its own rather than leaving it open.
+--
+-- Both gate functions live in the owners-portal migration:
+--   is_portal_owner()        email on portal_owners AND the JWT carries aal2
+--   is_portal_owner_email()  email only, for routing the login screens
+-- Modal connects with the service key and bypasses all of this by design.
+
+alter table pipeline_videos enable row level security;
+alter table pipeline_clips  enable row level security;
+alter table pipeline_labels enable row level security;
+
+create policy "owners read videos" on pipeline_videos
+  for select to authenticated using (public.is_portal_owner());
+
+-- the review queue is the only write a browser makes: approve or reject
+create policy "owners judge videos" on pipeline_videos
+  for update to authenticated
+  using (public.is_portal_owner())
+  with check (public.is_portal_owner());
+
+create policy "owners read clips" on pipeline_clips
+  for select to authenticated using (public.is_portal_owner());
+
+create policy "owners judge clips" on pipeline_clips
+  for update to authenticated
+  using (public.is_portal_owner())
+  with check (public.is_portal_owner());
+
+create policy "owners read labels" on pipeline_labels
+  for select to authenticated using (public.is_portal_owner());

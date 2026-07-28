@@ -501,8 +501,9 @@ function controlView() {
     <div class="tally">
       <span>${n('pending')} clips awaiting pre-label</span>
       <span>${n('prelabelled')} pre-labelled</span>
-      <span>${n('rejected')} rejected at triage</span>
-      ${c && c.error ? `<span class="warn">${n('error')} errored</span>` : ''}
+      <span>${n('rejected')} rejected</span>
+      ${c && c.error ? `<span class="warn">${n('error')} errored
+        <a href="#" id="retry" class="p-act" style="margin-left:6px">Send back</a></span>` : ''}
     </div>
 
     <div class="grid">
@@ -578,10 +579,11 @@ function card(v) {
 
 async function judge(id, status, el) {
   el.querySelectorAll('button').forEach((b) => { b.disabled = true; });
-  const { error } = await supabase.from('pipeline_videos')
-    .update({ status }).eq('video_id', id);
-  if (error) {
-    note(`could not ${status === 'approved' ? 'approve' : 'reject'} ${id} — ${error.message}`, 'bad');
+  const { data, error } = await supabase.from('pipeline_videos')
+    .update({ status }).eq('video_id', id).select('video_id');
+  const verb = status === 'approved' ? 'approve' : 'reject';
+  if (error || !data || !data.length) {
+    note(`could not ${verb} ${id} — ${error ? error.message : 'the database changed nothing'}`, 'bad');
     el.querySelectorAll('button').forEach((b) => { b.disabled = false; });
     return;
   }
@@ -604,6 +606,15 @@ function paint() {
   }));
 
   document.getElementById('refresh')?.addEventListener('click', (e) => { e.preventDefault(); refresh(); });
+  document.getElementById('retry')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const { data, error } = await supabase.from('pipeline_videos')
+      .update({ status: 'discovered', local_path: null })
+      .eq('status', 'error').select('video_id');
+    note(error ? `could not requeue — ${error.message}` : `${data.length} sent back to discovered`,
+      error ? 'bad' : 'good');
+    refresh();
+  });
   document.querySelectorAll('[data-stage]').forEach((b) =>
     b.addEventListener('click', () => runStage(b.dataset.stage)));
   document.querySelectorAll('.cardv').forEach((el) =>
