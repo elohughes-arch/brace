@@ -40,8 +40,12 @@ input{font:inherit}
 :focus-visible{outline:2px solid var(--clay); outline-offset:3px}
 
 .num{font-variant-numeric:tabular-nums}
-.label,.strap,.chip,.btn-ghost,.btn-primary{
+.label,.chip{
   font-size:11px; font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+}
+/* Actions are imperative caps (bible §8), at Small — not at Label size. */
+.btn-primary,.btn-ghost,.link{
+  font-size:13px; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
 }
 .sr-only{
   position:absolute; width:1px; height:1px; padding:0; margin:-1px;
@@ -111,10 +115,7 @@ body.splash-done .page{ opacity:1; animation:none }
 .brand-mark{ width:auto; height:clamp(26px,3.2vh,34px) }
 
 .bar-actions{ display:flex; align-items:center; gap:12px; flex:0 0 auto }
-.link{
-  font-size:13px; font-weight:500; color:var(--text-2);
-  padding:8px 4px; transition:color .18s var(--spring);
-}
+.link{ color:var(--text-2); padding:8px 4px; transition:color .18s var(--spring) }
 .link:hover{ color:var(--text-1) }
 
 .bar-foot{ border-top:1px solid var(--line) }
@@ -144,7 +145,10 @@ body.splash-done .page{ opacity:1; animation:none }
   text-align:center; padding:0 20px; gap:28px;
 }
 .hero-wm{ width:min(74vw,520px); height:auto; max-height:26vh }
-.strap{ color:var(--text-2); margin-top:-8px }
+.strap{
+  font-size:clamp(22px, 4.6vh, 40px); line-height:1.1; font-weight:600;
+  letter-spacing:-.02em; color:var(--text-1); margin-top:-6px;
+}
 
 .capture{ display:flex; gap:12px; width:100%; max-width:440px }
 .capture input{
