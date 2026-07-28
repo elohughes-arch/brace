@@ -261,13 +261,19 @@ async function renderEnrol(err = '') {
     e.preventDefault();
     const btn = e.target.querySelector('.btn');
     busy(btn, true, 'Verifying…'); setErr('');
-    const ch = await supabase.auth.mfa.challenge({ factorId });
-    if (ch.error) { busy(btn, false, 'Verify and finish'); return setErr(ch.error.message); }
-    const v = await supabase.auth.mfa.verify({
-      factorId, challengeId: ch.data.id, code: document.getElementById('code').value.trim(),
-    });
-    if (v.error) { busy(btn, false, 'Verify and finish'); return setErr(v.error.message); }
-    boot();
+    try {
+      const ch = await supabase.auth.mfa.challenge({ factorId });
+      if (ch.error) return setErr(ch.error.message);
+      const v = await supabase.auth.mfa.verify({
+        factorId, challengeId: ch.data.id, code: document.getElementById('code').value.trim(),
+      });
+      if (v.error) return setErr(v.error.message);
+      boot();
+    } catch (err) {
+      setErr(err.message || 'Could not reach Supabase. Try again.');
+    } finally {
+      busy(btn, false, 'Verify and finish');
+    }
   });
   document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
 }
@@ -292,13 +298,21 @@ function renderChallenge(factorId, err = '') {
     e.preventDefault();
     const btn = e.target.querySelector('.btn');
     busy(btn, true, 'Checking…'); setErr('');
-    const ch = await supabase.auth.mfa.challenge({ factorId });
-    if (ch.error) { busy(btn, false, 'Unlock'); return setErr(ch.error.message); }
-    const v = await supabase.auth.mfa.verify({
-      factorId, challengeId: ch.data.id, code: document.getElementById('code').value.trim(),
-    });
-    if (v.error) { busy(btn, false, 'Unlock'); return setErr(v.error.message); }
-    boot();
+    // Without the finally, a dropped request leaves the button disabled on
+    // "Checking…" with no way to try the next code.
+    try {
+      const ch = await supabase.auth.mfa.challenge({ factorId });
+      if (ch.error) return setErr(ch.error.message);
+      const v = await supabase.auth.mfa.verify({
+        factorId, challengeId: ch.data.id, code: document.getElementById('code').value.trim(),
+      });
+      if (v.error) return setErr(v.error.message);
+      boot();
+    } catch (err) {
+      setErr(err.message || 'Could not reach Supabase. Try again.');
+    } finally {
+      busy(btn, false, 'Unlock');
+    }
   });
   document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
 }
@@ -411,6 +425,15 @@ let view = location.hash === '#review' ? 'review' : 'control';
 let state = { email: '', counts: null, queue: [], loading: true };
 let poll = null;
 
+/* Every trip through route() bumps `epoch`. A dashboard load that was already
+   in flight when the visitor signed out finishes against the old epoch, so it
+   knows to stay quiet instead of repainting itself over the sign-in screen —
+   and, worse, starting an 8s poll that route() could never have cleared,
+   because the interval did not exist yet when route() ran. */
+let epoch = 0;
+let dashEpoch = -1;
+const dashboardIsCurrent = () => dashEpoch === epoch;
+
 function shell(body) {
   root.dataset.up = '1';
   root.innerHTML = `
@@ -433,7 +456,10 @@ function shell(body) {
   document.getElementById('signout').addEventListener('click', async () => {
     clearInterval(poll);
     sessionStorage.removeItem('brace-portal-pw');
-    await supabase.auth.signOut();
+    // A failed global sign-out used to leave the dashboard sitting there as if
+    // nothing had happened. Re-route either way: the local session is gone.
+    try { await supabase.auth.signOut(); } catch { /* offline, or already out */ }
+    boot();
   });
 }
 
@@ -556,8 +582,8 @@ async function judge(id, status, el) {
   note(`${id} ${status}`, status === 'approved' ? 'good' : '');
   state.queue = state.queue.filter((v) => v.video_id !== id);
   el.classList.add('gone');
-  setTimeout(paint, 220);
-  loadCounts().then((c) => { state.counts = c; });
+  setTimeout(() => { if (dashboardIsCurrent()) paint(); }, 220);
+  loadCounts().then((c) => { state.counts = c; }).catch(() => { /* the poll will retry */ });
 }
 
 /* ---------- paint + poll ---------- */
@@ -592,10 +618,12 @@ async function refresh() {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
   state.loading = false;
+  if (!dashboardIsCurrent()) return;   // signed out while this was in flight
   paint();
 }
 
 window.addEventListener('hashchange', () => {
+  if (!dashboardIsCurrent()) return;   // the hash means nothing behind the gate
   const next = location.hash === '#review' ? 'review' : 'control';
   if (next === view) return;
   view = next;
@@ -605,13 +633,19 @@ window.addEventListener('hashchange', () => {
 });
 
 async function renderDashboard(email) {
+  const mine = epoch;
   state = { email, counts: null, queue: [], loading: true };
+  dashEpoch = mine;
   paint();
   await refresh();
+  if (mine !== epoch) return;          // route() moved on; do not start a poll
   clearInterval(poll);
   // Stages take minutes, so eight seconds is plenty to feel live without
   // hammering the database.
-  poll = setInterval(() => { if (!document.hidden) refresh(); }, 8000);
+  poll = setInterval(() => {
+    if (mine !== epoch) return clearInterval(poll);
+    if (!document.hidden) refresh();
+  }, 8000);
 }
 
 /* ---------- boot ---------- */
@@ -620,11 +654,15 @@ async function renderDashboard(email) {
 // enrolled? → factor verified this session? → the floor.
 
 let booting = false;
+let rebootWanted = false;
 
 async function boot() {
   // getSession + onAuthStateChange both fire on load; without this guard the
-  // enrolment screen renders twice and mints two competing secrets.
-  if (booting) return;
+  // enrolment screen renders twice and mints two competing secrets. But a
+  // request that arrives mid-route is not noise — a SIGNED_OUT during a slow
+  // enrolment used to be dropped, leaving the old screen up. Remember it and
+  // route again once the current pass finishes.
+  if (booting) { rebootWanted = true; return; }
   booting = true;
   try {
     await route();
@@ -635,11 +673,15 @@ async function boot() {
   } finally {
     booting = false;
   }
+  if (rebootWanted) { rebootWanted = false; await boot(); }
 }
 
 async function route() {
-  // Any route away from the dashboard should stop it polling.
+  // Any route away from the dashboard should stop it polling, and should
+  // invalidate a dashboard load that has not finished yet.
+  epoch += 1;
   clearInterval(poll);
+  poll = null;
 
   // Not `const { data: { session } }` — getSession resolves with data:null on
   // some failures, and destructuring through it throws before anything renders.
