@@ -20,8 +20,9 @@ const STAGES = ['discover', 'triage', 'clip', 'prelabel'];
 
 // Vercel functions are capped well below Modal's 30-minute timeouts, so we
 // stop waiting long before the platform kills us. Modal carries on regardless
-// of whether anyone is still holding the connection.
-const WAIT_MS = 25_000;
+// of whether anyone is still holding the connection. Raise PIPELINE_WAIT_MS if
+// your plan allows a longer function duration.
+const WAIT_MS = Number(process.env.PIPELINE_WAIT_MS) || 25_000;
 
 // Only these reach Modal; everything else in the query string is dropped.
 const PASSTHROUGH = ['limit', 'unreviewed'];
@@ -81,7 +82,19 @@ module.exports = async (req, res) => {
     return res.status(403).json({ error: 'owners only, and only on a two-factor session' });
   }
 
-  const url = new URL(endpoint);
+  // Hand-typed, and the workspace prefix takes an easily-missed double dash.
+  // A bad value here should say so rather than throw a blank 500.
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return res.status(500).json({
+      error: 'pipeline not configured',
+      detail: `MODAL_BASE_URL does not make a valid URL (built "${endpoint}"). `
+        + 'It should look like https://<workspace>--brace-pipeline, including https:// '
+        + 'and the double dash.',
+    });
+  }
   for (const key of PASSTHROUGH) {
     if (req.query[key] != null) url.searchParams.set(key, String(req.query[key]));
   }

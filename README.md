@@ -115,6 +115,22 @@ than it can read a row. Long stages outlive the request; the function returns
 Deploying the Modal side, the secret it needs, and the four Vercel environment
 variables are all in [`pipeline/README.md`](pipeline/README.md).
 
+## Checks
+
+No build step, so no CI to speak of — but the two pieces that can silently
+corrupt things are covered, and both run in under a second with no network,
+no ffmpeg and no API keys.
+
+```bash
+node tests/proxy.test.cjs      # the /api/run door: who gets through, what reaches Modal
+python3 tests/test_pipeline.py # clip boundaries, true pairs, reading the model's reply
+```
+
+The proxy suite is the one worth keeping green. It asserts that a request with
+no bearer token, or one the database will not vouch for, never reaches Modal at
+all — and that the pipeline token is attached server-side while the caller's own
+JWT is not forwarded on.
+
 ## Preview locally
 
 ```bash
