@@ -131,9 +131,12 @@ def score_frames(frames: list[Path]) -> dict:
     blocks.append({"type": "text", "text": "Score this video. JSON only."})
 
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    # max_tokens caps thinking *and* the reply. Too tight and the model can
+    # spend the lot reasoning about eight frames and return no text at all,
+    # which reaches _parse_json as "no JSON in reply".
     msg = client.messages.create(
         model=MODEL,
-        max_tokens=2048,
+        max_tokens=8192,
         thinking={"type": "adaptive"},
         system=SYSTEM,
         messages=[{"role": "user", "content": blocks}],

@@ -32,6 +32,8 @@ function authMethods(session, aal) {
 /* ---------- gate shell ---------- */
 
 function gate(inner, tag = 'Owners portal', mod = '') {
+  epoch += 1;                     // any gate screen retires the dashboard
+  clearInterval(poll); poll = null;
   root.dataset.up = '1';          // tells the fallback in index.html to stand down
   root.innerHTML = `
     <div class="gate">
@@ -376,13 +378,15 @@ async function loadCounts() {
   return { ...videos, ...clips };
 }
 
+const judged = new Set();   // survives a queue read that overtakes a decision
+
 async function loadQueue() {
   const { data, error } = await supabase.from('pipeline_videos')
     .select('video_id,title,channel,url,duration_s,view_count,triage_score,triage_notes,updated_at')
     .eq('status', 'downloaded')
     .order('triage_score', { ascending: false })
     .limit(24);
-  return error ? [] : (data || []);
+  return error ? [] : (data || []).filter((v) => !judged.has(v.video_id));
 }
 
 /* ---------- running a stage ---------- */
@@ -397,10 +401,12 @@ async function runStage(stage, query = {}) {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     const qs = new URLSearchParams(query).toString();
-    const res = await fetch(`/api/run/${stage}${qs ? `?${qs}` : ''}`, {
+    const call = (path) => fetch(`${path}${qs ? `?${qs}` : ''}`, {
       method: 'POST',
       headers: { authorization: `Bearer ${session?.access_token || ''}` },
     });
+    let res = await call(`/api/run/${stage}`);
+    if (res.status === 404 || res.status === 405) res = await call(`/api/run/${stage}/`);
     let body = {};
     try { body = await res.json(); } catch { /* empty body */ }
     if (res.status === 202) {
@@ -416,7 +422,7 @@ async function runStage(stage, query = {}) {
     note(`${stage} could not be reached — ${e.message || e}`, 'bad');
   }
   running = null;
-  await refresh();
+  if (dashboardIsCurrent()) await refresh();
 }
 
 /* ---------- shell ---------- */
@@ -580,6 +586,7 @@ async function judge(id, status, el) {
     return;
   }
   note(`${id} ${status}`, status === 'approved' ? 'good' : '');
+  judged.add(id);
   state.queue = state.queue.filter((v) => v.video_id !== id);
   el.classList.add('gone');
   setTimeout(() => { if (dashboardIsCurrent()) paint(); }, 220);
@@ -714,7 +721,7 @@ async function route() {
   }
 
   const { data: factors, error: fErr } = await supabase.auth.mfa.listFactors();
-  if (fErr) return renderSignIn(fErr.message);
+  if (fErr) return renderBroken('Could not read your authenticator settings.', fErr);
   const verified = (factors?.totp || []).filter((f) => f.status === 'verified');
   if (!verified.length) return renderEnrol();
 
@@ -725,7 +732,7 @@ async function route() {
   if (owner.error) return renderBroken('Could not confirm your access.', owner.error);
   if (!owner.data) return renderDenied(email);
 
-  renderDashboard(email);
+  return renderDashboard(email);
 }
 
 supabase.auth.onAuthStateChange((event) => {

@@ -17,7 +17,7 @@ function mkRes() {
 }
 
 // Records what the handler asked for, and answers per the scenario.
-function mkFetch({ owner = true, sbThrows = false, modal = { ok: true, status: 200, text: '{"stage":"discover","candidates":47}' }, hang = false }) {
+function mkFetch({ owner = true, sbThrows = false, modal = { ok: true, status: 200, text: '{"stage":"discover","candidates":47}' }, hang = false, slowBody = false }) {
   const calls = [];
   return [calls, async (url, opts) => {
     const u = String(url);
@@ -33,7 +33,13 @@ function mkFetch({ owner = true, sbThrows = false, modal = { ok: true, status: 2
         });
       });
     }
-    return { ok: modal.ok, status: modal.status, text: async () => modal.text };
+    return {
+      ok: modal.ok, status: modal.status,
+      text: async () => {
+        if (slowBody) await new Promise((r) => setTimeout(r, 400));  // outlives the wait
+        return modal.text;
+      },
+    };
   }];
 }
 
@@ -149,6 +155,26 @@ async function run(name, { env = ENV, req = {}, fetchOpts = {}, expect }) {
     env: { ...ENV, MODAL_BASE_URL: 'ed--brace-pipeline' },
     req: { query: { stage: 'discover' }, headers: AUTH },
     expect: (r) => r.code === 500 && /MODAL_BASE_URL/.test(JSON.stringify(r.body)),
+  });
+
+  await run('a redirect from Modal does not get the token re-sent', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    fetchOpts: { modal: { ok: false, status: 302, text: '' } },
+    expect: (r, c) => r.code === 502 && /redirected/i.test(r.body.error)
+      && c[1].opts.redirect === 'manual',
+  });
+
+  await run('a slow body read is not mistaken for a timeout', {
+    env: { ...ENV, PIPELINE_WAIT_MS: '120' },
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    fetchOpts: { slowBody: true },
+    expect: (r) => r.code === 200 && r.body.candidates === 47,
+  });
+
+  await run('config state is not disclosed before the bearer check', {
+    env: { SUPABASE_URL: ENV.SUPABASE_URL },
+    req: { query: { stage: 'discover' } },
+    expect: (r) => r.code === 401 && !/configured/.test(JSON.stringify(r.body)),
   });
 
   const bad = results.filter((r) => !r.pass);

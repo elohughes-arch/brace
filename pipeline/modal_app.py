@@ -38,7 +38,7 @@ base_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg")
     .pip_install("numpy", "scipy", "requests", "supabase", "yt-dlp", "fastapi",
-                 "anthropic")
+                 "anthropic", "python-dotenv")
     .add_local_python_source("discover", "triage", "clipper")
 )
 
@@ -61,8 +61,11 @@ UNAUTHORISED = fastapi.responses.JSONResponse(
 def _authorised(request: fastapi.Request) -> bool:
     import hmac
     import os
-    sent = request.headers.get("x-pipeline-token") or ""
-    return hmac.compare_digest(sent, os.environ["PIPELINE_TOKEN"])
+    # Compare bytes: compare_digest raises on non-ASCII str, which would turn a
+    # junk header into a 500 instead of a refusal.
+    sent = (request.headers.get("x-pipeline-token") or "").encode("utf-8", "ignore")
+    want = (os.environ.get("PIPELINE_TOKEN") or "").encode("utf-8", "ignore")
+    return bool(want) and hmac.compare_digest(sent, want)
 
 
 def _sb():
@@ -175,8 +178,9 @@ def clip(request: fastapi.Request):
     sb = _sb()
     rows = (sb.table("pipeline_videos").select("*")
             .in_("status", statuses).limit(10).execute().data)
-    made = 0
+    made = failed = 0
     for row in rows:
+      try:
         src = row.get("local_path")
         if not src or not Path(src).exists():
             sb.table("pipeline_videos").update(
@@ -209,8 +213,15 @@ def clip(request: fastapi.Request):
         sb.table("pipeline_videos").update(
             {"status": "clipped"}).eq("video_id", row["video_id"]).execute()
         made += len(inserts)
+      except Exception as e:  # noqa: BLE001
+        # Park the offender rather than let it wedge every future run.
+        sb.table("pipeline_videos").update(
+            {"status": "error", "triage_notes": f"clip: {e}"[:500]}
+        ).eq("video_id", row["video_id"]).execute()
+        failed += 1
     volume.commit()
-    return {"stage": "clip", "videos": len(rows), "clips_created": made}
+    return {"stage": "clip", "videos": len(rows), "clips_created": made,
+            "errors": failed}
 
 
 # ---------------------------------------------------------------- prelabel

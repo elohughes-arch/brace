@@ -48,6 +48,12 @@ module.exports = async (req, res) => {
     return res.status(404).json({ error: 'unknown stage' });
   }
 
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'sign in to the owners portal first' });
+  }
+
+  // Config state is only reported to someone who got past the bearer check.
   const { SUPABASE_URL, SUPABASE_ANON_KEY, PIPELINE_TOKEN } = process.env;
   const endpoint = endpointFor(stage);
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !PIPELINE_TOKEN || !endpoint) {
@@ -55,11 +61,6 @@ module.exports = async (req, res) => {
       error: 'pipeline not configured',
       detail: 'Set SUPABASE_URL, SUPABASE_ANON_KEY, PIPELINE_TOKEN and MODAL_BASE_URL.',
     });
-  }
-
-  const auth = req.headers.authorization || '';
-  if (!auth.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'sign in to the owners portal first' });
   }
 
   // The database is the authority, not this function.
@@ -107,7 +108,15 @@ module.exports = async (req, res) => {
       headers: { 'x-pipeline-token': PIPELINE_TOKEN, 'content-type': 'application/json' },
       body: '{}',
       signal: stop.signal,
+      redirect: 'manual',        // never hand the token to a redirect target
     });
+    clearTimeout(timer);         // answered; reading the body must not time out
+    if (run.status >= 300 && run.status < 400) {
+      return res.status(502).json({
+        error: 'Modal redirected',
+        detail: 'Check MODAL_BASE_URL points straight at the endpoint.',
+      });
+    }
     const text = await run.text();
     let body;
     try { body = JSON.parse(text); } catch { body = { detail: text.slice(0, 500) }; }
