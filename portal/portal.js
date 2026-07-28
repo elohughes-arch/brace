@@ -14,6 +14,23 @@ const ic = (id, w = 18) => `<svg width="${w}" height="${w}" aria-hidden="true"><
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n) => Number(n ?? 0).toLocaleString('en-GB');
 
+// The fallback in index.html reports whichever of these was reached last, so a
+// stall names its step instead of guessing at a cause.
+const stage = (what) => { root.dataset.bootStage = what; };
+
+// Supabase calls normally answer in well under a second. Anything still
+// outstanding after this is not going to arrive, and a rejection the visitor
+// can read beats a spinner that turns for ever.
+function within(promise, seconds, what) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what} did not answer within ${seconds} seconds.`)), seconds * 1000);
+    }),
+  ]);
+}
+
 /* How was this session authenticated? Supabase reports it alongside the
    assurance level; the access token's own amr claim is the fallback if the
    client predates that field. Either way the answer travels with the session,
@@ -56,17 +73,21 @@ function renderBroken(what, err) {
     <p class="gate-lede">${esc(what)}</p>
     <div class="err" style="margin:0 0 16px">${esc(msg)}</div>
     <button class="btn" id="again">Try again</button>
-    <button class="btn btn-ghost" id="out" style="margin-top:10px">Sign out and start over</button>
+    <button class="btn btn-ghost" id="out" style="margin-top:10px">Forget this session and start over</button>
     <div class="gate-foot">If it keeps happening, send that message on — it says
        exactly which step failed.</div>`);
   document.getElementById('again').addEventListener('click', () => { booting = false; boot(); });
   document.getElementById('out').addEventListener('click', async () => {
+    // signOut() needs the network. If that is what is broken, clearing the
+    // stored session locally is the only way back to the sign-in form.
+    try { await within(supabase.auth.signOut(), 6, 'Signing out'); } catch { /* do it by hand */ }
     try {
-      sessionStorage.removeItem('brace-portal-pw');
-      await supabase.auth.signOut();
-    } catch { /* already gone; starting over is the point */ }
-    booting = false;
-    boot();
+      sessionStorage.clear();
+      Object.keys(localStorage)
+        .filter((k) => k.startsWith('sb-') || k.startsWith('brace-portal'))
+        .forEach((k) => localStorage.removeItem(k));
+    } catch { /* private browsing */ }
+    location.replace(location.pathname);
   });
 }
 
@@ -743,7 +764,8 @@ async function route() {
 
   // Not `const { data: { session } }` — getSession resolves with data:null on
   // some failures, and destructuring through it throws before anything renders.
-  const got = await supabase.auth.getSession();
+  stage('reading your session');
+  const got = await within(supabase.auth.getSession(), 12, 'Reading your session');
   if (got.error) return renderBroken('Could not read your session.', got.error);
   const session = got.data?.session;
   routedToken = session?.access_token || null;
@@ -754,11 +776,13 @@ async function route() {
   // Is this email an owner at all? (email-only check, so we can route properly)
   // An error here is not the same as "not an owner": treating a dropped request
   // as a refusal told legitimate owners they were off the list.
-  const ownerEmail = await supabase.rpc('is_portal_owner_email');
+  stage('checking the owners list');
+  const ownerEmail = await within(supabase.rpc('is_portal_owner_email'), 15, 'The owners list check');
   if (ownerEmail.error) return renderBroken('Could not check the owners list.', ownerEmail.error);
   if (!ownerEmail.data) return renderDenied(email);
 
-  const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+  stage('checking your sign-in method');
+  const { data: aal } = await within(supabase.auth.mfa.getAuthenticatorAssuranceLevel(), 12, 'Reading your assurance level');
 
   // Was a password actually typed for *this* session? Ask the session, not the
   // browser: the token's amr claim is the record of how it was authenticated.
@@ -772,7 +796,8 @@ async function route() {
     return renderSetPassword();
   }
 
-  const { data: factors, error: fErr } = await supabase.auth.mfa.listFactors();
+  stage('reading your authenticator');
+  const { data: factors, error: fErr } = await within(supabase.auth.mfa.listFactors(), 15, 'Reading your authenticator');
   if (fErr) return renderBroken('Could not read your authenticator settings.', fErr);
   const verified = (factors?.totp || []).filter((f) => f.status === 'verified');
   if (!verified.length) return renderEnrol();
@@ -780,7 +805,8 @@ async function route() {
   if (aal?.currentLevel !== 'aal2') return renderChallenge(verified[0].id);
 
   // Two factors done. The database makes the final call.
-  const owner = await supabase.rpc('is_portal_owner');
+  stage('confirming your access');
+  const owner = await within(supabase.rpc('is_portal_owner'), 15, 'The access check');
   if (owner.error) return renderBroken('Could not confirm your access.', owner.error);
   if (!owner.data) return renderDenied(email);
 

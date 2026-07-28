@@ -5,7 +5,7 @@
 //
 // The URL and key live in supabase-config.js so the portal can read them
 // without importing this file, which would stand up a second auth client.
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
+import { createClient } from '../assets/vendor/supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 
 export { SUPABASE_URL, SUPABASE_ANON_KEY };

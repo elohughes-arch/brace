@@ -26,28 +26,52 @@
 
   <div id="root"><div class="center-load"><svg width="22" height="22" class="spin" aria-hidden="true"><use href="#i-loader"/></svg></div></div>
 
-  <!-- If portal.js never evaluates — a blocked CDN, an offline first load, a
-       syntax error — nothing inside it can report that. This does, in the
-       capture phase so it also sees the module failing to fetch. It stands
-       down the moment the portal draws anything (root.dataset.up). -->
+  <!-- If portal.js never evaluates or never settles, nothing inside it can
+       report that. This does. It stands down the moment the portal draws
+       anything (root.dataset.up), and it says which step was reached
+       (root.dataset.bootStage) rather than guessing at a cause.
+
+       It also carries the one control that must work when nothing else does:
+       clearing the stored session. A session that cannot be loaded cannot be
+       signed out of from inside the portal, which leaves the only way out
+       behind the very door that is stuck. -->
   <script>
     (function () {
       var shown = false;
+
+      function reset() {
+        try {
+          localStorage.removeItem('brace-portal-auth');
+          Object.keys(localStorage).forEach(function (k) {
+            if (k.indexOf('sb-') === 0 || k.indexOf('brace-portal') === 0) localStorage.removeItem(k);
+          });
+          sessionStorage.clear();
+        } catch (e) { /* private browsing; the reload is still worth doing */ }
+        location.replace(location.pathname);
+      }
+
       function fail(detail) {
         var r = document.getElementById('root');
         if (shown || !r || r.dataset.up) return;
         shown = true;
+        var stage = r.dataset.bootStage || 'loading its scripts';
         r.innerHTML = '<div class="gate"><div class="gate-card">'
           + '<div class="gate-tag">Owners portal</div>'
           + '<h1>The portal could not start</h1>'
-          + '<p class="gate-lede">A script it needs did not load. That is usually the '
-          + 'network blocking the Supabase client rather than anything wrong with your account.</p>'
+          + '<p class="gate-lede">It got as far as <b class="stage"></b> and stopped there.</p>'
           + '<div class="err"></div>'
-          + '<a class="btn" href="">Try again</a>'
-          + '<div class="gate-foot"><a href="../">Back to Brace</a></div>'
+          + '<button class="btn" id="pf-retry">Try again</button>'
+          + '<button class="btn btn-ghost" id="pf-reset" style="margin-top:10px">Forget this session and start over</button>'
+          + '<div class="gate-foot">Starting over signs you out of the portal in this '
+          + 'browser and asks for your password again. It does not touch your account.'
+          + '<br /><a href="../">Back to Brace</a></div>'
           + '</div></div>';
+        r.querySelector('.stage').textContent = stage;
         r.querySelector('.err').textContent = detail || '';
+        r.querySelector('#pf-retry').onclick = function () { location.replace(location.pathname); };
+        r.querySelector('#pf-reset').onclick = reset;
       }
+
       addEventListener('error', function (e) {
         // Capture phase also sees every failed image and stylesheet. A missing
         // video thumbnail must not replace the page, so only a script that
@@ -62,10 +86,11 @@
         var r = e.reason;
         fail((r && (r.message || r.error_description)) || String(r || ''));
       });
-      // Nothing drawn after ten seconds means something is hanging silently.
-      setTimeout(function () { fail('Timed out waiting for the portal to start.'); }, 10000);
+      // Nothing drawn after twelve seconds means something is hanging silently.
+      setTimeout(function () { fail('It stopped responding without reporting an error.'); }, 12000);
     })();
   </script>
+  <script src="../assets/vendor/supabase-js-2.45.4.js"></script>
   <script type="module" src="portal.js"></script>
 </body>
 </html>

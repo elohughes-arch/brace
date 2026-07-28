@@ -7,7 +7,7 @@
 //   · it reads the project constants from supabase-config.js, not from
 //     app/supabase.js — importing that file would also *create* the member
 //     app's client, leaving two auth clients refreshing one session.
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
+import { createClient } from '../assets/vendor/supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../app/supabase-config.js';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
