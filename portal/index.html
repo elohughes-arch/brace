@@ -25,6 +25,47 @@
   </svg>
 
   <div id="root"><div class="center-load"><svg width="22" height="22" class="spin" aria-hidden="true"><use href="#i-loader"/></svg></div></div>
+
+  <!-- If portal.js never evaluates — a blocked CDN, an offline first load, a
+       syntax error — nothing inside it can report that. This does, in the
+       capture phase so it also sees the module failing to fetch. It stands
+       down the moment the portal draws anything (root.dataset.up). -->
+  <script>
+    (function () {
+      var shown = false;
+      function fail(detail) {
+        var r = document.getElementById('root');
+        if (shown || !r || r.dataset.up) return;
+        shown = true;
+        r.innerHTML = '<div class="gate"><div class="gate-card">'
+          + '<div class="gate-tag">Owners portal</div>'
+          + '<h1>The portal could not start</h1>'
+          + '<p class="gate-lede">A script it needs did not load. That is usually the '
+          + 'network blocking the Supabase client rather than anything wrong with your account.</p>'
+          + '<div class="err"></div>'
+          + '<a class="btn" href="">Try again</a>'
+          + '<div class="gate-foot"><a href="../">Back to Brace</a></div>'
+          + '</div></div>';
+        r.querySelector('.err').textContent = detail || '';
+      }
+      addEventListener('error', function (e) {
+        // Capture phase also sees every failed image and stylesheet. A missing
+        // video thumbnail must not replace the page, so only a script that
+        // failed to load counts as fatal here.
+        if (e.target && e.target !== window) {
+          if (e.target.tagName === 'SCRIPT') fail('Could not load ' + (e.target.src || 'a script'));
+          return;
+        }
+        fail(e.message || String(e.error || 'Unknown error'));
+      }, true);
+      addEventListener('unhandledrejection', function (e) {
+        var r = e.reason;
+        fail((r && (r.message || r.error_description)) || String(r || ''));
+      });
+      // Nothing drawn after ten seconds means something is hanging silently.
+      setTimeout(function () { fail('Timed out waiting for the portal to start.'); }, 10000);
+    })();
+  </script>
   <script type="module" src="portal.js"></script>
 </body>
 </html>

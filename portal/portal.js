@@ -32,6 +32,7 @@ function authMethods(session, aal) {
 /* ---------- gate shell ---------- */
 
 function gate(inner, tag = 'Owners portal', mod = '') {
+  root.dataset.up = '1';          // tells the fallback in index.html to stand down
   root.innerHTML = `
     <div class="gate">
       <div class="gate-card ${mod}">
@@ -43,6 +44,29 @@ function gate(inner, tag = 'Owners portal', mod = '') {
 }
 const setErr = (m) => { const e = document.getElementById('err'); if (e) e.textContent = m || ''; };
 const busy = (btn, on, label) => { btn.disabled = on; if (label) btn.textContent = label; };
+
+/* A spinner that never resolves is the worst thing this page can do: nothing to
+   read, nothing to report, nothing to debug. Every failure lands here instead. */
+function renderBroken(what, err) {
+  const msg = err && (err.message || err.error_description || err.msg) || String(err ?? 'Unknown error');
+  gate(`
+    <h1>The portal could not start</h1>
+    <p class="gate-lede">${esc(what)}</p>
+    <div class="err" style="margin:0 0 16px">${esc(msg)}</div>
+    <button class="btn" id="again">Try again</button>
+    <button class="btn btn-ghost" id="out" style="margin-top:10px">Sign out and start over</button>
+    <div class="gate-foot">If it keeps happening, send that message on — it says
+       exactly which step failed.</div>`);
+  document.getElementById('again').addEventListener('click', () => { booting = false; boot(); });
+  document.getElementById('out').addEventListener('click', async () => {
+    try {
+      sessionStorage.removeItem('brace-portal-pw');
+      await supabase.auth.signOut();
+    } catch { /* already gone; starting over is the point */ }
+    booting = false;
+    boot();
+  });
+}
 
 /* ---------- 1 · password ---------- */
 
@@ -155,20 +179,26 @@ async function renderEnrol(err = '') {
   enrolling = true;
   gate(`<h1>Add your authenticator</h1><p class="gate-lede">Preparing…</p>`);
 
-  // Clear any half-finished factors first. Every enroll() mints a fresh
-  // secret, so a stale one left lying about means the QR on screen and the
-  // factor being verified can disagree — codes then never match.
-  const { data: list } = await supabase.auth.mfa.listFactors();
-  for (const f of (list?.all || list?.totp || [])) {
-    if (f.status !== 'verified') {
-      try { await supabase.auth.mfa.unenroll({ factorId: f.id }); } catch { /* already gone */ }
+  // The latch above must reopen even if this fails. Left shut, every later
+  // boot() returns from renderEnrol without drawing anything, and the visitor
+  // is stuck on "Preparing…" until they clear the tab.
+  let data, error;
+  try {
+    // Clear any half-finished factors first. Every enroll() mints a fresh
+    // secret, so a stale one left lying about means the QR on screen and the
+    // factor being verified can disagree — codes then never match.
+    const { data: list } = await supabase.auth.mfa.listFactors();
+    for (const f of (list?.all || list?.totp || [])) {
+      if (f.status !== 'verified') {
+        try { await supabase.auth.mfa.unenroll({ factorId: f.id }); } catch { /* already gone */ }
+      }
     }
+    ({ data, error } = await supabase.auth.mfa.enroll({
+      factorType: 'totp', friendlyName: 'Brace portal',
+    }));
+  } finally {
+    enrolling = false;
   }
-
-  const { data, error } = await supabase.auth.mfa.enroll({
-    factorType: 'totp', friendlyName: 'Brace portal',
-  });
-  enrolling = false;
   if (error) {
     gate(`<h1>Add your authenticator</h1><div class="err">${esc(error.message)}</div>
           <button class="btn btn-ghost" id="out">Sign out</button>`);
@@ -312,9 +342,12 @@ const mmss = (s) => {
   return `${m}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 };
 
-async function tally(table, col, values) {
+// Count rows per state. The column being *selected* and the column being
+// *filtered* are different things — filtering the id column against a status
+// name matches nothing at all, and against a uuid id it is a type error.
+async function tally(table, idCol, stateCol, values) {
   const res = await Promise.all(values.map((v) =>
-    supabase.from(table).select(col, { count: 'exact', head: true }).eq(col, v)));
+    supabase.from(table).select(idCol, { count: 'exact', head: true }).eq(stateCol, v)));
   const out = {};
   values.forEach((v, i) => { out[v] = res[i].error ? null : (res[i].count ?? 0); });
   return out;
@@ -322,11 +355,11 @@ async function tally(table, col, values) {
 
 async function loadCounts() {
   const [videos, clips] = await Promise.all([
-    tally('pipeline_videos', 'video_id',
+    tally('pipeline_videos', 'video_id', 'status',
       ['discovered', 'downloaded', 'approved', 'clipped', 'rejected', 'error']),
-    tally('pipeline_clips', 'clip_id', ['pending', 'prelabelled']),
+    tally('pipeline_clips', 'clip_id', 'label_status', ['pending', 'prelabelled']),
   ]);
-  return { ...videos, ...clips, prelabelled: clips.prelabelled };
+  return { ...videos, ...clips };
 }
 
 async function loadQueue() {
@@ -379,6 +412,7 @@ let state = { email: '', counts: null, queue: [], loading: true };
 let poll = null;
 
 function shell(body) {
+  root.dataset.up = '1';
   root.innerHTML = `
     <header class="topbar">
       <a class="brand" href="../"><img src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" /></a>
@@ -486,9 +520,13 @@ function reviewView() {
 
 function card(v) {
   const score = v.triage_score == null ? '—' : Number(v.triage_score).toFixed(1);
+  // esc() stops the attribute being escaped out of, but it would happily keep a
+  // javascript: scheme. Only http(s) is ever a video link.
+  const href = /^https?:\/\//i.test(v.url || '')
+    ? v.url : `https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}`;
   return `
     <article class="cardv" data-id="${esc(v.video_id)}">
-      <a class="thumb" href="${esc(v.url)}" target="_blank" rel="noopener">
+      <a class="thumb" href="${esc(href)}" target="_blank" rel="noopener">
         <img src="https://i.ytimg.com/vi/${esc(v.video_id)}/mqdefault.jpg" alt="" loading="lazy"
              onerror="this.remove()" />
         <span class="dur">${mmss(v.duration_s)}</span>
@@ -541,12 +579,18 @@ function paint() {
 }
 
 async function refresh() {
-  const [counts, queue] = await Promise.all([
-    loadCounts(),
-    view === 'review' ? loadQueue() : Promise.resolve(state.queue),
-  ]);
-  state.counts = counts;
-  state.queue = queue;
+  // This runs on a timer, so a rejection here would be an unhandled one every
+  // eight seconds. Report it in the activity log and keep the page alive.
+  try {
+    const [counts, queue] = await Promise.all([
+      loadCounts(),
+      view === 'review' ? loadQueue() : Promise.resolve(state.queue),
+    ]);
+    state.counts = counts;
+    state.queue = queue;
+  } catch (e) {
+    note(`could not read the pipeline — ${e.message || e}`, 'bad');
+  }
   state.loading = false;
   paint();
 }
@@ -582,21 +626,36 @@ async function boot() {
   // enrolment screen renders twice and mints two competing secrets.
   if (booting) return;
   booting = true;
-  try { await route(); } finally { booting = false; }
+  try {
+    await route();
+  } catch (e) {
+    // route() makes five network calls. Any of them rejecting used to leave the
+    // loading spinner up for ever with nothing on screen to explain it.
+    renderBroken('Something failed while working out who you are.', e);
+  } finally {
+    booting = false;
+  }
 }
 
 async function route() {
   // Any route away from the dashboard should stop it polling.
   clearInterval(poll);
 
-  const { data: { session } } = await supabase.auth.getSession();
+  // Not `const { data: { session } }` — getSession resolves with data:null on
+  // some failures, and destructuring through it throws before anything renders.
+  const got = await supabase.auth.getSession();
+  if (got.error) return renderBroken('Could not read your session.', got.error);
+  const session = got.data?.session;
   if (!session) return renderSignIn();
 
   const email = session.user?.email || '';
 
   // Is this email an owner at all? (email-only check, so we can route properly)
-  const { data: isOwnerEmail } = await supabase.rpc('is_portal_owner_email');
-  if (!isOwnerEmail) return renderDenied(email);
+  // An error here is not the same as "not an owner": treating a dropped request
+  // as a refusal told legitimate owners they were off the list.
+  const ownerEmail = await supabase.rpc('is_portal_owner_email');
+  if (ownerEmail.error) return renderBroken('Could not check the owners list.', ownerEmail.error);
+  if (!ownerEmail.data) return renderDenied(email);
 
   const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
 
@@ -620,8 +679,9 @@ async function route() {
   if (aal?.currentLevel !== 'aal2') return renderChallenge(verified[0].id);
 
   // Two factors done. The database makes the final call.
-  const { data: isOwner, error } = await supabase.rpc('is_portal_owner');
-  if (error || !isOwner) return renderDenied(email);
+  const owner = await supabase.rpc('is_portal_owner');
+  if (owner.error) return renderBroken('Could not confirm your access.', owner.error);
+  if (!owner.data) return renderDenied(email);
 
   renderDashboard(email);
 }
