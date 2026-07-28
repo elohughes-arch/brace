@@ -77,7 +77,7 @@ input{font:inherit}
   position:absolute; left:var(--dot-x); top:var(--dot-y);
   width:4.9%; aspect-ratio:1; margin:-2.45% 0 0 -2.45%;
   border-radius:50%; background:var(--bg); opacity:0;
-  animation:cover .5s var(--spring) 1.28s forwards;
+  animation:cover .18s linear 1.3s forwards;
 }
 @keyframes cover{ to{ opacity:1 } }
 
@@ -89,9 +89,9 @@ input{font:inherit}
   animation:smoke var(--gt) var(--spring) calc(1.28s + var(--gd)) forwards;
 }
 @keyframes smoke{
-  0%  { opacity:.5; transform:translate(0,0) scale(1) }
-  60% { opacity:.28 }
-  100%{ opacity:0;  transform:translate(var(--tx),var(--ty)) scale(.45) }
+  0%  { opacity:.72; transform:translate(0,0) scale(1) }
+  55% { opacity:.42 }
+  100%{ opacity:0;   transform:translate(var(--tx),var(--ty)) scale(.42) }
 }
 @keyframes splashOut{ to{ opacity:0; visibility:hidden } }
 body.splash-done .splash{ display:none }

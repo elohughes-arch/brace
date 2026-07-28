@@ -58,8 +58,8 @@ function renderAuth() {
     <div class="bp"></div><div class="glow"></div>
     <div class="auth-card">
       <div class="auth-brand">
-        <svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>
-        <span class="wm">BRACE</span><span class="tg">The Modern Shooting Log</span>
+        <img class="wm" src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" />
+        <span class="tg">The Modern Shooting Log</span>
       </div>
       <div class="auth-panel">
         <h1>${signup ? 'Create your account' : 'Welcome back'}</h1>
