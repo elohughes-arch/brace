@@ -1,5 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Brace">
   <rect width="120" height="120" rx="26" fill="#2A2C29"/>
-  <path d="M28,92 L60,25 L92,92" fill="none" stroke="#FFFFFF" stroke-width="6.4"/>
-  <circle cx="60" cy="70" r="7.4" fill="#F05A28"/>
+  <g transform="translate(29.17 29.51) scale(0.0847)">
+    <path d="M36 720 314 0H386L115 720ZM608 720 337 0H414L692 720Z" fill="#FFFFFF"/>
+    <circle cx="362.0" cy="465.0" r="57" fill="#F05A28"/>
+  </g>
 </svg>

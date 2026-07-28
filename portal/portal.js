@@ -4,7 +4,7 @@
    (RLS + a security-definer check against portal_owners). Nothing here is
    the gate — a non-owner session simply reads zero rows and is turned away.
    ========================================================================== */
-import { supabase } from '../app/supabase.js';
+import { supabase } from './supabase-portal.js';
 
 const root = document.getElementById('root');
 const ic = (id, w = 18) => `<svg width="${w}" height="${w}" aria-hidden="true"><use href="#i-${id}"/></svg>`;
@@ -18,36 +18,56 @@ function renderSignIn(err = '') {
   root.innerHTML = `
     <div class="gate">
       <form class="gate-card" id="signin">
-        <div class="gate-brand">${ic('logo', 22)}<span class="word">BRACE</span></div>
-        <div class="gate-tag">Owners portal · The estate office</div>
-        <h1>Sign the visitors' book</h1>
-        <div class="field"><input type="email" id="email" placeholder="Email" autocomplete="email" required /></div>
-        <div class="field"><input type="password" id="password" placeholder="Password" autocomplete="current-password" required /></div>
+        <img class="gate-mark" src="../assets/brand/brace-a-mark-white.svg" alt="Brace" width="740" height="732" />
+        <div class="gate-tag">Owners portal</div>
+        <h1>Sign in</h1>
+        <p class="gate-lede">We'll email you a one-time link. No password needed.</p>
+        <div class="field"><input type="email" id="email" placeholder="you@estate.com" autocomplete="email" required /></div>
         <div class="err" id="err">${esc(err)}</div>
-        <button class="btn" type="submit">${ic('lock', 15)} Enter</button>
-        <div class="gate-foot">Owners only. Looking for your game book? <a href="../app/">Open the app</a> · <a href="../">Back to the site</a></div>
+        <button class="btn" type="submit">Email me a link</button>
+        <div class="gate-foot">Owners only. <a href="../app/">Open the app</a> · <a href="../">Back to the site</a></div>
       </form>
     </div>`;
   document.getElementById('signin').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('.btn');
-    btn.disabled = true;
-    const { error } = await supabase.auth.signInWithPassword({
-      email: document.getElementById('email').value.trim(),
-      password: document.getElementById('password').value,
+    const email = document.getElementById('email').value.trim();
+    btn.disabled = true; btn.textContent = 'Sending…';
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.origin + window.location.pathname },
     });
-    if (error) { btn.disabled = false; document.getElementById('err').textContent = error.message; }
-    // success re-renders via onAuthStateChange
+    if (error) {
+      btn.disabled = false; btn.textContent = 'Email me a link';
+      document.getElementById('err').textContent = error.message;
+      return;
+    }
+    renderSent(email);
   });
+}
+
+function renderSent(email) {
+  root.innerHTML = `
+    <div class="gate">
+      <div class="gate-card">
+        <img class="gate-mark" src="../assets/brand/brace-a-mark-white.svg" alt="Brace" width="740" height="732" />
+        <div class="gate-tag">Owners portal</div>
+        <h1>Check your inbox</h1>
+        <p class="gate-lede">We've sent a sign-in link to <strong>${esc(email)}</strong>.
+           Open it on this device and you'll land straight in the portal.</p>
+        <button class="btn btn-ghost" id="again">Use a different email</button>
+      </div>
+    </div>`;
+  document.getElementById('again').addEventListener('click', () => renderSignIn());
 }
 
 function renderDenied(email) {
   root.innerHTML = `
     <div class="gate">
       <div class="gate-card">
-        <div class="gate-brand">${ic('logo', 22)}<span class="word">BRACE</span></div>
-        <div class="gate-tag">Owners portal · The estate office</div>
-        <h1>Not in the book</h1>
+        <img class="gate-mark" src="../assets/brand/brace-a-mark-white.svg" alt="Brace" width="740" height="732" />
+        <div class="gate-tag">Owners portal</div>
+        <h1>Not on the owners list</h1>
         <p style="font-size:0.9rem;color:var(--c-ivory-60);line-height:1.6;margin-bottom:18px;">
           ${esc(email)} isn't on the owners list. If it should be, add it to
           <span style="font-family:var(--f-mono);font-size:0.8rem;">portal_owners</span> in Supabase.
@@ -114,7 +134,7 @@ function renderDashboard(email, d) {
   ];
   root.innerHTML = `
     <header class="topbar">
-      <a class="brand" href="../">${ic('logo', 20)}<span class="word">BRACE</span></a>
+      <a class="brand" href="../"><img src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" /></a>
       <span class="scope">Owners portal</span>
       <span class="who"><span>${esc(email)}</span>
         <button class="signout" id="signout">${ic('signout', 14)} Sign out</button></span>

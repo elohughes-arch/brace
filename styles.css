@@ -17,7 +17,7 @@
 
   /* Where the clay sits inside the wordmark artwork, as a % of its box.
      The splash smokes it out from exactly here — see assets/brand/README.md. */
-  --dot-x:47.3%; --dot-y:63.6%;
+  --dot-x:48.7%; --dot-y:64.3%;
 
   --spring:cubic-bezier(.22,1,.36,1);
 }

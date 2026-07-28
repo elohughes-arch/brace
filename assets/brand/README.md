@@ -12,11 +12,19 @@ replacing a file updates every surface at once.
 | `brace-a-mark-charcoal.svg`   | Small light contexts |
 | `brace-icon-tile.svg`         | Favicon, social avatar, app icon |
 
-## ⚠️ These are stand-ins
+## How these were made
 
-These were reconstructed from the brand sheet because the official exports were
-not in the repo. They match the geometry closely but they are **not** the
-master artwork.
+Cut from **Instrument Sans** (Regular, 400) — the typeface the bible names the
+wordmark as derived from — using its real glyph outlines, not a redrawing. In
+Instrument Sans the `A` is built from three contours (left leg, right leg,
+crossbar), so opening the A is an exact operation: the crossbar contour is
+dropped and the clay is placed at its centre. Letterfit measures 4.95:1
+(width:cap-height) against the brand sheet's ~5.0:1.
+
+They are still not the master artwork: the sheet's cut has visibly lighter
+strokes than Instrument Sans ships at 400, which is the lightest weight
+published. If the master is a custom-thinned cut, drop it in here and it
+replaces these with no code change.
 
 **To install the real thing:** drop the official exports in here under the same
 filenames. Every surface picks them up with no code change, with one exception —
