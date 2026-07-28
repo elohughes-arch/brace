@@ -1,0 +1,13 @@
+# Local development and deploying to Modal.
+# Modal builds its own images from modal_app.py; this file is for running the
+# stage scripts on your own machine and for `modal deploy`.
+modal
+fastapi          # modal decorates the web endpoints with it at deploy time
+python-dotenv
+requests
+supabase
+numpy
+scipy
+anthropic
+yt-dlp
+# ffmpeg and ffprobe must be on PATH (brew install ffmpeg)

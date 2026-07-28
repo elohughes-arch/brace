@@ -13,7 +13,6 @@ const root = document.getElementById('root');
 const ic = (id, w = 18) => `<svg width="${w}" height="${w}" aria-hidden="true"><use href="#i-${id}"/></svg>`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n) => Number(n ?? 0).toLocaleString('en-GB');
-const dateFmt = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—';
 
 /* ---------- gate shell ---------- */
 
@@ -264,122 +263,285 @@ function renderDenied(email) {
   document.getElementById('out').addEventListener('click', async () => { sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
 }
 
-/* ---------- dashboard data ---------- */
+/* ---------- the pipeline ----------
+   Third-party footage in, labelled clays out. Five states, and the only one
+   that needs a person is the review queue: triage decides what is worth
+   keeping, a human decides what is worth cutting. */
 
-async function count(table, filter) {
-  let q = supabase.from(table).select('*', { count: 'exact', head: true });
-  if (filter) q = filter(q);
-  const { count: n, error } = await q;
-  return error ? null : n;
-}
-
-async function loadData() {
-  const [members, sessions, clips, founders, analyses, subsActive, recentAnalyses, foundersRecent, clipRows] =
-    await Promise.all([
-      count('profiles'),
-      count('sessions'),
-      count('clips'),
-      count('founding_members'),
-      count('analysis_results'),
-      count('subscriptions', (q) => q.eq('status', 'active')),
-      supabase.from('analysis_results')
-        .select('shots_fired,hits,accuracy,created_at,clip_id')
-        .order('created_at', { ascending: false }).limit(7),
-      supabase.from('founding_members')
-        .select('email,source,created_at')
-        .order('created_at', { ascending: false }).limit(10),
-      supabase.from('clips').select('status'),
-    ]);
-  const clipStatus = {};
-  for (const r of clipRows.data || []) clipStatus[r.status || 'unknown'] = (clipStatus[r.status || 'unknown'] || 0) + 1;
-  return {
-    members, sessions, clips, founders, analyses, subsActive,
-    recentAnalyses: recentAnalyses.data || [],
-    foundersRecent: foundersRecent.data || [],
-    clipStatus,
-  };
-}
-
-/* ---------- dashboard render ---------- */
-
-const BAYS = [
-  { name: 'Field agent', live: true, desc: 'Reads a day’s POV footage into shots, hits and metrics — the pipeline behind every game-book entry. Live below.' },
-  { name: 'Game-book writer', live: false, desc: 'Turns a processed day into the finished ledger entry — drives, the bag, conditions, the line.' },
-  { name: 'Highlights cutter', live: false, desc: 'Pulls the best moments of the day into a shareable reel, cut to the second of each shot.' },
-  { name: 'Coaching agent', live: false, desc: 'Watches technique across a season and drafts what to work on before the next day in the line.' },
+const STAGES = [
+  { key: 'discovered', label: 'Discovered', note: 'found by search' },
+  { key: 'downloaded', label: 'Triaged', note: 'awaiting your call' },
+  { key: 'approved', label: 'Approved', note: 'queued to clip' },
+  { key: 'clipped', label: 'Clipped', note: 'cut around each shot' },
 ];
 
-function renderDashboard(email, d) {
-  const ledger = [
-    { n: d.members, c: 'Members' },
-    { n: d.sessions, c: 'Days recorded' },
-    { n: d.clips, c: 'Clips in' },
-    { n: d.analyses, c: 'Days analysed' },
-    { n: d.subsActive, c: 'Active subs' },
-    { n: d.founders, c: 'Founding list' },
-  ];
+const RUNS = [
+  { stage: 'discover', label: 'Discover', busy: 'Searching', desc: 'Search YouTube for new candidates. Also runs itself nightly at 02:00.' },
+  { stage: 'triage', label: 'Triage', busy: 'Triaging', desc: 'Download the next ten, sample frames, score them for training value. What survives lands in the review queue.' },
+  { stage: 'clip', label: 'Clip', busy: 'Clipping', desc: 'Find the shots in everything you have approved and cut a clip around each one.' },
+  { stage: 'prelabel', label: 'Pre-label', busy: 'Pre-labelling', desc: 'Draw the first pass of boxes on the clays and push the frames to Roboflow for checking.', primary: true },
+];
+
+const log = [];
+const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const note = (line, tone = '') => { log.unshift({ t: now(), line, tone }); log.length = Math.min(log.length, 40); };
+
+const mmss = (s) => {
+  if (!s && s !== 0) return '—';
+  const m = Math.floor(s / 60);
+  return `${m}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+};
+
+async function tally(table, col, values) {
+  const res = await Promise.all(values.map((v) =>
+    supabase.from(table).select(col, { count: 'exact', head: true }).eq(col, v)));
+  const out = {};
+  values.forEach((v, i) => { out[v] = res[i].error ? null : (res[i].count ?? 0); });
+  return out;
+}
+
+async function loadCounts() {
+  const [videos, clips] = await Promise.all([
+    tally('pipeline_videos', 'video_id',
+      ['discovered', 'downloaded', 'approved', 'clipped', 'rejected', 'error']),
+    tally('pipeline_clips', 'clip_id', ['pending', 'prelabelled']),
+  ]);
+  return { ...videos, ...clips, prelabelled: clips.prelabelled };
+}
+
+async function loadQueue() {
+  const { data, error } = await supabase.from('pipeline_videos')
+    .select('video_id,title,channel,url,duration_s,view_count,triage_score,triage_notes,updated_at')
+    .eq('status', 'downloaded')
+    .order('triage_score', { ascending: false })
+    .limit(24);
+  return error ? [] : (data || []);
+}
+
+/* ---------- running a stage ---------- */
+
+let running = null;
+
+async function runStage(stage, query = {}) {
+  if (running) return;
+  running = stage;
+  note(`${stage} requested`);
+  paint();
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const qs = new URLSearchParams(query).toString();
+    const res = await fetch(`/api/run/${stage}${qs ? `?${qs}` : ''}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${session?.access_token || ''}` },
+    });
+    let body = {};
+    try { body = await res.json(); } catch { /* empty body */ }
+    if (res.status === 202) {
+      note(`${stage} is still running on Modal — the counts will catch up.`);
+    } else if (res.ok) {
+      const { stage: _s, ...rest } = body;
+      const said = Object.entries(rest).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`).join(' · ');
+      note(`${stage} finished${said ? ` — ${said}` : ''}`, 'good');
+    } else {
+      note(`${stage} failed (${res.status}) — ${body.error || body.detail || 'no detail'}`, 'bad');
+    }
+  } catch (e) {
+    note(`${stage} could not be reached — ${e.message || e}`, 'bad');
+  }
+  running = null;
+  await refresh();
+}
+
+/* ---------- shell ---------- */
+
+let view = location.hash === '#review' ? 'review' : 'control';
+let state = { email: '', counts: null, queue: [], loading: true };
+let poll = null;
+
+function shell(body) {
   root.innerHTML = `
     <header class="topbar">
       <a class="brand" href="../"><img src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" /></a>
-      <span class="scope">Owners portal</span>
-      <span class="who"><span>${esc(email)}</span>
+      <span class="scope">Pipeline</span>
+      <nav class="views">
+        <a href="#control" class="${view === 'control' ? 'on' : ''}">Control</a>
+        <a href="#review" class="${view === 'review' ? 'on' : ''}">Review${state.counts?.downloaded ? ` <b>${fmt(state.counts.downloaded)}</b>` : ''}</a>
+      </nav>
+      <span class="who"><span>${esc(state.email)}</span>
         <button class="signout" id="signout">${ic('signout', 14)} Sign out</button></span>
     </header>
-    <main>
-      <div class="page-head">
-        <div class="over">The estate office</div>
-        <h1>The book that <em>writes itself</em>, and the desk that runs it.</h1>
-        <p>Live figures from the Brace ledger, the footage pipeline as it runs, and the
-           agents that keep the season's record. Owners only.</p>
-      </div>
+    <main>${body}</main>`;
+  document.getElementById('signout').addEventListener('click', async () => {
+    sessionStorage.removeItem('brace-portal-pw');
+    await supabase.auth.signOut();
+  });
+}
 
-      <div class="ledger">
-        ${ledger.map((x) => `<div class="cell"><div class="num">${x.n == null ? '—' : fmt(x.n)}</div><div class="cap">${x.c}</div></div>`).join('')}
-      </div>
+/* ---------- control ---------- */
 
-      <div class="grid">
-        <div class="col">
-          <section class="panel">
-            <div class="p-head"><span class="p-title">Field agent · footage pipeline</span><a class="p-act" href="#" id="refresh">Refresh</a></div>
-            <div class="chips">
-              ${Object.entries(d.clipStatus).map(([s, n]) => `<span class="chip">${esc(s)} <b>${fmt(n)}</b></span>`).join('') || '<span class="empty">No clips yet.</span>'}
-            </div>
-            ${d.recentAnalyses.map((a) => `
-              <div class="row">
-                <span class="dot on"></span>
-                <div class="main">
-                  <div class="t">${fmt(a.shots_fired)} shots · ${fmt(a.hits)} hits</div>
-                  <div class="s">${dateFmt(a.created_at)}</div>
-                </div>
-                <div class="end"><div class="t">${a.accuracy == null ? '—' : Math.round(a.accuracy) + '%'}</div></div>
-              </div>`).join('') || '<div class="empty">No analysed days yet.</div>'}
-          </section>
+function controlView() {
+  const c = state.counts;
+  const n = (k) => (c && c[k] != null ? fmt(c[k]) : '—');
+  const live = (k) => (c && c[k] > 0 ? 'on' : 'off');
 
-          <section class="panel">
-            <div class="p-head"><span class="p-title">Agents · docking bays</span></div>
-            ${BAYS.map((b) => `
-              <div class="row bay">
-                <span class="dot ${b.live ? 'on' : 'off'}"></span>
-                <div class="main" style="white-space:normal;">
-                  <div class="name">${b.name}</div>
-                  <div class="desc" style="padding-left:0;">${b.desc}</div>
-                </div>
-              </div>`).join('')}
-          </section>
+  return `
+    <div class="page-head">
+      <div class="over">Training data</div>
+      <h1>Third-party footage in, <em>labelled clays</em> out.</h1>
+      <p>Every stage runs on Modal and writes back here. Discovery finds candidates,
+         triage scores them, you decide what is worth cutting, and the detector draws
+         the first pass of boxes before a human ever opens Roboflow.</p>
+    </div>
+
+    <div class="rail">
+      ${STAGES.map((s, i) => `
+        <div class="stop">
+          <div class="stop-line">
+            <span class="clay ${live(s.key)}"></span>
+            ${i < STAGES.length - 1 ? '<span class="join"></span>' : ''}
+          </div>
+          <div class="num">${n(s.key)}</div>
+          <div class="cap">${s.label}</div>
+          <div class="sub">${s.note}</div>
+        </div>`).join('')}
+    </div>
+
+    <div class="tally">
+      <span>${n('pending')} clips awaiting pre-label</span>
+      <span>${n('prelabelled')} pre-labelled</span>
+      <span>${n('rejected')} rejected at triage</span>
+      ${c && c.error ? `<span class="warn">${n('error')} errored</span>` : ''}
+    </div>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="p-head"><span class="p-title">Run a stage</span>
+          <a class="p-act" href="#" id="refresh">Refresh</a></div>
+        <div class="runs">
+          ${RUNS.map((r) => `
+            <div class="run">
+              <button class="btn ${r.primary ? '' : 'btn-ghost'}" data-stage="${r.stage}"
+                ${running ? 'disabled' : ''}>${running === r.stage ? `${r.busy}…` : r.label}</button>
+              <p>${r.desc}</p>
+            </div>`).join('')}
         </div>
+        <p class="foot-note">Long stages outlive the request. If a button comes back
+           saying it is still running, that is Modal working, not a failure — the
+           counts above move as it goes.</p>
+      </section>
 
-        <section class="panel">
-          <div class="p-head"><span class="p-title">Founding members · latest</span></div>
-          ${d.foundersRecent.map((f) => `
-            <div class="row">
-              <span class="dot brass"></span>
-              <div class="main"><div class="t">${esc(f.email)}</div><div class="s">${esc(f.source)} · ${dateFmt(f.created_at)}</div></div>
-            </div>`).join('') || '<div class="empty">No sign-ups captured yet — the landing form writes here.</div>'}
-        </section>
+      <section class="panel">
+        <div class="p-head"><span class="p-title">Activity</span></div>
+        ${log.length ? log.slice(0, 14).map((l, i) => `
+          <div class="line ${l.tone} ${i === 0 ? 'fresh' : ''}">
+            <span class="t">${l.t}</span><span class="m">${esc(l.line)}</span>
+          </div>`).join('') : '<div class="empty">Nothing run this session yet.</div>'}
+      </section>
+    </div>`;
+}
+
+/* ---------- review ---------- */
+
+function reviewView() {
+  if (state.loading) return '<div class="empty">Loading the queue…</div>';
+  const q = state.queue;
+  return `
+    <div class="page-head">
+      <div class="over">Review queue</div>
+      <h1>${q.length ? `${fmt(q.length)} ${q.length === 1 ? 'video' : 'videos'} waiting on you.` : 'Nothing waiting on you.'}</h1>
+      <p>Triage has already thrown out the obvious misses. What is left is footage the
+         model thinks is worth the GPU time. Approve it and the clipper cuts it into
+         shots; reject it and it goes no further.</p>
+    </div>
+    ${q.length ? `<div class="queue">${q.map(card).join('')}</div>`
+      : `<div class="panel"><div class="empty">The queue is clear. Run triage to bring
+           more through, or discover to widen the net.</div></div>`}`;
+}
+
+function card(v) {
+  const score = v.triage_score == null ? '—' : Number(v.triage_score).toFixed(1);
+  return `
+    <article class="cardv" data-id="${esc(v.video_id)}">
+      <a class="thumb" href="${esc(v.url)}" target="_blank" rel="noopener">
+        <img src="https://i.ytimg.com/vi/${esc(v.video_id)}/mqdefault.jpg" alt="" loading="lazy"
+             onerror="this.remove()" />
+        <span class="dur">${mmss(v.duration_s)}</span>
+      </a>
+      <div class="body">
+        <div class="score"><b>${score}</b><span>/10</span></div>
+        <h2>${esc(v.title || v.video_id)}</h2>
+        <div class="meta">${esc(v.channel || 'Unknown channel')}${v.view_count ? ` · ${fmt(v.view_count)} views` : ''}</div>
+        ${v.triage_notes ? `<p class="notes">${esc(v.triage_notes)}</p>` : ''}
+        <div class="judge">
+          <button class="btn" data-act="approved">Approve</button>
+          <button class="btn btn-ghost" data-act="rejected">Reject</button>
+        </div>
       </div>
-    </main>`;
-  document.getElementById('signout').addEventListener('click', () => supabase.auth.signOut());
-  document.getElementById('refresh')?.addEventListener('click', (e) => { e.preventDefault(); boot(); });
+    </article>`;
+}
+
+async function judge(id, status, el) {
+  el.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  const { error } = await supabase.from('pipeline_videos')
+    .update({ status }).eq('video_id', id);
+  if (error) {
+    note(`could not ${status === 'approved' ? 'approve' : 'reject'} ${id} — ${error.message}`, 'bad');
+    el.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+    return;
+  }
+  note(`${id} ${status}`, status === 'approved' ? 'good' : '');
+  state.queue = state.queue.filter((v) => v.video_id !== id);
+  el.classList.add('gone');
+  setTimeout(paint, 220);
+  loadCounts().then((c) => { state.counts = c; });
+}
+
+/* ---------- paint + poll ---------- */
+
+function paint() {
+  shell(view === 'review' ? reviewView() : controlView());
+
+  document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    location.hash = a.getAttribute('href');
+  }));
+
+  document.getElementById('refresh')?.addEventListener('click', (e) => { e.preventDefault(); refresh(); });
+  document.querySelectorAll('[data-stage]').forEach((b) =>
+    b.addEventListener('click', () => runStage(b.dataset.stage)));
+  document.querySelectorAll('.cardv').forEach((el) =>
+    el.querySelectorAll('[data-act]').forEach((b) =>
+      b.addEventListener('click', () => judge(el.dataset.id, b.dataset.act, el))));
+}
+
+async function refresh() {
+  const [counts, queue] = await Promise.all([
+    loadCounts(),
+    view === 'review' ? loadQueue() : Promise.resolve(state.queue),
+  ]);
+  state.counts = counts;
+  state.queue = queue;
+  state.loading = false;
+  paint();
+}
+
+window.addEventListener('hashchange', () => {
+  const next = location.hash === '#review' ? 'review' : 'control';
+  if (next === view) return;
+  view = next;
+  state.loading = view === 'review';
+  paint();
+  refresh();
+});
+
+async function renderDashboard(email) {
+  state = { email, counts: null, queue: [], loading: true };
+  paint();
+  await refresh();
+  clearInterval(poll);
+  // Stages take minutes, so eight seconds is plenty to feel live without
+  // hammering the database.
+  poll = setInterval(() => { if (!document.hidden) refresh(); }, 8000);
 }
 
 /* ---------- boot ---------- */
@@ -398,6 +560,9 @@ async function boot() {
 }
 
 async function route() {
+  // Any route away from the dashboard should stop it polling.
+  clearInterval(poll);
+
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return renderSignIn();
 
@@ -427,7 +592,7 @@ async function route() {
   const { data: isOwner, error } = await supabase.rpc('is_portal_owner');
   if (error || !isOwner) return renderDenied(email);
 
-  renderDashboard(email, await loadData());
+  renderDashboard(email);
 }
 
 supabase.auth.onAuthStateChange((event) => {

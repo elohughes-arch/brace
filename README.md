@@ -9,19 +9,30 @@
 |------|---------|
 | `index.html` + `styles.css` + `script.js` | The marketing landing page (new branding) |
 | `app/` | The authenticated member app — Supabase auth, no build step |
-| `portal/` | **Owners portal** — the estate office (see below) |
+| `portal/` | **Owners portal** — the training-data pipeline dashboard (see below) |
+| `api/run/[stage].js` | Server-side proxy that holds the pipeline token |
+| `pipeline/` | The Modal pipeline: discover, triage, clip, pre-label (not part of the web deploy) |
 | `mobile/` | The Expo / React Native app (not part of the web deploy) |
 | `vercel.json` / `.vercelignore` | Static deploy config for Vercel |
 
 ## Design system
 
-- **Concept:** *the leather game book, re-cut in midnight and brass — a precision instrument that writes itself.*
-- **Colour (60 / 30 / 8 / 2):** Midnight `#0B1B2D` · Warm ivory `#F4EEE1` · Field green `#34503C`
-  (Sage `#7E9B82` for legible green on dark) · Brass `#B8995A` as a precious ~2% accent only.
-- **Type:** Cormorant Garamond (display, with the signature ivory headline + one brass-italic word),
-  Inter (body), IBM Plex Mono (ledger/data).
-- **Craft:** no photography — all richness is CSS/SVG. Responsive, accessible (WCAG AA),
-  honours `prefers-reduced-motion`.
+Everything follows the Brand & Design Bible. British English throughout.
+
+- **Wordmark:** a vector asset in `assets/brand/`, never redrawn and never
+  typeset from a font. The open `A` is the shot clay; the counter is the clay
+  itself. Two lockups, one geometry.
+- **Ground:** sunken `#1F2120` · base `#2A2C29` · raised `#33352F` · raised-2
+  `#3C3E37`. Elevation is a step up that ramp plus an optional 1px hairline —
+  never a drop shadow.
+- **Accent:** clay `#F05A28`, and it is the only one. Positive state `#6FBE72`,
+  destructive `#E0705F`.
+- **Type:** one family, Inter. Instrument Sans is wordmark-only and the site
+  never loads it. Figures use Inter's tabular numerals rather than a second face.
+- **Splash:** the wordmark lands, the clay holds, then smokes to powder.
+
+If something needs a value the bible does not have, the bible gets extended
+first: no invented hexes, no second accent, no fifth font weight.
 
 ## Deploying on Vercel
 
@@ -34,8 +45,10 @@ The site is a static deploy — no build step. To connect:
 3. Done — `/` is the landing page, `/app/` the member app, `/portal/` the owners portal.
    Every push to `main` deploys production; branches get preview URLs.
 
-No environment variables are needed: the site talks to Supabase with the public anon
-key, and everything sensitive is protected by Row Level Security.
+The pages themselves need no environment variables: they talk to Supabase with the
+public anon key, and everything sensitive is behind Row Level Security. The one
+serverless function, `/api/run/<stage>`, does need four — see
+[`pipeline/README.md`](pipeline/README.md).
 
 ## Owners portal — the estate office (`/portal/`)
 
@@ -75,13 +88,32 @@ Supabase → Authentication → URL Configuration:
 Without them Supabase falls back to its default Site URL (`localhost:3000`)
 and the link appears broken.
 
-### What's behind it
+### What's behind it: the training-data pipeline
 
-- **Ledger** — live members, days recorded, clips, analysed days, active subs,
-  founding list.
-- **Field agent** — the footage pipeline as it runs.
-- **Founding members** — captured by the landing form.
-- **Docking bays** — where the next agents plug in.
+The portal is the control surface for the agentic software that builds Brace's
+object-detection training set. Third-party shooting footage goes in; labelled
+clays come out.
+
+```
+discover  →  triage  →  [ you ]  →  clip  →  prelabel  →  Roboflow
+  search      score       review     cut       boxes        humans check
+```
+
+- **Control** — live counts for every stage, a button per stage, and a running
+  log of what was kicked off this session.
+- **Review** — the one step that needs a person. Triage keeps what scores well;
+  you approve what is worth the GPU time and reject the rest. Only approved
+  footage reaches the clipper.
+
+Every stage runs on Modal, not here. The buttons post to `/api/run/<stage>`, a
+serverless function that asks the database `is_portal_owner()` and only then
+attaches `PIPELINE_TOKEN` and calls Modal — so the token never reaches a
+browser, and a session without the second factor cannot start a job any more
+than it can read a row. Long stages outlive the request; the function returns
+"still running" after 25 seconds and the counts catch up on their own.
+
+Deploying the Modal side, the secret it needs, and the four Vercel environment
+variables are all in [`pipeline/README.md`](pipeline/README.md).
 
 ## Preview locally
 
