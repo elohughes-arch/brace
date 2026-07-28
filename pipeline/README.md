@@ -11,7 +11,7 @@ discover  →  triage  →  [ you ]  →  clip  →  prelabel  →  Roboflow
 
 | Stage | Where | What it does | Leaves behind |
 |---|---|---|---|
-| `discover` | CPU, nightly 02:00 UTC | Searches the YouTube Data API against seven queries, filters by duration and title | `pipeline_videos` rows, `status='discovered'` |
+| `discover` | **the website**, plus nightly 02:00 UTC on Modal | Searches the YouTube Data API against seven queries, filters by duration and title | `pipeline_videos` rows, `status='discovered'` |
 | `triage` | CPU | Downloads at ≤720p, samples eight frames, asks Claude to score training value 0-10 | `status='downloaded'` (kept) or `'rejected'`, plus `triage_score` |
 | review | the portal | You approve or reject what triage kept | `status='approved'` |
 | `clip` | CPU | Finds gunshots by audio energy spike, cuts a clip around each, tags true pairs | `pipeline_clips` rows |
@@ -25,7 +25,23 @@ thumbnail and a score for two seconds saves all of that. `clip` therefore reads
 `status='approved'` only. If you want to skip review entirely, post to the clip
 endpoint with `?unreviewed=1` and it will take anything that survived triage.
 
+## Discover works before any of this does
+
+Discovery is plain HTTP, so it runs in the website's own serverless function
+rather than on Modal. Set `YOUTUBE_API_KEY` in the Vercel project and the
+Discover button works — no Modal account, no service key, nothing else. It
+writes as the signed-in owner, so Row Level Security applies to it exactly as it
+does to everything else the browser does.
+
+The other three stages need yt-dlp, ffmpeg and a GPU. Those are what the rest of
+this file is about.
+
 ## Setting it up
+
+**The short way.** `cd pipeline && ./setup.sh` installs the Modal client, signs
+you in, asks for the keys without echoing them, invents the pipeline token,
+writes the Modal secret, deploys, and prints exactly what to paste into Vercel.
+The long way is below if you would rather do it by hand.
 
 **1. Database.** Already applied to the Brace project as the `pipeline_tables`
 migration — the three tables, their indexes, and RLS policies that let a
@@ -59,9 +75,13 @@ Modal prints four URLs of the form
 ```
 SUPABASE_URL       https://tvcbizxwadibtclamnyy.supabase.co
 SUPABASE_ANON_KEY  the anon/publishable key
+YOUTUBE_API_KEY    the same key — this is what makes Discover work
 PIPELINE_TOKEN     the same value as in the Modal secret
 MODAL_BASE_URL     https://<workspace>--brace-pipeline
 ```
+
+Environment variables only reach a *new* deployment, so redeploy afterwards:
+Deployments → the top one → ⋯ → Redeploy.
 
 `MODAL_BASE_URL` is the shared prefix; `/api/run/<stage>` appends
 `-<stage>.modal.run`. If your endpoint names differ, set `MODAL_URL_DISCOVER`,

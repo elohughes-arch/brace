@@ -370,10 +370,10 @@ const STAGES = [
 ];
 
 const RUNS = [
-  { stage: 'discover', label: 'Discover', busy: 'Searching', desc: 'Search YouTube for new candidates. Also runs itself nightly at 02:00.' },
-  { stage: 'triage', label: 'Triage', busy: 'Triaging', desc: 'Download the next ten, sample frames, score them for training value. What survives lands in the review queue.' },
-  { stage: 'clip', label: 'Clip', busy: 'Clipping', desc: 'Find the shots in everything you have approved and cut a clip around each one.' },
-  { stage: 'prelabel', label: 'Pre-label', busy: 'Pre-labelling', desc: 'Draw the first pass of boxes on the clays and push the frames to Roboflow for checking.', primary: true },
+  { stage: 'discover', label: 'Discover', busy: 'Searching', desc: 'Search YouTube for new candidates. Runs on the website itself, so it works before Modal does.' },
+  { stage: 'triage', label: 'Triage', busy: 'Triaging', desc: 'Download the next ten, sample frames, score them for training value. What survives lands in the review queue. Needs Modal.' },
+  { stage: 'clip', label: 'Clip', busy: 'Clipping', desc: 'Find the shots in everything you have approved and cut a clip around each one. Needs Modal.' },
+  { stage: 'prelabel', label: 'Pre-label', busy: 'Pre-labelling', desc: 'Draw the first pass of boxes on the clays and push the frames to Roboflow for checking. Needs Modal.', primary: true },
 ];
 
 const log = [];
@@ -546,9 +546,10 @@ function controlView() {
               <p>${r.desc}</p>
             </div>`).join('')}
         </div>
-        <p class="foot-note">Long stages outlive the request. If a button comes back
-           saying it is still running, that is Modal working, not a failure — the
-           counts above move as it goes.</p>
+        <p class="foot-note">Discover runs here and answers straight away. The other
+           three need yt-dlp, ffmpeg and a GPU, so they run on Modal and can outlive
+           the request: a button that comes back saying it is still running is Modal
+           working, not a failure, and the counts above move as it goes.</p>
       </section>
 
       <section class="panel">

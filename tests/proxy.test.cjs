@@ -6,7 +6,19 @@ const ENV = {
   SUPABASE_ANON_KEY: 'anon-key',
   PIPELINE_TOKEN: 'tok-secret',
   MODAL_BASE_URL: 'https://ed--brace-pipeline',
+  YOUTUBE_API_KEY: 'yt-key',
 };
+
+// One search hit that passes every filter, one too short, one with a barred word.
+const YT_SEARCH = { items: [{ id: { videoId: 'good1' } }, { id: { videoId: 'tiny1' } }, { id: { videoId: 'revw1' } }] };
+const YT_VIDEOS = { items: [
+  { id: 'good1', snippet: { title: 'Sporting clays, full round', channelTitle: 'The Line' },
+    contentDetails: { duration: 'PT12M22S' }, statistics: { viewCount: '18422' } },
+  { id: 'tiny1', snippet: { title: 'Quick clay', channelTitle: 'X' },
+    contentDetails: { duration: 'PT10S' }, statistics: { viewCount: '4' } },
+  { id: 'revw1', snippet: { title: 'Shotgun REVIEW and unboxing', channelTitle: 'Y' },
+    contentDetails: { duration: 'PT9M' }, statistics: { viewCount: '900' } },
+]};
 
 function mkRes() {
   const r = { code: null, body: null, headers: {} };
@@ -17,7 +29,7 @@ function mkRes() {
 }
 
 // Records what the handler asked for, and answers per the scenario.
-function mkFetch({ owner = true, sbThrows = false, modal = { ok: true, status: 200, text: '{"stage":"discover","candidates":47}' }, hang = false, slowBody = false }) {
+function mkFetch({ owner = true, sbThrows = false, modal = { ok: true, status: 200, text: '{"stage":"discover","candidates":47}' }, hang = false, slowBody = false, ytFails = false, writeFails = false }) {
   const calls = [];
   return [calls, async (url, opts) => {
     const u = String(url);
@@ -25,6 +37,18 @@ function mkFetch({ owner = true, sbThrows = false, modal = { ok: true, status: 2
     if (u.includes('/rpc/is_portal_owner')) {
       if (sbThrows) throw new Error('dns');
       return { ok: true, json: async () => owner };
+    }
+    if (u.includes('googleapis.com/youtube/v3/search')) {
+      if (ytFails) return { ok: false, status: 403, text: async () => 'quotaExceeded' };
+      return { ok: true, json: async () => YT_SEARCH };
+    }
+    if (u.includes('googleapis.com/youtube/v3/videos')) {
+      return { ok: true, json: async () => YT_VIDEOS };
+    }
+    if (u.includes('/rest/v1/pipeline_videos')) {
+      if (writeFails) return { ok: false, status: 401, text: async () => '{"message":"permission denied"}' };
+      const rows = JSON.parse(opts.body);
+      return { ok: true, status: 201, text: async () => JSON.stringify(rows) };
     }
     if (hang) {
       return new Promise((_, rej) => {
@@ -50,7 +74,7 @@ function check(name, pass, detail) {
 }
 
 async function run(name, { env = ENV, req = {}, fetchOpts = {}, expect }) {
-  for (const k of Object.keys(process.env)) if (k in ENV || k === 'MODAL_URL_DISCOVER' || k === 'PIPELINE_WAIT_MS') delete process.env[k];
+  for (const k of Object.keys(process.env)) if (k in ENV || k === 'MODAL_URL_TRIAGE' || k === 'PIPELINE_WAIT_MS') delete process.env[k];
   Object.assign(process.env, env);
   const [calls, f] = mkFetch(fetchOpts);
   global.fetch = f;
@@ -98,10 +122,10 @@ async function run(name, { env = ENV, req = {}, fetchOpts = {}, expect }) {
     expect: (r, c) => r.code === 403 && !c.some((x) => x.url.includes('modal.run')),
   });
 
-  await run('happy path proxies and returns Modal body', {
-    req: { query: { stage: 'discover' }, headers: AUTH },
+  await run('a Modal stage proxies and returns its body', {
+    req: { query: { stage: 'triage' }, headers: AUTH },
     expect: (r, c) => r.code === 200 && r.body.candidates === 47
-      && c[1].url.startsWith('https://ed--brace-pipeline-discover.modal.run'),
+      && c[1].url.startsWith('https://ed--brace-pipeline-triage.modal.run'),
   });
 
   await run('token is attached server-side and the JWT is not forwarded', {
@@ -121,25 +145,25 @@ async function run(name, { env = ENV, req = {}, fetchOpts = {}, expect }) {
   });
 
   await run('per-stage URL override wins', {
-    env: { ...ENV, MODAL_URL_DISCOVER: 'https://custom.modal.run' },
-    req: { query: { stage: 'discover' }, headers: AUTH },
+    env: { ...ENV, MODAL_URL_TRIAGE: 'https://custom.modal.run' },
+    req: { query: { stage: 'triage' }, headers: AUTH },
     expect: (r, c) => c[1].url.startsWith('https://custom.modal.run'),
   });
 
   await run('Supabase unreachable is 502', {
-    req: { query: { stage: 'discover' }, headers: AUTH },
+    req: { query: { stage: 'triage' }, headers: AUTH },
     fetchOpts: { sbThrows: true },
     expect: (r) => r.code === 502,
   });
 
   await run('Modal rejecting the token surfaces as 502', {
-    req: { query: { stage: 'discover' }, headers: AUTH },
+    req: { query: { stage: 'triage' }, headers: AUTH },
     fetchOpts: { modal: { ok: false, status: 401, text: '{"error":"unauthorised"}' } },
     expect: (r) => r.code === 502 && r.body.error === 'unauthorised',
   });
 
   await run('non-JSON from Modal does not throw', {
-    req: { query: { stage: 'discover' }, headers: AUTH },
+    req: { query: { stage: 'triage' }, headers: AUTH },
     fetchOpts: { modal: { ok: false, status: 500, text: '<html>Internal Error</html>' } },
     expect: (r) => r.code === 502 && typeof r.body.detail === 'string',
   });
@@ -153,12 +177,12 @@ async function run(name, { env = ENV, req = {}, fetchOpts = {}, expect }) {
 
   await run('a mistyped MODAL_BASE_URL is explained, not a blank 500', {
     env: { ...ENV, MODAL_BASE_URL: 'ed--brace-pipeline' },
-    req: { query: { stage: 'discover' }, headers: AUTH },
+    req: { query: { stage: 'triage' }, headers: AUTH },
     expect: (r) => r.code === 500 && /MODAL_BASE_URL/.test(JSON.stringify(r.body)),
   });
 
   await run('a redirect from Modal does not get the token re-sent', {
-    req: { query: { stage: 'discover' }, headers: AUTH },
+    req: { query: { stage: 'triage' }, headers: AUTH },
     fetchOpts: { modal: { ok: false, status: 302, text: '' } },
     expect: (r, c) => r.code === 502 && /redirected/i.test(r.body.error)
       && c[1].opts.redirect === 'manual',
@@ -166,7 +190,7 @@ async function run(name, { env = ENV, req = {}, fetchOpts = {}, expect }) {
 
   await run('a slow body read is not mistaken for a timeout', {
     env: { ...ENV, PIPELINE_WAIT_MS: '120' },
-    req: { query: { stage: 'discover' }, headers: AUTH },
+    req: { query: { stage: 'triage' }, headers: AUTH },
     fetchOpts: { slowBody: true },
     expect: (r) => r.code === 200 && r.body.candidates === 47,
   });
@@ -175,6 +199,60 @@ async function run(name, { env = ENV, req = {}, fetchOpts = {}, expect }) {
     env: { SUPABASE_URL: ENV.SUPABASE_URL },
     req: { query: { stage: 'discover' } },
     expect: (r) => r.code === 401 && !/configured/.test(JSON.stringify(r.body)),
+  });
+
+  await run('discover runs here and never touches Modal', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    expect: (r, c) => r.code === 200 && r.body.stage === 'discover'
+      && !c.some((x) => x.url.includes('modal.run')),
+  });
+
+  await run('discover keeps only what passes the filters', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    expect: (r, c) => {
+      const write = c.find((x) => x.url.includes('/rest/v1/pipeline_videos'));
+      const rows = JSON.parse(write.opts.body);
+      // the same video comes back from all seven queries; too-short and
+      // review/unboxing titles are dropped
+      return rows.length === 1 && rows[0].video_id === 'good1'
+        && rows[0].duration_s === 742 && rows[0].status === 'discovered';
+    },
+  });
+
+  await run('discover writes as the caller, not with a service key', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    expect: (r, c) => {
+      const write = c.find((x) => x.url.includes('/rest/v1/pipeline_videos'));
+      return write.opts.headers.authorization === AUTH.authorization
+        && /ignore-duplicates/.test(write.opts.headers.prefer)
+        && write.url.includes('on_conflict=video_id');
+    },
+  });
+
+  await run('discover without a YouTube key says so and writes nothing', {
+    env: { SUPABASE_URL: ENV.SUPABASE_URL, SUPABASE_ANON_KEY: ENV.SUPABASE_ANON_KEY },
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    expect: (r, c) => r.code === 500 && /YOUTUBE_API_KEY/.test(JSON.stringify(r.body))
+      && !c.some((x) => x.url.includes('pipeline_videos')),
+  });
+
+  await run('a YouTube quota error is reported, not swallowed', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    fetchOpts: { ytFails: true },
+    expect: (r) => r.code === 502 && /YouTube/.test(r.body.error),
+  });
+
+  await run('RLS refusing the write surfaces', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    fetchOpts: { writeFails: true },
+    expect: (r) => r.code === 502 && /permission denied/.test(JSON.stringify(r.body)),
+  });
+
+  await run('a Modal stage without Modal configured says which is missing', {
+    env: { SUPABASE_URL: ENV.SUPABASE_URL, SUPABASE_ANON_KEY: ENV.SUPABASE_ANON_KEY },
+    req: { query: { stage: 'clip' }, headers: AUTH },
+    expect: (r) => r.code === 500 && /Modal/.test(r.body.error)
+      && /Discover works without them/.test(r.body.detail),
   });
 
   const bad = results.filter((r) => !r.pass);
