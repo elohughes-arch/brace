@@ -167,10 +167,35 @@
       }
       email.removeAttribute('aria-invalid');
       if (errNode) errNode.hidden = true;
-      // Pre-launch: no backend yet. Acknowledge locally; a real endpoint drops in here.
-      form.style.display = 'none';
-      if (success) { success.classList.add('show'); success.focus(); }
-      try { window.localStorage.setItem('brace_founding_email', email.value); } catch (err) {}
+
+      // Live pre-launch capture — writes to the founding_members table
+      // (anon key + RLS: insert-only). 409 = already on the list: success.
+      var SB_URL = 'https://tvcbizxwadibtclamnyy.supabase.co';
+      var SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2Y2Jpenh3YWRpYnRjbGFtbnl5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1NTcwNzQsImV4cCI6MjA5ODEzMzA3NH0.lH9bdpbc6vdQMMj50fxY8Lin_K-x6x2C-kdyHRsODBA';
+      var btn = form.querySelector('button[type="submit"], .btn');
+      if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
+
+      fetch(SB_URL + '/rest/v1/founding_members', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          apikey: SB_KEY,
+          authorization: 'Bearer ' + SB_KEY,
+          prefer: 'return=minimal',
+        },
+        body: JSON.stringify({ email: email.value.trim(), source: 'landing' }),
+      }).then(function (res) {
+        if (!(res.ok || res.status === 409)) throw new Error('capture failed: ' + res.status);
+        form.style.display = 'none';
+        if (success) { success.classList.add('show'); success.focus(); }
+        try { window.localStorage.setItem('brace_founding_email', email.value); } catch (err) {}
+      }).catch(function () {
+        if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); }
+        if (errNode) {
+          errNode.textContent = "Couldn\u2019t save that just now \u2014 try again, or email hello@braceshooting.com.";
+          errNode.hidden = false;
+        }
+      });
     });
   }
 
