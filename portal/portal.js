@@ -17,10 +17,10 @@ const dateFmt = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB', { day: 
 
 /* ---------- gate shell ---------- */
 
-function gate(inner, tag = 'Owners portal') {
+function gate(inner, tag = 'Owners portal', mod = '') {
   root.innerHTML = `
     <div class="gate">
-      <div class="gate-card">
+      <div class="gate-card ${mod}">
         <img class="gate-mark" src="../assets/brand/brace-a-mark-white.svg" alt="Brace" width="740" height="732" />
         <div class="gate-tag">${esc(tag)}</div>
         ${inner}
@@ -168,41 +168,34 @@ async function renderEnrol(err = '') {
 
   gate(`
     <h1>Add your authenticator</h1>
-    <p class="gate-lede">Brace asks for a six-digit code as well as your password.
-       You only add it once.</p>
+    <p class="gate-lede">A six-digit code, as well as your password.
+       You only set this up once.</p>
 
-    <ol class="steps">
-      <li class="step">
-        <span class="step-n">1</span>
-        <div class="step-body">
-          <h2>Scan this with your authenticator app</h2>
-          ${qrHtml}
-          <details class="alt">
-            <summary>Can't scan it? Enter the key by hand</summary>
-            <div class="alt-body">
-              <div class="secret-row">
-                <code id="secret">${esc(grouped)}</code>
-                <button type="button" class="btn-copy" id="copy">Copy</button>
-              </div>
-            </div>
-          </details>
-        </div>
-      </li>
+    <div class="rule"></div>
 
-      <li class="step">
-        <span class="step-n">2</span>
-        <div class="step-body">
-          <h2>Enter the code it shows</h2>
-          <form id="f">
-            <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code"
-              pattern="[0-9]{6}" maxlength="6" placeholder="000000" required aria-label="Six-digit code" />
-            <div class="err" id="err">${esc(err)}</div>
-            <button class="btn" type="submit">Verify and finish</button>
-          </form>
+    <p class="step-label">Step one · Scan with your authenticator</p>
+    <div class="qr-plate">${qrHtml}</div>
+    <details class="alt">
+      <summary>Can't scan it? Enter the key by hand</summary>
+      <div class="alt-body">
+        <div class="secret-row">
+          <code id="secret">${esc(grouped)}</code>
+          <button type="button" class="btn-copy" id="copy">Copy</button>
         </div>
-      </li>
-    </ol>
-    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`, 'Owners portal · Set-up');
+      </div>
+    </details>
+
+    <div class="rule"></div>
+
+    <p class="step-label">Step two · Enter the code it shows</p>
+    <form id="f">
+      <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code"
+        pattern="[0-9]{6}" maxlength="6" placeholder="000000" required aria-label="Six-digit code" />
+      <div class="err" id="err">${esc(err)}</div>
+      <button class="btn" type="submit">Verify and finish</button>
+    </form>
+    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`,
+    'Owners portal · Set-up', 'centred');
 
   document.getElementById('copy').addEventListener('click', async (e) => {
     try {
@@ -235,14 +228,16 @@ async function renderEnrol(err = '') {
 function renderChallenge(factorId, err = '') {
   gate(`
     <h1>Authenticator code</h1>
-    <p class="gate-lede">Enter the six-digit code from your authenticator app.</p>
+    <p class="gate-lede">Six digits from your authenticator app.</p>
+    <div class="rule"></div>
     <form id="f">
-      <div class="field"><input type="text" id="code" inputmode="numeric" autocomplete="one-time-code"
-        pattern="[0-9]{6}" maxlength="6" placeholder="000000" required autofocus /></div>
+      <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code"
+        pattern="[0-9]{6}" maxlength="6" placeholder="000000" required autofocus aria-label="Six-digit code" />
       <div class="err" id="err">${esc(err)}</div>
       <button class="btn" type="submit">Unlock</button>
     </form>
-    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`);
+    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`,
+    'Owners portal', 'centred');
 
   document.getElementById('f').addEventListener('submit', async (e) => {
     e.preventDefault();

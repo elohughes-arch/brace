@@ -149,59 +149,57 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
    Two-factor gate — sign in, set-up, challenge
    Separation is a hairline or a step up the ramp, never a nested box.
    ========================================================================== */
-.gate-card .field input,
-.gate-card input[type="text"] { width: 100%; }
+.gate-card.centred { text-align: center; }
+.gate-card.centred .gate-mark { margin-left: auto; margin-right: auto; }
+.gate-card.centred .gate-lede { margin-left: auto; margin-right: auto; max-width: 34ch; }
 
-/* the code input is the one place a figure should dominate */
+.gate-card .rule { height: 1px; background: var(--line); margin: 26px 0; }
+
+.step-label {
+  font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--text-3); margin-bottom: 16px;
+}
+
+/* the QR sits on its own plate — the only white on the page, so it is framed
+   rather than dropped straight onto the charcoal */
+.qr-plate {
+  width: 216px; margin: 0 auto; padding: 12px; border-radius: var(--r-xl);
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--line-strong);
+}
+.qr-plate .qr { width: 192px; height: 192px; display: block; }
+.qr-plate .qr svg, .qr-plate .qr img { width: 100%; height: 100%; display: block; }
+
+/* the code field: the one place a figure dominates */
 .gate-card input[inputmode="numeric"] {
-  text-align: center; font-size: 30px; font-weight: 500;
-  letter-spacing: .34em; text-indent: .34em; font-variant-numeric: tabular-nums;
-  padding: 14px 12px; border-radius: var(--r-lg);
+  width: 100%; text-align: center;
+  font-size: 32px; font-weight: 500; line-height: 1;
+  letter-spacing: .32em; text-indent: .32em; font-variant-numeric: tabular-nums;
+  padding: 18px 12px; border-radius: var(--r-lg);
   background: var(--bg-sunken); border: 1px solid var(--line-strong); color: var(--text-1);
+  transition: border-color .18s var(--ease-out);
 }
-.gate-card input[inputmode="numeric"]::placeholder { color: rgba(255,255,255,.22); letter-spacing: .34em; }
+.gate-card input[inputmode="numeric"]:focus { border-color: var(--clay); outline: none; }
+.gate-card input[inputmode="numeric"]::placeholder { color: rgba(255,255,255,.18); }
+.gate-card form .btn { width: 100%; margin-top: 14px; }
+.gate-card .err:empty { display: none; }
+.gate-card .err { margin-top: 12px; }
 
-/* numbered steps */
-.steps { list-style: none; margin: 22px 0 0; padding: 0; }
-.step { display: flex; gap: 14px; padding: 20px 0; border-top: 1px solid var(--line); }
-.step:first-child { border-top: none; padding-top: 4px; }
-.step-n {
-  flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
-  display: grid; place-items: center; margin-top: 2px;
-  background: var(--clay); color: var(--ink-on-clay);
-  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
-}
-.step-body { flex: 1 1 auto; min-width: 0; }
-.step-body h2 {
-  font-size: 15px; font-weight: 600; color: var(--text-1);
-  margin: 0 0 12px; letter-spacing: 0;
-}
-.step-body .btn { width: 100%; }
-.step-body .err { margin: 10px 0; }
-
-/* the quieter routes, folded away until wanted */
-.alt { margin-top: 16px; }
+/* the fallback, folded away */
+.alt { margin-top: 18px; }
 .alt summary {
   cursor: pointer; list-style: none; font-size: 13px; color: var(--text-3);
-  padding: 2px 0; transition: color .18s var(--ease-out);
+  transition: color .18s var(--ease-out);
 }
 .alt summary:hover { color: var(--text-2); }
 .alt summary::-webkit-details-marker { display: none; }
-.alt summary::after { content: ' ›'; }
-.alt[open] summary::after { content: ' ⌄'; }
-.alt-body { padding-top: 16px; }
-.gate-card .qr {
-  width: 208px; height: 208px; margin: 0 auto 4px; display: block;
-  border-radius: var(--r-md); background: #fff; padding: 10px;
-}
-.gate-card .qr svg, .gate-card .qr img { width: 100%; height: 100%; display: block; }
-.alt-cap { font-size: 13px; color: var(--text-3); text-align: center; margin: 10px 0 16px; }
+.alt-body { padding-top: 14px; }
 .secret-row { display: flex; gap: 8px; align-items: stretch; }
 .secret-row code {
-  flex: 1 1 auto; min-width: 0; display: flex; align-items: center;
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: center;
   padding: 10px 12px; border-radius: var(--r-sm);
   background: var(--bg-sunken); border: 1px solid var(--line);
-  color: var(--text-2); font-size: 13px; letter-spacing: .04em; word-break: break-all;
+  color: var(--text-2); font-size: 13px; letter-spacing: .06em; word-break: break-all;
 }
 .btn-copy {
   flex: 0 0 auto; padding: 0 14px; border-radius: var(--r-sm);
@@ -210,3 +208,5 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
   transition: color .18s var(--ease-out), border-color .18s var(--ease-out);
 }
 .btn-copy:hover { color: var(--text-1); border-color: var(--text-3); }
+
+.gate-card.centred .gate-foot { text-align: center; margin-top: 22px; }
