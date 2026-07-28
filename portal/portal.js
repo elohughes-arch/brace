@@ -14,6 +14,21 @@ const ic = (id, w = 18) => `<svg width="${w}" height="${w}" aria-hidden="true"><
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n) => Number(n ?? 0).toLocaleString('en-GB');
 
+/* How was this session authenticated? Supabase reports it alongside the
+   assurance level; the access token's own amr claim is the fallback if the
+   client predates that field. Either way the answer travels with the session,
+   which is what makes it survive a new tab. */
+function authMethods(session, aal) {
+  const reported = (aal?.currentAuthenticationMethods || []).map((m) => m.method);
+  if (reported.length) return reported;
+  try {
+    const b64 = String(session?.access_token || '').split('.')[1]
+      .replace(/-/g, '+').replace(/_/g, '/');
+    const claims = JSON.parse(atob(b64.padEnd(Math.ceil(b64.length / 4) * 4, '=')));
+    return (claims.amr || []).map((m) => m.method);
+  } catch { return []; }
+}
+
 /* ---------- gate shell ---------- */
 
 function gate(inner, tag = 'Owners portal', mod = '') {
@@ -111,7 +126,7 @@ function renderSetPassword(err = '', change = false) {
     </form>
     <div class="gate-foot">${change
       ? '<a href="#" id="back">Back to the pipeline</a>'
-      : '<a href="#" id="out">Sign out</a>'}</div>`);
+      : 'Already set one? <a href="#" id="out">Sign out and use it</a>.'}</div>`);
 
   document.getElementById('f').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -583,11 +598,17 @@ async function route() {
   const { data: isOwnerEmail } = await supabase.rpc('is_portal_owner_email');
   if (!isOwnerEmail) return renderDenied(email);
 
-  // Only the link route lands here without a password having been typed, and
-  // the one reason to use the link is 'first time, or forgotten it'. A session
-  // that came through the password form skips straight to the second factor.
-  // Routing only — the database is what actually grants access.
-  if (sessionStorage.getItem('brace-portal-pw') !== '1') {
+  const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+
+  // Was a password actually typed for *this* session? Ask the session, not the
+  // browser: the token's amr claim is the record of how it was authenticated.
+  // (A sessionStorage flag can't answer this — it is per-tab, so a returning
+  // owner opening the portal in a new tab looked like a first run.)
+  // The link route is the only one that lands here without a password, and its
+  // one purpose is setting a first one. Routing only — the database is what
+  // actually grants access.
+  if (!authMethods(session, aal).includes('password')
+      && sessionStorage.getItem('brace-portal-pw') !== '1') {
     return renderSetPassword();
   }
 
@@ -596,7 +617,6 @@ async function route() {
   const verified = (factors?.totp || []).filter((f) => f.status === 'verified');
   if (!verified.length) return renderEnrol();
 
-  const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
   if (aal?.currentLevel !== 'aal2') return renderChallenge(verified[0].id);
 
   // Two factors done. The database makes the final call.
