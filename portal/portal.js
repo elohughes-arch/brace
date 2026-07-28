@@ -129,11 +129,27 @@ function renderSetPassword(err = '') {
 
 /* ---------- 3 · enrol an authenticator ---------- */
 
+let enrolling = false;
+
 async function renderEnrol(err = '') {
+  if (enrolling) return;          // never enrol twice for one visit
+  enrolling = true;
   gate(`<h1>Add your authenticator</h1><p class="gate-lede">Preparing…</p>`);
+
+  // Clear any half-finished factors first. Every enroll() mints a fresh
+  // secret, so a stale one left lying about means the QR on screen and the
+  // factor being verified can disagree — codes then never match.
+  const { data: list } = await supabase.auth.mfa.listFactors();
+  for (const f of (list?.all || list?.totp || [])) {
+    if (f.status !== 'verified') {
+      try { await supabase.auth.mfa.unenroll({ factorId: f.id }); } catch { /* already gone */ }
+    }
+  }
+
   const { data, error } = await supabase.auth.mfa.enroll({
-    factorType: 'totp', friendlyName: 'Brace portal ' + Date.now(),
+    factorType: 'totp', friendlyName: 'Brace portal',
   });
+  enrolling = false;
   if (error) {
     gate(`<h1>Add your authenticator</h1><div class="err">${esc(error.message)}</div>
           <button class="btn btn-ghost" id="out">Sign out</button>`);
@@ -141,10 +157,14 @@ async function renderEnrol(err = '') {
     return;
   }
   const factorId = data.id;
+  const qr = (data.totp.qr_code || '').trim();
+  const qrHtml = qr.startsWith('<svg')
+    ? `<div class="qr" role="img" aria-label="Enrolment QR code">${qr}</div>`
+    : `<img class="qr" src="${esc(qr)}" alt="Enrolment QR code" />`;
   gate(`
     <h1>Add your authenticator</h1>
     <p class="gate-lede">Scan this with 1Password, Authy or Google Authenticator, then enter the six-digit code it shows.</p>
-    <img class="qr" src="${data.totp.qr_code}" alt="" width="200" height="200" />
+    ${qrHtml}
     <p class="gate-secret">Can't scan? Enter this key by hand:<br /><code>${esc(data.totp.secret)}</code></p>
     <form id="f">
       <div class="field"><input type="text" id="code" inputmode="numeric" autocomplete="one-time-code"
@@ -331,7 +351,17 @@ function renderDashboard(email, d) {
 // last. Order: signed in? → on the owners list? → password set? → factor
 // enrolled? → factor verified this session? → the floor.
 
+let booting = false;
+
 async function boot() {
+  // getSession + onAuthStateChange both fire on load; without this guard the
+  // enrolment screen renders twice and mints two competing secrets.
+  if (booting) return;
+  booting = true;
+  try { await route(); } finally { booting = false; }
+}
+
+async function route() {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return renderSignIn();
 

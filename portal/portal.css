@@ -42,11 +42,11 @@ input { font: inherit; }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
 
 /* ---------- Sign-in / gate cards ---------- */
-.gate { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px;
+.gate { min-height: 100vh; display: flex; justify-content: center; padding: 40px 16px; overflow-y: auto;
   background:
     radial-gradient(ellipse 90% 60% at 50% -10%, rgba(240,90,40,.08), transparent 62%),
     var(--c-midnight); }
-.gate-card { width: 100%; max-width: 400px; background: var(--c-midnight-raised);
+.gate-card { width: 100%; max-width: 400px; margin: auto; background: var(--c-midnight-raised);
   border: 1px solid var(--c-midnight-hairline); border-radius: var(--r-lg); padding: 32px 28px; box-shadow: var(--e-2); }
 .gate-mark { height: 42px; width: auto; margin-bottom: 14px; }
 .gate-lede { font-size: 15px; color: var(--text-2); line-height: 1.55; margin-bottom: 18px; }
@@ -147,9 +147,10 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
 
 /* ---------- two-factor gate ---------- */
 .gate-card .qr {
-  width: 200px; height: 200px; margin: 4px auto 14px; display: block;
+  width: 184px; height: 184px; margin: 4px auto 14px; display: block;
   border-radius: var(--r-md); background: #fff; padding: 8px;
 }
+.gate-card .qr svg, .gate-card .qr img { width: 100%; height: 100%; display: block; }
 .gate-secret { font-size: 13px; color: var(--text-3); text-align: center; margin-bottom: 16px; line-height: 1.6; }
 .gate-secret code {
   display: inline-block; margin-top: 6px; padding: 6px 10px; border-radius: var(--r-sm);
