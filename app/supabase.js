@@ -7,9 +7,13 @@
 // without importing this file, which would stand up a second auth client.
 import { createClient } from '../assets/vendor/supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
+import { boundedLock } from './supabase-lock.js';
 
 export { SUPABASE_URL, SUPABASE_ANON_KEY };
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+  auth: {
+    persistSession: true, autoRefreshToken: true, detectSessionInUrl: false,
+    lock: boundedLock,
+  },
 });

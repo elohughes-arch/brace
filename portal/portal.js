@@ -18,6 +18,17 @@ const fmt = (n) => Number(n ?? 0).toLocaleString('en-GB');
 // stall names its step instead of guessing at a cause.
 const stage = (what) => { root.dataset.bootStage = what; };
 
+// Dropping the stored session must not depend on the network or on the client
+// being healthy — those are exactly the things that are broken when it is
+// needed. Straight at the storage.
+function forgetStoredSession() {
+  try {
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith('sb-') || k.startsWith('brace-portal'))
+      .forEach((k) => localStorage.removeItem(k));
+  } catch { /* private browsing */ }
+}
+
 // Supabase calls normally answer in well under a second. Anything still
 // outstanding after this is not going to arrive, and a rejection the visitor
 // can read beats a spinner that turns for ever.
@@ -81,12 +92,8 @@ function renderBroken(what, err) {
     // signOut() needs the network. If that is what is broken, clearing the
     // stored session locally is the only way back to the sign-in form.
     try { await within(supabase.auth.signOut(), 6, 'Signing out'); } catch { /* do it by hand */ }
-    try {
-      sessionStorage.clear();
-      Object.keys(localStorage)
-        .filter((k) => k.startsWith('sb-') || k.startsWith('brace-portal'))
-        .forEach((k) => localStorage.removeItem(k));
-    } catch { /* private browsing */ }
+    forgetStoredSession();
+    try { sessionStorage.clear(); } catch { /* private browsing */ }
     location.replace(location.pathname);
   });
 }
@@ -765,7 +772,21 @@ async function route() {
   // Not `const { data: { session } }` — getSession resolves with data:null on
   // some failures, and destructuring through it throws before anything renders.
   stage('reading your session');
-  const got = await within(supabase.auth.getSession(), 12, 'Reading your session');
+  let got;
+  try {
+    got = await within(supabase.auth.getSession(), 12, 'Reading your session');
+  } catch (e) {
+    // A stored session that cannot even be read is not a session. Clear it and
+    // reload into a clean client rather than showing a wall: the hung call may
+    // still be holding the lock, so signing in on this page would hang too.
+    // Once per tab, so a persistent fault cannot become a reload loop.
+    if (!sessionStorage.getItem('brace-portal-recovered')) {
+      sessionStorage.setItem('brace-portal-recovered', '1');
+      forgetStoredSession();
+      return location.replace(location.pathname);
+    }
+    throw e;
+  }
   if (got.error) return renderBroken('Could not read your session.', got.error);
   const session = got.data?.session;
   routedToken = session?.access_token || null;

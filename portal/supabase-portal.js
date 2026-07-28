@@ -9,6 +9,7 @@
 //     app's client, leaving two auth clients refreshing one session.
 import { createClient } from '../assets/vendor/supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../app/supabase-config.js';
+import { boundedLock } from '../app/supabase-lock.js';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
@@ -16,5 +17,6 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     autoRefreshToken: true,
     detectSessionInUrl: true,
     storageKey: 'brace-portal-auth',
+    lock: boundedLock,
   },
 });

@@ -86,8 +86,10 @@
         var r = e.reason;
         fail((r && (r.message || r.error_description)) || String(r || ''));
       });
-      // Nothing drawn after twelve seconds means something is hanging silently.
-      setTimeout(function () { fail('It stopped responding without reporting an error.'); }, 12000);
+      // Nothing drawn after twenty seconds means something is hanging silently.
+      // Generous on purpose: the portal's own steps time out before this, and
+      // this only has to catch a stall that reports nothing at all.
+      setTimeout(function () { fail('It stopped responding without reporting an error.'); }, 20000);
     })();
   </script>
   <script src="../assets/vendor/supabase-js-2.45.4.js"></script>
