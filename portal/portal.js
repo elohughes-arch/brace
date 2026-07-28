@@ -704,6 +704,7 @@ async function renderDashboard(email) {
 
 let booting = false;
 let rebootWanted = false;
+let routedToken = null;   // the session route() last decided on
 
 async function boot() {
   // getSession + onAuthStateChange both fire on load; without this guard the
@@ -722,7 +723,15 @@ async function boot() {
   } finally {
     booting = false;
   }
-  if (rebootWanted) { rebootWanted = false; await boot(); }
+  if (!rebootWanted) return;
+  rebootWanted = false;
+  // Decide here, not when the event arrived: auth-js replays the stored session
+  // as SIGNED_IN while the first route() is still inside getSession(), so at
+  // that moment nothing yet knows which session is being handled. Ask now, and
+  // only go round again if it is genuinely a different one.
+  let current = null;
+  try { current = (await supabase.auth.getSession()).data?.session?.access_token || null; } catch { /* treat as changed */ }
+  if (current !== routedToken) await boot();
 }
 
 async function route() {
@@ -737,6 +746,7 @@ async function route() {
   const got = await supabase.auth.getSession();
   if (got.error) return renderBroken('Could not read your session.', got.error);
   const session = got.data?.session;
+  routedToken = session?.access_token || null;
   if (!session) return renderSignIn();
 
   const email = session.user?.email || '';
@@ -777,7 +787,13 @@ async function route() {
   return renderDashboard(email);
 }
 
-supabase.auth.onAuthStateChange((event) => {
-  if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'MFA_CHALLENGE_VERIFIED') boot();
+supabase.auth.onAuthStateChange((event, session) => {
+  if (event === 'SIGNED_OUT') { routedToken = null; return boot(); }
+  if (event !== 'SIGNED_IN' && event !== 'MFA_CHALLENGE_VERIFIED') return;
+  // A stored session is replayed as SIGNED_IN on every load, so this fires once
+  // for a session route() is already handling. Re-route only when the token has
+  // genuinely changed: a real sign-in, or the aal2 token a verified code mints.
+  if (session?.access_token && session.access_token === routedToken) return;
+  boot();   // if a pass is already running, boot() defers the decision to its end
 });
 boot();
