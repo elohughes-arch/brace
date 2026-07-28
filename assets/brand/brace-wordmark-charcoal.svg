@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-6 -4 486 118" role="img" aria-label="Brace">
+  <g fill="none" stroke="#2A2C29" stroke-width="6.2">
+    <path d="M0,5 V105"/>
+    <path d="M0,5 H30 A25.5,25.5 0 0 1 30,55 H0"/>
+    <path d="M0,55 H32 A25.5,25.5 0 0 1 32,105 H0"/>
+    <g transform="translate(93,0)">
+      <path d="M0,5 V105"/>
+      <path d="M0,5 H32 A25.5,25.5 0 0 1 32,55 H0"/>
+      <path d="M30,55 L62,105"/>
+    </g>
+    <g transform="translate(189,0)">
+      <path d="M0,105 L35,5 L70,105"/>
+    </g>
+    <g transform="translate(293,0)">
+      <path d="M84.8,24.1 A48,48 0 1 0 84.8,85.9"/>
+    </g>
+    <g transform="translate(423,0)">
+      <path d="M50,5 H0 V105 H50"/>
+      <path d="M0,55 H42"/>
+    </g>
+  </g>
+  <!-- the clay, in the aperture of the A. Never recoloured, never removed. -->
+  <circle cx="224" cy="71" r="10" fill="#F05A28"/>
+</svg>

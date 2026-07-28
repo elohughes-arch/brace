@@ -1,219 +1,189 @@
 /* ============================================================================
    BRACE — The Modern Shooting Log
-   Single-viewport landing page, built to the brand bible:
-     · charcoal ground, white geometric-light wordmark
-     · the clay orange appears exactly where the wordmark puts it — the dot
-       in the A — and nowhere it isn't earned
-     · the A alone is the monogram / app icon
+   Built to the brand bible. Every value below comes from it; nothing is
+   invented. One accent (clay), one family (Inter), charcoal ramp for
+   elevation, hairlines instead of shadows, no cards by reflex.
    ========================================================================== */
-:root {
-  --charcoal: #2E2E2B;              /* brand ground */
-  --charcoal-deep: #232320;
-  --surface: rgba(255,255,255,0.05);
-  --border: rgba(255,255,255,0.15);
-  --border-strong: rgba(255,255,255,0.28);
+:root{
+  --bg-sunken:#1F2120; --bg:#2A2C29; --bg-raised:#33352F; --bg-raised2:#3C3E37;
+  --clay:#F05A28; --clay-dim:#C24A22; --ink-on-clay:#1A1109;
+  --text-1:rgba(255,255,255,.95); --text-2:rgba(255,255,255,.64); --text-3:rgba(255,255,255,.40);
+  --line:rgba(255,255,255,.08); --line-strong:rgba(255,255,255,.14);
+  --tiffany:#4ECDC4; --ink-on-tiffany:#08201E;
+  --champagne:#CBBE93; --ink-on-champagne:#241E10;
+  --panel:#FFFFFF; --panel-ink:#141614; --panel-ink-soft:rgba(20,22,20,.64);
+  --destructive:#E0705F; --hit:#6FBE72; --chart-miss:#E0705F;
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-xl:20px; --r-pill:999px;
 
-  --white: #FFFFFF;
-  --muted: rgba(255,255,255,0.62);
-  --dim: rgba(255,255,255,0.34);
+  /* Where the clay sits inside the wordmark artwork, as a % of its box.
+     The splash smokes it out from exactly here — see assets/brand/README.md. */
+  --dot-x:47.3%; --dot-y:63.6%;
 
-  --clay: #F05A28;                  /* the dot */
-  --clay-bright: #FF6E3D;
-
-  --f: "Jost", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --r-pill: 999px;
-  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --spring:cubic-bezier(.22,1,.36,1);
 }
 
-*, *::before, *::after { box-sizing: border-box; }
-* { margin: 0; }
-html, body { height: 100%; }
-body {
-  font-family: var(--f); font-weight: 300;
-  background: var(--charcoal); color: var(--white);
-  -webkit-font-smoothing: antialiased;
-  overflow: hidden;                          /* one viewport — nothing scrolls */
+*,*::before,*::after{box-sizing:border-box}
+*{margin:0}
+html,body{height:100%}
+html{background:var(--bg)}
+body{
+  color:var(--text-1);
+  font-family:'Inter',system-ui,-apple-system,sans-serif;
+  font-size:16px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;                       /* one viewport — nothing scrolls */
 }
-svg { display: block; }
-a { color: inherit; text-decoration: none; }
-button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
-input { font: inherit; }
-:focus-visible { outline: 2px solid var(--clay); outline-offset: 3px; }
-.sr-only {
-  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+img,svg{display:block}
+a{color:inherit; text-decoration:none}
+button{font:inherit; color:inherit; background:none; border:none; cursor:pointer}
+input{font:inherit}
+:focus-visible{outline:2px solid var(--clay); outline-offset:3px}
+
+.num{font-variant-numeric:tabular-nums}
+.label,.strap,.chip,.btn-ghost,.btn-primary{
+  font-size:11px; font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+}
+.sr-only{
+  position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+  overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0;
 }
 
 /* ============================================================================
-   SPLASH — clay thrown, broken, and resolved into the mark
+   SPLASH
+   The bible's reference: the wordmark lands, the clay holds, then smokes to
+   powder. Opacity and transform only, spring curves, nothing over ~700ms.
    ========================================================================== */
-.splash {
-  position: fixed; inset: 0; z-index: 100; background: var(--charcoal);
-  display: grid; place-items: center;
-  animation: splashOut 0.75s var(--ease-out) 2.85s forwards;
+.splash{
+  position:fixed; inset:0; z-index:100; background:var(--bg);
+  display:grid; place-items:center;
+  animation:splashOut .5s var(--spring) 2.02s forwards;
 }
-.splash-stage { position: relative; width: min(92vw, 720px); aspect-ratio: 560 / 420; }
-.clay-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-
-.trail { opacity: 0; animation: trailIn 0.5s ease-out 0.15s forwards, trailOut 0.5s ease-in 0.95s forwards; }
-@keyframes trailIn  { from { opacity: 0; } to { opacity: 0.34; } }
-@keyframes trailOut { to { opacity: 0; } }
-
-.clay {
-  transform: translate(40px, 372px) scale(0.42);
-  animation: clayFly 0.95s cubic-bezier(0.32, 0.12, 0.30, 1) forwards,
-             clayGone 0.01s linear 0.95s forwards;
+.splash-lockup{ position:relative; width:min(74vw,520px) }
+.splash-wm{
+  width:100%; height:auto;
+  opacity:0; animation:land .62s var(--spring) .12s forwards;
 }
-/* fill-box so the clay spins about ITSELF — view-box origin would orbit it. */
-.clay-spin { animation: claySpin 0.55s linear infinite; transform-box: fill-box; transform-origin: center; }
-@keyframes clayFly {
-  0%   { transform: translate(40px, 372px)  scale(0.42); opacity: 0; }
-  14%  { opacity: 1; }
-  55%  { transform: translate(168px, 240px) scale(0.82); }
-  100% { transform: translate(280px, 200px) scale(1); opacity: 1; }
-}
-@keyframes claySpin { to { transform: rotate(360deg); } }
-@keyframes clayGone { to { opacity: 0; } }
-
-.flash { opacity: 0; transform-box: fill-box; transform-origin: center; animation: flash 0.42s ease-out 0.95s forwards; }
-@keyframes flash { 0% { opacity: 1; transform: scale(0.3); } 100% { opacity: 0; transform: scale(3.2); } }
-.shock { opacity: 0; transform-box: fill-box; transform-origin: center; animation: shock 0.85s var(--ease-out) 0.96s forwards; }
-.shock-2 { animation-delay: 1.04s; animation-duration: 1s; }
-@keyframes shock { 0% { opacity: 0.55; transform: scale(0.3); } 100% { opacity: 0; transform: scale(4.2); } }
-
-.shard, .dust {
-  opacity: 0; transform-box: fill-box; transform-origin: center;
-  animation: shardOut var(--d, 1s) cubic-bezier(0.16, 0.7, 0.3, 1) 0.95s forwards;
-}
-@keyframes shardOut {
-  0%   { opacity: 1; transform: translate(0, 0) rotate(0) scale(1); }
-  70%  { opacity: 1; }
-  100% { opacity: 0; transform: translate(var(--tx), var(--ty)) rotate(var(--r, 0deg)) scale(0.35); }
-}
-.dust { animation-name: dustOut; }
-@keyframes dustOut {
-  0%   { opacity: 0.9; transform: translate(0, 0) scale(1); }
-  100% { opacity: 0;   transform: translate(var(--tx), var(--ty)) scale(0.4); }
+@keyframes land{
+  from{ opacity:0; transform:translateY(14px) scale(.985) }
+  to  { opacity:1; transform:none }
 }
 
-/* the wordmark draws itself out of the break */
-.splash-wm {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: min(74%, 520px); height: auto;
+/* the clay goes to powder — cover erases it from the artwork as it disperses */
+.dot-cover{
+  position:absolute; left:var(--dot-x); top:var(--dot-y);
+  width:4.9%; aspect-ratio:1; margin:-2.45% 0 0 -2.45%;
+  border-radius:50%; background:var(--bg); opacity:0;
+  animation:cover .34s linear 1.3s forwards;
 }
-.wm-stroke { stroke-dasharray: 100; stroke-dashoffset: 100; animation: drawOn 0.62s var(--ease-out) forwards; }
-.wm-b { animation-delay: 1.25s; }
-.wm-r { animation-delay: 1.37s; }
-.wm-a { animation-delay: 1.49s; }
-.wm-c { animation-delay: 1.61s; }
-.wm-e { animation-delay: 1.73s; }
-@keyframes drawOn { to { stroke-dashoffset: 0; } }
+@keyframes cover{ to{ opacity:1 } }
 
-/* and the clay comes to rest inside the A */
-.wm-dot {
-  opacity: 0; transform-box: fill-box; transform-origin: center;
-  animation: dotDrop 0.6s cubic-bezier(0.3, 1.5, 0.5, 1) 2.1s forwards;
+.powder{ position:absolute; left:var(--dot-x); top:var(--dot-y) }
+.grain{
+  position:absolute; left:0; top:0;
+  width:var(--s); height:var(--s); margin:calc(var(--s) / -2) 0 0 calc(var(--s) / -2);
+  border-radius:50%; opacity:0;
+  animation:smoke var(--gt) var(--spring) calc(1.28s + var(--gd)) forwards;
 }
-@keyframes dotDrop {
-  0%   { opacity: 0; transform: translateY(-46px) scale(0.5); }
-  55%  { opacity: 1; }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
+@keyframes smoke{
+  0%  { opacity:.9; transform:translate(0,0) scale(1) }
+  100%{ opacity:0;  transform:translate(var(--tx),var(--ty)) scale(.4) }
 }
-@keyframes splashOut { to { opacity: 0; visibility: hidden; } }
-body.splash-done .splash { display: none; }
+@keyframes splashOut{ to{ opacity:0; visibility:hidden } }
+body.splash-done .splash{ display:none }
 
 /* ============================================================================
    PAGE
    ========================================================================== */
-.page {
-  height: 100dvh; min-height: 100dvh;
-  display: flex; flex-direction: column;
-  background: var(--charcoal);
-  opacity: 0; animation: pageIn 0.8s var(--ease-out) 2.95s forwards;
+.page{
+  height:100dvh; min-height:100dvh;
+  display:flex; flex-direction:column; background:var(--bg);
+  opacity:0; animation:pageIn .5s var(--spring) 2.1s forwards;
 }
-body.splash-done .page { opacity: 1; animation: none; }
-@keyframes pageIn { from { opacity: 0; transform: scale(1.012); } to { opacity: 1; transform: none; } }
+body.splash-done .page{ opacity:1; animation:none }
+@keyframes pageIn{ from{opacity:0} to{opacity:1} }
 
-.bar {
-  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
-  gap: 16px; padding: clamp(14px, 2.4vh, 24px) clamp(16px, 3.5vw, 44px);
+.bar{
+  flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+  gap:20px; padding:20px clamp(20px,3.5vw,48px);
 }
-.brand { display: flex; align-items: center; }
-.brand-mono { width: clamp(22px, 2.6vh, 30px); aspect-ratio: 80 / 116; height: auto; color: var(--white); }
-.bar-actions { display: flex; align-items: center; gap: clamp(10px, 2vw, 22px); flex: 0 0 auto; }
-.link { font-size: 0.92rem; font-weight: 400; color: var(--muted); }
-.link:hover { color: var(--white); }
+/* clear space around the mark is at least the diameter of the clay */
+.brand{ display:flex; align-items:center; padding:6px }
+.brand-mark{ width:auto; height:clamp(26px,3.2vh,34px) }
 
-.bar-foot { border-top: 1px solid var(--border); }
-.legal, .foot-links { font-size: 0.72rem; font-weight: 400; color: var(--dim); }
-.foot-links { display: flex; gap: 18px; flex: 0 0 auto; }
-.foot-links a:hover { color: var(--muted); }
+.bar-actions{ display:flex; align-items:center; gap:12px; flex:0 0 auto }
+.link{
+  font-size:13px; font-weight:500; color:var(--text-2);
+  padding:8px 4px; transition:color .18s var(--spring);
+}
+.link:hover{ color:var(--text-1) }
 
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  white-space: nowrap; padding: 13px 24px; border-radius: var(--r-pill);
-  font-size: 0.92rem; font-weight: 400; letter-spacing: 0.02em;
-  transition: transform 160ms var(--ease-out), background 160ms var(--ease-out), opacity 160ms;
-}
-.btn-clay { background: var(--clay); color: var(--white); }
-.btn-clay:hover { background: var(--clay-bright); transform: translateY(-1px); }
-.btn-sm { padding: 9px 17px; font-size: 0.84rem; }
-.btn-i { width: 16px; height: 16px; }
-.btn[disabled] { opacity: 0.55; cursor: default; transform: none; }
+.bar-foot{ border-top:1px solid var(--line) }
+.legal,.foot-links{ font-size:13px; color:var(--text-3) }
+.foot-links{ display:flex; gap:20px; flex:0 0 auto }
+.foot-links a{ transition:color .18s var(--spring) }
+.foot-links a:hover{ color:var(--text-2) }
 
-/* -- hero: the mark, the line, the invitation. Nothing else. -- */
-.hero {
-  flex: 1 1 auto; min-height: 0;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  text-align: center; padding: 0 clamp(16px, 5vw, 40px); gap: clamp(14px, 2.6vh, 30px);
+/* -- buttons -- */
+.btn{
+  display:inline-flex; align-items:center; justify-content:center;
+  white-space:nowrap; border-radius:var(--r-lg); padding:14px 22px;
+  transition:background .18s var(--spring), border-color .18s var(--spring), opacity .18s;
 }
-.hero-wm {
-  width: min(74vw, 520px); height: auto;
-  /* never let the mark push past a short viewport */
-  max-height: 26vh;
+.btn-primary{ background:var(--clay); color:var(--ink-on-clay) }
+.btn-primary:hover{ background:var(--clay-dim) }
+.btn-ghost{
+  border:1px solid var(--line-strong); color:var(--text-1); padding:10px 16px;
 }
-.strap {
-  font-size: clamp(0.72rem, 1.7vh, 0.95rem); font-weight: 300;
-  letter-spacing: 0.42em; text-indent: 0.42em; text-transform: uppercase;
-  color: var(--muted);
-}
+.btn-ghost:hover{ border-color:var(--text-3) }
+.btn[disabled]{ opacity:.55; cursor:default }
 
-.capture { display: flex; gap: 10px; width: 100%; max-width: 430px; margin-top: clamp(2px, 1vh, 12px); }
-.capture input {
-  flex: 1 1 auto; min-width: 0; padding: 13px 20px; border-radius: var(--r-pill);
-  background: var(--surface); border: 1px solid var(--border-strong); color: var(--white); font-weight: 300;
+/* -- hero: the mark, the line, the invitation -- */
+.hero{
+  flex:1 1 auto; min-height:0;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  text-align:center; padding:0 20px; gap:28px;
 }
-.capture input::placeholder { color: var(--dim); }
-.capture-note { font-size: 0.76rem; color: var(--clay-bright); }
-.capture-ok { display: none; font-size: 0.88rem; color: var(--clay-bright); }
-.capture-ok.show { display: block; }
+.hero-wm{ width:min(74vw,520px); height:auto; max-height:26vh }
+.strap{ color:var(--text-2); margin-top:-8px }
 
-.pill {
-  display: inline-flex; align-items: center; gap: 8px; padding: 6px 15px;
-  border-radius: var(--r-pill); border: 1px solid var(--border); background: var(--surface);
-  font-size: 0.6rem; font-weight: 400; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted);
+.capture{ display:flex; gap:12px; width:100%; max-width:440px }
+.capture input{
+  flex:1 1 auto; min-width:0; padding:14px 18px;
+  border-radius:var(--r-lg); background:var(--bg-raised);
+  border:1px solid var(--line-strong); color:var(--text-1);
 }
-.pip { width: 6px; height: 6px; border-radius: 50%; background: var(--clay); animation: pip 2.4s ease-in-out infinite; }
-@keyframes pip { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.capture input::placeholder{ color:var(--text-3) }
+.capture-note{ font-size:13px; color:var(--destructive) }
+.capture-ok{ display:none; font-size:13px; color:var(--text-2) }
+.capture-ok.show{ display:block }
+
+.chip{
+  display:inline-flex; align-items:center; gap:8px;
+  padding:8px 14px; border-radius:var(--r-pill);
+  border:1px solid var(--line); color:var(--text-3);
+}
+.pip{ width:6px; height:6px; border-radius:50%; background:var(--clay) }
 
 /* -- narrow / short viewports -- */
-@media (max-width: 620px) {
-  .btn-sm { padding: 8px 14px; font-size: 0.78rem; }
-  .link { font-size: 0.84rem; }
-  .capture { flex-direction: column; }
-  .capture .btn { width: 100%; }
-  .hero-wm { width: 78vw; }
-  .strap { letter-spacing: 0.3em; text-indent: 0.3em; }
-  .legal { font-size: 0.66rem; }
+@media (max-width:620px){
+  .bar{ padding:16px 20px }
+  .capture{ flex-direction:column }
+  .capture .btn{ width:100% }
+  .hero{ gap:24px }
+  .hero-wm{ width:78vw }
+  .foot-links{ gap:16px }
+  .legal,.foot-links{ font-size:13px }
 }
-@media (max-height: 520px) { .pill { display: none; } .hero-wm { max-height: 22vh; } }
+@media (max-height:560px){
+  .chip{ display:none }
+  .hero-wm{ max-height:22vh }
+  .hero{ gap:20px }
+}
 
-/* -- reduced motion -- */
-@media (prefers-reduced-motion: reduce) {
-  .splash { display: none; }
-  .page { opacity: 1; animation: none; }
-  .clay, .clay-spin, .shard, .dust, .flash, .shock, .trail, .pip,
-  .wm-stroke, .wm-dot { animation: none !important; }
-  .wm-stroke { stroke-dashoffset: 0; }
-  .wm-dot { opacity: 1; }
+/* -- reduced motion: a composed static frame, never a half-played animation -- */
+@media (prefers-reduced-motion:reduce){
+  .splash{ display:none }
+  .page{ opacity:1; animation:none }
+  .splash-wm,.dot-cover,.grain{ animation:none }
+  .splash-wm{ opacity:1 }
 }

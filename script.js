@@ -7,7 +7,7 @@
   'use strict';
 
   var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  var SPLASH_MS = 3600;   // flight + break + wordmark draw + dot + curtain
+  var SPLASH_MS = 2560;   // land + hold + smoke to powder + reveal
 
   /* ---------- Splash ---------------------------------------------------- */
   var splash = document.getElementById('splash');
