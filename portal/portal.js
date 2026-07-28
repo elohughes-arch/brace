@@ -513,9 +513,9 @@ function controlView() {
     <div class="page-head">
       <div class="over">Training data</div>
       <h1>Third-party footage in, <em>labelled clays</em> out.</h1>
-      <p>Every stage runs on Modal and writes back here. Discovery finds candidates,
-         triage scores them, you decide what is worth cutting, and the detector draws
-         the first pass of boxes before a human ever opens Roboflow.</p>
+      <p>Discovery runs here and answers straight away. Triage scores what it finds,
+         you decide what is worth cutting, and the detector draws the first pass of
+         boxes before a human ever opens Roboflow — those three run on Modal.</p>
     </div>
 
     <div class="rail">
