@@ -29,15 +29,27 @@ ask() { # ask VAR "prompt" [optional]
 }
 
 say "1 · Modal"
-if ! command -v modal >/dev/null 2>&1; then
-  echo "  installing the Modal client…"
-  python3 -m pip install --quiet --upgrade modal
+# Into a virtual environment, always. Homebrew's Python refuses system-wide
+# installs (PEP 668), and even where it does not, putting build tooling into
+# the system Python is how a Mac's Python ends up broken. Everything lives in
+# pipeline/.venv and can be deleted with the folder.
+VENV="$PWD/.venv"
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "  making a virtual environment in pipeline/.venv…"
+  python3 -m venv "$VENV"
 fi
-if ! modal token show >/dev/null 2>&1; then
+PY="$VENV/bin/python"
+MODAL="$VENV/bin/modal"
+
+echo "  installing the Modal client…"
+"$PY" -m pip install --quiet --upgrade pip
+"$PY" -m pip install --quiet --upgrade modal fastapi
+
+if ! "$MODAL" token show >/dev/null 2>&1; then
   echo "  opening a browser to sign you in…"
-  python3 -m modal setup
+  "$PY" -m modal setup
 fi
-WORKSPACE=$(modal profile current 2>/dev/null || true)
+WORKSPACE=$("$MODAL" profile current 2>/dev/null || true)
 echo "  signed in${WORKSPACE:+ as $WORKSPACE}"
 
 say "2 · The keys it needs (nothing is echoed)"
@@ -61,10 +73,10 @@ else
   ROBOFLOW_API_KEY=""; ROBOFLOW_PROJECT=""
 fi
 
-PIPELINE_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+PIPELINE_TOKEN=$("$PY" -c 'import secrets; print(secrets.token_hex(32))')
 
 say "3 · Storing them in Modal"
-modal secret create brace-pipeline \
+"$MODAL" secret create brace-pipeline \
   SUPABASE_URL="https://tvcbizxwadibtclamnyy.supabase.co" \
   SUPABASE_SERVICE_KEY="$SUPABASE_SERVICE_KEY" \
   YOUTUBE_API_KEY="$YOUTUBE_API_KEY" \
@@ -76,8 +88,7 @@ modal secret create brace-pipeline \
 echo "  secret 'brace-pipeline' written"
 
 say "4 · Deploying"
-python3 -m pip install --quiet --upgrade modal fastapi
-modal deploy modal_app.py
+"$MODAL" deploy modal_app.py
 
 say "5 · Finish in Vercel"
 cat <<EOF

@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .env
 .env.local
+
+# the pipeline setup script builds its own
+.venv/
