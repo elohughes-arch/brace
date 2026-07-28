@@ -58,7 +58,7 @@ function renderAuth() {
     <div class="bp"></div><div class="glow"></div>
     <div class="auth-card">
       <div class="auth-brand">
-        <img class="wm" src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" />
+        <a class="wm-home" href="../" aria-label="Back to Brace"><img class="wm" src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" /></a>
         <span class="tg">The Modern Shooting Log</span>
       </div>
       <div class="auth-panel">

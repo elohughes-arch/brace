@@ -20,7 +20,7 @@ function gate(inner, tag = 'Owners portal', mod = '') {
   root.innerHTML = `
     <div class="gate">
       <div class="gate-card ${mod}">
-        <img class="gate-mark" src="../assets/brand/brace-a-mark-white.svg" alt="Brace" width="740" height="732" />
+        <a class="gate-home" href="../" aria-label="Back to Brace"><img class="gate-mark" src="../assets/brand/brace-a-mark-white.svg" alt="Brace" width="740" height="732" /></a>
         <div class="gate-tag">${esc(tag)}</div>
         ${inner}
       </div>
@@ -97,17 +97,21 @@ function renderBootstrap(err = '') {
 
 /* ---------- 2 · set a password (first run) ---------- */
 
-function renderSetPassword(err = '') {
+function renderSetPassword(err = '', change = false) {
   gate(`
-    <h1>Choose a password</h1>
-    <p class="gate-lede">This is the first of your two factors. Make it long and unique to Brace.</p>
+    <h1>${change ? 'Change your password' : 'Choose a password'}</h1>
+    <p class="gate-lede">${change
+      ? 'This replaces the first of your two factors. Your authenticator is untouched.'
+      : 'This is the first of your two factors. Make it long and unique to Brace.'}</p>
     <form id="f">
       <div class="field"><input type="password" id="pw1" placeholder="New password" autocomplete="new-password" required /></div>
       <div class="field"><input type="password" id="pw2" placeholder="Repeat it" autocomplete="new-password" required /></div>
       <div class="err" id="err">${esc(err)}</div>
       <button class="btn" type="submit">Save password</button>
     </form>
-    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`);
+    <div class="gate-foot">${change
+      ? '<a href="#" id="back">Back to the pipeline</a>'
+      : '<a href="#" id="out">Sign out</a>'}</div>`);
 
   document.getElementById('f').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -123,7 +127,8 @@ function renderSetPassword(err = '') {
     sessionStorage.setItem('brace-portal-pw', '1');
     boot();
   });
-  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
+  document.getElementById('back')?.addEventListener('click', (e) => { e.preventDefault(); boot(); });
+  document.getElementById('out')?.addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
 }
 
 /* ---------- 3 · enrol an authenticator ---------- */
@@ -368,10 +373,16 @@ function shell(body) {
         <a href="#review" class="${view === 'review' ? 'on' : ''}">Review${state.counts?.downloaded ? ` <b>${fmt(state.counts.downloaded)}</b>` : ''}</a>
       </nav>
       <span class="who"><span>${esc(state.email)}</span>
+        <button class="signout" id="changepw">${ic('lock', 14)} Password</button>
         <button class="signout" id="signout">${ic('signout', 14)} Sign out</button></span>
     </header>
     <main>${body}</main>`;
+  document.getElementById('changepw').addEventListener('click', () => {
+    clearInterval(poll);          // else the 8s refresh repaints over the form
+    renderSetPassword('', true);
+  });
   document.getElementById('signout').addEventListener('click', async () => {
+    clearInterval(poll);
     sessionStorage.removeItem('brace-portal-pw');
     await supabase.auth.signOut();
   });

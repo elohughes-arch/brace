@@ -197,3 +197,7 @@ ul { list-style: none; padding: 0; } input { font: inherit; }
   *,*::before,*::after { animation-duration:.001ms !important; transition-duration:.001ms !important; }
   .rv { opacity:1; transform:none; } .proc .ring-mini svg { animation:none; }
 }
+
+/* the wordmark on the auth screen is the way back to the site */
+.wm-home { display: inline-block; }
+.wm-home:hover { opacity: .78; }
