@@ -80,6 +80,47 @@ class GroupPairs(unittest.TestCase):
                 self.assertGreater(c["end"], c["start"], f"empty clip from {shots}")
 
 
+class MergeSpikes(unittest.TestCase):
+    """One event per run of loud frames — not one every MIN_GAP_S."""
+
+    def frames(self, start, seconds):
+        """A solid run of above-threshold 20ms frames."""
+        step = clipper.FRAME_MS / 1000.0
+        return [start + i * step for i in range(int(seconds / step))]
+
+    def test_a_sustained_noise_passage_is_one_event(self):
+        # Two seconds of continuous racket: a gust, a crowd, the trap machine.
+        # Measuring from the last accepted shot produced one every 0.26s.
+        got = clipper.merge_spikes(self.frames(0.0, 2.0))
+        self.assertEqual(len(got), 1, f"expected one event, got {len(got)}")
+
+    def test_a_sustained_passage_does_not_become_pairs(self):
+        # The consequence that actually costs money: bogus clips.
+        clips = clipper.group_pairs(clipper.merge_spikes(self.frames(0.0, 2.0)))
+        self.assertEqual(len(clips), 1)
+        self.assertFalse(clips[0]["is_pair"])
+
+    def test_two_real_shots_stay_two(self):
+        # Two short reports a second apart, each a few frames long.
+        got = clipper.merge_spikes(self.frames(0.0, 0.08) + self.frames(1.0, 0.08))
+        self.assertEqual(len(got), 2)
+        self.assertAlmostEqual(got[0], 0.0)
+        self.assertAlmostEqual(got[1], 1.0)
+
+    def test_event_is_reported_at_its_start(self):
+        got = clipper.merge_spikes(self.frames(5.0, 0.1))
+        self.assertAlmostEqual(got[0], 5.0)
+
+    def test_edges(self):
+        self.assertEqual(clipper.merge_spikes([]), [])
+        self.assertEqual(clipper.merge_spikes([3.0]), [3.0])
+
+    def test_gap_boundary(self):
+        g = clipper.MIN_GAP_S
+        self.assertEqual(len(clipper.merge_spikes([0.0, g])), 1, "exactly the gap is one event")
+        self.assertEqual(len(clipper.merge_spikes([0.0, g + 0.01])), 2)
+
+
 class ParseModelReply(unittest.TestCase):
     """The triage score arrives as text. It has to survive the usual noise."""
 

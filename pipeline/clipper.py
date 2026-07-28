@@ -58,12 +58,31 @@ def detect_shots(wav_path: Path) -> list[float]:
     if len(spike_frames) == 0:
         return []
 
-    # Merge consecutive/near spikes into single shot events
-    times = spike_frames * FRAME_MS / 1000.0
+    # tolist() also gets us plain floats: numpy scalars do not survive the trip
+    # into Supabase as JSON.
+    return merge_spikes((spike_frames * FRAME_MS / 1000.0).tolist())
+
+
+def merge_spikes(times: list[float], min_gap: float = MIN_GAP_S) -> list[float]:
+    """Collapse each run of above-threshold frames into one event.
+
+    The gap that decides where an event ends is the one between *consecutive
+    spikes*, not the time since the last event we accepted. Measuring from the
+    last accepted shot looks equivalent on a gunshot — a sharp report that dies
+    inside min_gap — but on anything sustained it is not: wind, a crowd, the
+    trap machine running, and a two-second passage becomes a new "shot" every
+    min_gap seconds. group_pairs then reads those as pairs, so one gust turns
+    into several clips, each costing a GPU pass and a human's attention in
+    Roboflow, and each teaching the model that a clay was in shot.
+    """
+    if not times:
+        return []
     shots = [times[0]]
+    prev = times[0]
     for t in times[1:]:
-        if t - shots[-1] > MIN_GAP_S:
+        if t - prev > min_gap:
             shots.append(t)
+        prev = t                      # every spike moves the reference, accepted or not
     return shots
 
 

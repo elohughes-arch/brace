@@ -597,7 +597,36 @@ async function judge(id, status, el) {
 
 /* ---------- paint + poll ---------- */
 
-function paint() {
+// What is on screen, as a string. If a poll tick would draw the same thing,
+// don't draw it at all: rebuilding root every eight seconds resets keyboard
+// focus and swallows any click whose mousedown landed just before the repaint.
+function signature() {
+  return JSON.stringify([
+    view, state.email, state.loading, running, state.counts,
+    state.queue.map((v) => v.video_id), log.length, log[0]?.line,
+  ]);
+}
+let painted = '';
+
+// When a repaint really is needed, focus survives it by name, not by node.
+function focusKey() {
+  const a = document.activeElement;
+  if (!a || !root.contains(a)) return null;
+  if (a.id) return `#${a.id}`;
+  if (a.dataset.stage) return `[data-stage="${a.dataset.stage}"]`;
+  const card = a.closest && a.closest('.cardv');
+  if (card && a.dataset.act) {
+    return `.cardv[data-id="${CSS.escape(card.dataset.id)}"] [data-act="${a.dataset.act}"]`;
+  }
+  return null;
+}
+
+function paint(force = false) {
+  const sig = signature();
+  if (!force && sig === painted && root.dataset.up) return;
+  painted = sig;
+  const refocus = focusKey();
+
   shell(view === 'review' ? reviewView() : controlView());
 
   document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
@@ -620,6 +649,8 @@ function paint() {
   document.querySelectorAll('.cardv').forEach((el) =>
     el.querySelectorAll('[data-act]').forEach((b) =>
       b.addEventListener('click', () => judge(el.dataset.id, b.dataset.act, el))));
+
+  if (refocus) { try { root.querySelector(refocus)?.focus(); } catch { /* gone */ } }
 }
 
 async function refresh() {
@@ -654,7 +685,7 @@ async function renderDashboard(email) {
   const mine = epoch;
   state = { email, counts: null, queue: [], loading: true };
   dashEpoch = mine;
-  paint();
+  paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
   if (mine !== epoch) return;          // route() moved on; do not start a poll
   clearInterval(poll);

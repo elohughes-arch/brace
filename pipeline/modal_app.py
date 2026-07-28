@@ -186,8 +186,12 @@ def clip(request: fastapi.Request):
       try:
         src = row.get("local_path")
         if not src or not Path(src).exists():
+            # Recoverable, not terminal: send it back so triage fetches it
+            # again. 'error' is a dead end and this file may simply be gone
+            # because the volume was pruned.
             sb.table("pipeline_videos").update(
-                {"status": "error", "triage_notes": "local file missing"}
+                {"status": "discovered", "local_path": None,
+                 "triage_notes": "file was not on the volume; queued to fetch again"}
             ).eq("video_id", row["video_id"]).execute()
             continue
         with tempfile.TemporaryDirectory() as td:
