@@ -39,20 +39,49 @@ key, and everything sensitive is protected by Row Level Security.
 
 ## Owners portal — the estate office (`/portal/`)
 
-Staff-only. Signs in against the same Supabase project as the app; access is decided
-**server-side** by `public.is_portal_owner()` — a security-definer check against the
-`portal_owners` table (RLS everywhere; a non-owner session reads zero rows).
+Staff-only, and **two-factor**, because this is where the agentic software
+lives. Both factors are required every sign-in:
 
-- **Ledger** — live members, days recorded, clips, analysed days, active subs, founding list.
-- **Field agent** — the footage pipeline as it runs: clip statuses + recent analysis results.
-- **Founding members** — the landing form writes to `founding_members` (anon insert-only);
-  the portal reads the list.
-- **Docking bays** — where the next agents (game-book writer, highlights cutter,
-  coaching agent) plug in as they come online.
+1. **Password** — email + password (`signInWithPassword`).
+2. **Authenticator code** — a TOTP factor (1Password, Authy, Google
+   Authenticator) verified through Supabase MFA, taking the session to AAL2.
 
-To add an owner: `insert into public.portal_owners (email) values ('name@domain.com');`
-(Supabase SQL editor — the table is service-role only by design.) The owner also needs a
-normal account (email + password) in Supabase auth.
+**The gate is the database, not the browser.** Every portal policy is built on
+`public.is_portal_owner()`, which returns true only when *both* hold:
+
+- the signed-in email appears in `public.portal_owners`, and
+- `auth.jwt()->>'aal' = 'aal2'` — a second factor was verified this session.
+
+So a stolen password, a stolen magic link, or a hand-crafted AAL1 token reads
+exactly nothing: not the ledger, not the pipeline, not the founding list.
+Editing the page's JavaScript changes nothing either.
+
+### First-time set-up
+
+1. Add the owner: `insert into public.portal_owners (email) values ('name@domain.com');`
+2. On `/portal/`, choose **First time, or forgotten it?** and request a link.
+   The link authenticates at AAL1 only — on its own it opens nothing.
+3. Set a password (12 characters minimum).
+4. Scan the QR with an authenticator app and enter the six-digit code.
+5. From then on: password, then code, every time.
+
+For the emailed link to arrive back at the portal, add these under
+Supabase → Authentication → URL Configuration:
+
+- **Site URL**: `https://braceshooting.com`
+- **Redirect URLs**: `https://braceshooting.com/portal/`,
+  `https://brace-cyan.vercel.app/portal/`
+
+Without them Supabase falls back to its default Site URL (`localhost:3000`)
+and the link appears broken.
+
+### What's behind it
+
+- **Ledger** — live members, days recorded, clips, analysed days, active subs,
+  founding list.
+- **Field agent** — the footage pipeline as it runs.
+- **Founding members** — captured by the landing form.
+- **Docking bays** — where the next agents plug in.
 
 ## Preview locally
 

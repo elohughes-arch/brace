@@ -1,8 +1,11 @@
 /* ============================================================================
    BRACE owners portal — the estate office.
-   Real Supabase auth; access is decided server-side by is_portal_owner()
-   (RLS + a security-definer check against portal_owners). Nothing here is
-   the gate — a non-owner session simply reads zero rows and is turned away.
+
+   This fronts the agentic software, so it is two-factor and the second factor
+   is not optional. Access is decided in the database, not here:
+   is_portal_owner() requires the email to be on the owners list AND the
+   session to have reached AAL2 (a verified TOTP code). A password-only or
+   link-only session reads zero rows, whatever the browser does.
    ========================================================================== */
 import { supabase } from './supabase-portal.js';
 
@@ -12,70 +15,195 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const fmt = (n) => Number(n ?? 0).toLocaleString('en-GB');
 const dateFmt = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—';
 
-/* ---------- gate screens ---------- */
+/* ---------- gate shell ---------- */
 
-function renderSignIn(err = '') {
+function gate(inner, tag = 'Owners portal') {
   root.innerHTML = `
     <div class="gate">
-      <form class="gate-card" id="signin">
+      <div class="gate-card">
         <img class="gate-mark" src="../assets/brand/brace-a-mark-white.svg" alt="Brace" width="740" height="732" />
-        <div class="gate-tag">Owners portal</div>
-        <h1>Sign in</h1>
-        <p class="gate-lede">We'll email you a one-time link. No password needed.</p>
-        <div class="field"><input type="email" id="email" placeholder="you@estate.com" autocomplete="email" required /></div>
-        <div class="err" id="err">${esc(err)}</div>
-        <button class="btn" type="submit">Email me a link</button>
-        <div class="gate-foot">Owners only. <a href="../app/">Open the app</a> · <a href="../">Back to the site</a></div>
-      </form>
+        <div class="gate-tag">${esc(tag)}</div>
+        ${inner}
+      </div>
     </div>`;
-  document.getElementById('signin').addEventListener('submit', async (e) => {
+}
+const setErr = (m) => { const e = document.getElementById('err'); if (e) e.textContent = m || ''; };
+const busy = (btn, on, label) => { btn.disabled = on; if (label) btn.textContent = label; };
+
+/* ---------- 1 · password ---------- */
+
+function renderSignIn(err = '') {
+  gate(`
+    <h1>Sign in</h1>
+    <p class="gate-lede">Owners only. Password and an authenticator code are both required.</p>
+    <form id="f">
+      <div class="field"><input type="email" id="email" placeholder="you@estate.com" autocomplete="email" required /></div>
+      <div class="field"><input type="password" id="pw" placeholder="Password" autocomplete="current-password" required /></div>
+      <div class="err" id="err">${esc(err)}</div>
+      <button class="btn" type="submit">Continue</button>
+    </form>
+    <div class="gate-foot">
+      <a href="#" id="first">First time, or forgotten it?</a><br />
+      <a href="../app/">Open the app</a> · <a href="../">Back to the site</a>
+    </div>`);
+
+  document.getElementById('f').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('.btn');
+    busy(btn, true, 'Checking…'); setErr('');
+    const { error } = await supabase.auth.signInWithPassword({
+      email: document.getElementById('email').value.trim(),
+      password: document.getElementById('pw').value,
+    });
+    if (error) { busy(btn, false, 'Continue'); setErr(error.message); return; }
+    boot();                       // password done — boot decides the next factor
+  });
+
+  document.getElementById('first').addEventListener('click', (e) => { e.preventDefault(); renderBootstrap(); });
+}
+
+/* ---------- bootstrap: a one-time link, only ever to SET a password ---------- */
+// A link on its own can't reach anything (it lands at aal1), so this is safe:
+// it exists so an owner can set a first password and enrol a factor.
+
+function renderBootstrap(err = '') {
+  gate(`
+    <h1>Set up your access</h1>
+    <p class="gate-lede">We'll email you a one-time link. It won't open the portal on its own —
+       it lets you set a password and add your authenticator.</p>
+    <form id="f">
+      <div class="field"><input type="email" id="email" placeholder="you@estate.com" autocomplete="email" required /></div>
+      <div class="err" id="err">${esc(err)}</div>
+      <button class="btn" type="submit">Email me a link</button>
+    </form>
+    <div class="gate-foot"><a href="#" id="back">Back to sign in</a></div>`);
+
+  document.getElementById('f').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('.btn');
     const email = document.getElementById('email').value.trim();
-    btn.disabled = true; btn.textContent = 'Sending…';
+    busy(btn, true, 'Sending…'); setErr('');
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: { emailRedirectTo: window.location.origin + window.location.pathname },
     });
-    if (error) {
-      btn.disabled = false; btn.textContent = 'Email me a link';
-      document.getElementById('err').textContent = error.message;
-      return;
-    }
-    renderSent(email);
+    if (error) { busy(btn, false, 'Email me a link'); setErr(error.message); return; }
+    gate(`<h1>Check your inbox</h1>
+      <p class="gate-lede">A set-up link is on its way to <strong>${esc(email)}</strong>.
+         Open it on this device.</p>`);
   });
+  document.getElementById('back').addEventListener('click', (e) => { e.preventDefault(); renderSignIn(); });
 }
 
-function renderSent(email) {
-  root.innerHTML = `
-    <div class="gate">
-      <div class="gate-card">
-        <img class="gate-mark" src="../assets/brand/brace-a-mark-white.svg" alt="Brace" width="740" height="732" />
-        <div class="gate-tag">Owners portal</div>
-        <h1>Check your inbox</h1>
-        <p class="gate-lede">We've sent a sign-in link to <strong>${esc(email)}</strong>.
-           Open it on this device and you'll land straight in the portal.</p>
-        <button class="btn btn-ghost" id="again">Use a different email</button>
-      </div>
-    </div>`;
-  document.getElementById('again').addEventListener('click', () => renderSignIn());
+/* ---------- 2 · set a password (first run) ---------- */
+
+function renderSetPassword(err = '') {
+  gate(`
+    <h1>Choose a password</h1>
+    <p class="gate-lede">This is the first of your two factors. Make it long and unique to Brace.</p>
+    <form id="f">
+      <div class="field"><input type="password" id="pw1" placeholder="New password" autocomplete="new-password" required /></div>
+      <div class="field"><input type="password" id="pw2" placeholder="Repeat it" autocomplete="new-password" required /></div>
+      <div class="err" id="err">${esc(err)}</div>
+      <button class="btn" type="submit">Save password</button>
+    </form>
+    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`);
+
+  document.getElementById('f').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('.btn');
+    const a = document.getElementById('pw1').value, b = document.getElementById('pw2').value;
+    if (a.length < 12) return setErr('Use at least 12 characters.');
+    if (a !== b) return setErr("Those don't match.");
+    busy(btn, true, 'Saving…'); setErr('');
+    const { error } = await supabase.auth.updateUser({
+      password: a, data: { portal_password_set: true },
+    });
+    if (error) { busy(btn, false, 'Save password'); return setErr(error.message); }
+    boot();
+  });
+  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); await supabase.auth.signOut(); boot(); });
+}
+
+/* ---------- 3 · enrol an authenticator ---------- */
+
+async function renderEnrol(err = '') {
+  gate(`<h1>Add your authenticator</h1><p class="gate-lede">Preparing…</p>`);
+  const { data, error } = await supabase.auth.mfa.enroll({
+    factorType: 'totp', friendlyName: 'Brace portal ' + Date.now(),
+  });
+  if (error) {
+    gate(`<h1>Add your authenticator</h1><div class="err">${esc(error.message)}</div>
+          <button class="btn btn-ghost" id="out">Sign out</button>`);
+    document.getElementById('out').addEventListener('click', async () => { await supabase.auth.signOut(); boot(); });
+    return;
+  }
+  const factorId = data.id;
+  gate(`
+    <h1>Add your authenticator</h1>
+    <p class="gate-lede">Scan this with 1Password, Authy or Google Authenticator, then enter the six-digit code it shows.</p>
+    <img class="qr" src="${data.totp.qr_code}" alt="" width="200" height="200" />
+    <p class="gate-secret">Can't scan? Enter this key by hand:<br /><code>${esc(data.totp.secret)}</code></p>
+    <form id="f">
+      <div class="field"><input type="text" id="code" inputmode="numeric" autocomplete="one-time-code"
+        pattern="[0-9]{6}" maxlength="6" placeholder="000000" required /></div>
+      <div class="err" id="err">${esc(err)}</div>
+      <button class="btn" type="submit">Verify and finish</button>
+    </form>
+    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`);
+
+  document.getElementById('f').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('.btn');
+    busy(btn, true, 'Verifying…'); setErr('');
+    const ch = await supabase.auth.mfa.challenge({ factorId });
+    if (ch.error) { busy(btn, false, 'Verify and finish'); return setErr(ch.error.message); }
+    const v = await supabase.auth.mfa.verify({
+      factorId, challengeId: ch.data.id, code: document.getElementById('code').value.trim(),
+    });
+    if (v.error) { busy(btn, false, 'Verify and finish'); return setErr(v.error.message); }
+    boot();
+  });
+  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); await supabase.auth.signOut(); boot(); });
+}
+
+/* ---------- 4 · the second factor, every sign-in ---------- */
+
+function renderChallenge(factorId, err = '') {
+  gate(`
+    <h1>Authenticator code</h1>
+    <p class="gate-lede">Enter the six-digit code from your authenticator app.</p>
+    <form id="f">
+      <div class="field"><input type="text" id="code" inputmode="numeric" autocomplete="one-time-code"
+        pattern="[0-9]{6}" maxlength="6" placeholder="000000" required autofocus /></div>
+      <div class="err" id="err">${esc(err)}</div>
+      <button class="btn" type="submit">Unlock</button>
+    </form>
+    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`);
+
+  document.getElementById('f').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('.btn');
+    busy(btn, true, 'Checking…'); setErr('');
+    const ch = await supabase.auth.mfa.challenge({ factorId });
+    if (ch.error) { busy(btn, false, 'Unlock'); return setErr(ch.error.message); }
+    const v = await supabase.auth.mfa.verify({
+      factorId, challengeId: ch.data.id, code: document.getElementById('code').value.trim(),
+    });
+    if (v.error) { busy(btn, false, 'Unlock'); return setErr(v.error.message); }
+    boot();
+  });
+  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); await supabase.auth.signOut(); boot(); });
 }
 
 function renderDenied(email) {
-  root.innerHTML = `
-    <div class="gate">
-      <div class="gate-card">
-        <img class="gate-mark" src="../assets/brand/brace-a-mark-white.svg" alt="Brace" width="740" height="732" />
-        <div class="gate-tag">Owners portal</div>
-        <h1>Not on the owners list</h1>
-        <p style="font-size:0.9rem;color:var(--c-ivory-60);line-height:1.6;margin-bottom:18px;">
-          ${esc(email)} isn't on the owners list. If it should be, add it to
-          <span style="font-family:var(--f-mono);font-size:0.8rem;">portal_owners</span> in Supabase.
-        </p>
-        <button class="btn btn-ghost" id="signout">${ic('signout', 15)} Sign out</button>
-      </div>
-    </div>`;
-  document.getElementById('signout').addEventListener('click', () => supabase.auth.signOut());
+  gate(`
+    <h1>Not on the owners list</h1>
+    <p class="gate-lede">${esc(email)} can't reach the portal. If it should,
+       add it to <code>portal_owners</code> in Supabase.</p>
+    <a class="btn" href="../">Back to Brace</a>
+    <button class="btn btn-ghost" id="out" style="margin-top:10px">Sign out</button>`);
+  document.getElementById('out').addEventListener('click', async () => { await supabase.auth.signOut(); boot(); });
 }
 
 /* ---------- dashboard data ---------- */
@@ -197,21 +325,43 @@ function renderDashboard(email, d) {
 }
 
 /* ---------- boot ---------- */
+// One place decides what the visitor sees, and it always asks the database
+// last. Order: signed in? → on the owners list? → password set? → factor
+// enrolled? → factor verified this session? → the floor.
 
 async function boot() {
   const { data: { session } } = await supabase.auth.getSession();
-  if (!session) { renderSignIn(); return; }
+  if (!session) return renderSignIn();
+
   const email = session.user?.email || '';
 
-  // Server-side owner check — the database decides, not the client.
-  const { data: isOwner, error } = await supabase.rpc('is_portal_owner');
-  if (error || !isOwner) { renderDenied(email); return; }
+  // Is this email an owner at all? (email-only check, so we can route properly)
+  const { data: isOwnerEmail } = await supabase.rpc('is_portal_owner_email');
+  if (!isOwnerEmail) return renderDenied(email);
 
-  const d = await loadData();
-  renderDashboard(email, d);
+  // A link-only session has no password yet. We record that one was set in
+  // the user's own metadata; it only routes the UI, since the database is
+  // what actually grants access.
+  if (session.user?.user_metadata?.portal_password_set !== true) {
+    return renderSetPassword();
+  }
+
+  const { data: factors, error: fErr } = await supabase.auth.mfa.listFactors();
+  if (fErr) return renderSignIn(fErr.message);
+  const verified = (factors?.totp || []).filter((f) => f.status === 'verified');
+  if (!verified.length) return renderEnrol();
+
+  const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (aal?.currentLevel !== 'aal2') return renderChallenge(verified[0].id);
+
+  // Two factors done. The database makes the final call.
+  const { data: isOwner, error } = await supabase.rpc('is_portal_owner');
+  if (error || !isOwner) return renderDenied(email);
+
+  renderDashboard(email, await loadData());
 }
 
 supabase.auth.onAuthStateChange((event) => {
-  if (event === 'SIGNED_IN' || event === 'SIGNED_OUT') boot();
+  if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'MFA_CHALLENGE_VERIFIED') boot();
 });
 boot();

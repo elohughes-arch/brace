@@ -144,3 +144,21 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
   .topbar { padding: 14px 16px; } .topbar .scope { display: none; }
   main { padding: 28px 16px 64px; }
 }
+
+/* ---------- two-factor gate ---------- */
+.gate-card .qr {
+  width: 200px; height: 200px; margin: 4px auto 14px; display: block;
+  border-radius: var(--r-md); background: #fff; padding: 8px;
+}
+.gate-secret { font-size: 13px; color: var(--text-3); text-align: center; margin-bottom: 16px; line-height: 1.6; }
+.gate-secret code {
+  display: inline-block; margin-top: 6px; padding: 6px 10px; border-radius: var(--r-sm);
+  background: var(--bg-sunken); border: 1px solid var(--line); color: var(--text-2);
+  font-size: 13px; letter-spacing: .06em; word-break: break-all;
+}
+.gate-card .field input[inputmode="numeric"] {
+  text-align: center; font-size: 24px; letter-spacing: .38em; text-indent: .38em;
+  font-variant-numeric: tabular-nums;
+}
+.gate-card .btn + .btn { margin-top: 10px; }
+.gate-foot a { cursor: pointer; }
