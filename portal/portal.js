@@ -175,13 +175,11 @@ async function renderEnrol(err = '') {
       <li class="step">
         <span class="step-n">1</span>
         <div class="step-body">
-          <h2>Add Brace to your app</h2>
-          <a class="btn" href="${esc(uri)}" id="open">Open my authenticator</a>
+          <h2>Scan this with your authenticator app</h2>
+          ${qrHtml}
           <details class="alt">
-            <summary>Use my phone, or type it in</summary>
+            <summary>Can't scan it? Enter the key by hand</summary>
             <div class="alt-body">
-              ${qrHtml}
-              <p class="alt-cap">Scan with your phone's authenticator</p>
               <div class="secret-row">
                 <code id="secret">${esc(grouped)}</code>
                 <button type="button" class="btn-copy" id="copy">Copy</button>

@@ -180,7 +180,7 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
 .step-body .err { margin: 10px 0; }
 
 /* the quieter routes, folded away until wanted */
-.alt { margin-top: 14px; }
+.alt { margin-top: 16px; }
 .alt summary {
   cursor: pointer; list-style: none; font-size: 13px; color: var(--text-3);
   padding: 2px 0; transition: color .18s var(--ease-out);
@@ -191,8 +191,8 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
 .alt[open] summary::after { content: ' ⌄'; }
 .alt-body { padding-top: 16px; }
 .gate-card .qr {
-  width: 160px; height: 160px; margin: 0 auto; display: block;
-  border-radius: var(--r-md); background: #fff; padding: 8px;
+  width: 208px; height: 208px; margin: 0 auto 4px; display: block;
+  border-radius: var(--r-md); background: #fff; padding: 10px;
 }
 .gate-card .qr svg, .gate-card .qr img { width: 100%; height: 100%; display: block; }
 .alt-cap { font-size: 13px; color: var(--text-3); text-align: center; margin: 10px 0 16px; }
