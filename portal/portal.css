@@ -46,7 +46,7 @@ input { font: inherit; }
   background:
     radial-gradient(ellipse 90% 60% at 50% -10%, rgba(240,90,40,.08), transparent 62%),
     var(--c-midnight); }
-.gate-card { width: 100%; max-width: 400px; margin: auto; background: var(--c-midnight-raised);
+.gate-card { width: 100%; max-width: 432px; margin: auto; background: var(--c-midnight-raised);
   border: 1px solid var(--c-midnight-hairline); border-radius: var(--r-lg); padding: 32px 28px; box-shadow: var(--e-2); }
 .gate-mark { height: 42px; width: auto; margin-bottom: 14px; }
 .gate-lede { font-size: 15px; color: var(--text-2); line-height: 1.55; margin-bottom: 18px; }
@@ -145,21 +145,68 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
   main { padding: 28px 16px 64px; }
 }
 
-/* ---------- two-factor gate ---------- */
+/* ============================================================================
+   Two-factor gate — sign in, set-up, challenge
+   Separation is a hairline or a step up the ramp, never a nested box.
+   ========================================================================== */
+.gate-card .field input,
+.gate-card input[type="text"] { width: 100%; }
+
+/* the code input is the one place a figure should dominate */
+.gate-card input[inputmode="numeric"] {
+  text-align: center; font-size: 30px; font-weight: 500;
+  letter-spacing: .34em; text-indent: .34em; font-variant-numeric: tabular-nums;
+  padding: 14px 12px; border-radius: var(--r-lg);
+  background: var(--bg-sunken); border: 1px solid var(--line-strong); color: var(--text-1);
+}
+.gate-card input[inputmode="numeric"]::placeholder { color: rgba(255,255,255,.22); letter-spacing: .34em; }
+
+/* numbered steps */
+.steps { list-style: none; margin: 22px 0 0; padding: 0; }
+.step { display: flex; gap: 14px; padding: 20px 0; border-top: 1px solid var(--line); }
+.step:first-child { border-top: none; padding-top: 4px; }
+.step-n {
+  flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
+  display: grid; place-items: center; margin-top: 2px;
+  background: var(--clay); color: var(--ink-on-clay);
+  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.step-body { flex: 1 1 auto; min-width: 0; }
+.step-body h2 {
+  font-size: 15px; font-weight: 600; color: var(--text-1);
+  margin: 0 0 12px; letter-spacing: 0;
+}
+.step-body .btn { width: 100%; }
+.step-body .err { margin: 10px 0; }
+
+/* the quieter routes, folded away until wanted */
+.alt { margin-top: 14px; }
+.alt summary {
+  cursor: pointer; list-style: none; font-size: 13px; color: var(--text-3);
+  padding: 2px 0; transition: color .18s var(--ease-out);
+}
+.alt summary:hover { color: var(--text-2); }
+.alt summary::-webkit-details-marker { display: none; }
+.alt summary::after { content: ' ›'; }
+.alt[open] summary::after { content: ' ⌄'; }
+.alt-body { padding-top: 16px; }
 .gate-card .qr {
-  width: 184px; height: 184px; margin: 4px auto 14px; display: block;
+  width: 160px; height: 160px; margin: 0 auto; display: block;
   border-radius: var(--r-md); background: #fff; padding: 8px;
 }
 .gate-card .qr svg, .gate-card .qr img { width: 100%; height: 100%; display: block; }
-.gate-secret { font-size: 13px; color: var(--text-3); text-align: center; margin-bottom: 16px; line-height: 1.6; }
-.gate-secret code {
-  display: inline-block; margin-top: 6px; padding: 6px 10px; border-radius: var(--r-sm);
-  background: var(--bg-sunken); border: 1px solid var(--line); color: var(--text-2);
-  font-size: 13px; letter-spacing: .06em; word-break: break-all;
+.alt-cap { font-size: 13px; color: var(--text-3); text-align: center; margin: 10px 0 16px; }
+.secret-row { display: flex; gap: 8px; align-items: stretch; }
+.secret-row code {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center;
+  padding: 10px 12px; border-radius: var(--r-sm);
+  background: var(--bg-sunken); border: 1px solid var(--line);
+  color: var(--text-2); font-size: 13px; letter-spacing: .04em; word-break: break-all;
 }
-.gate-card .field input[inputmode="numeric"] {
-  text-align: center; font-size: 24px; letter-spacing: .38em; text-indent: .38em;
-  font-variant-numeric: tabular-nums;
+.btn-copy {
+  flex: 0 0 auto; padding: 0 14px; border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong); background: none; color: var(--text-2);
+  font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+  transition: color .18s var(--ease-out), border-color .18s var(--ease-out);
 }
-.gate-card .btn + .btn { margin-top: 10px; }
-.gate-foot a { cursor: pointer; }
+.btn-copy:hover { color: var(--text-1); border-color: var(--text-3); }

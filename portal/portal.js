@@ -158,21 +158,64 @@ async function renderEnrol(err = '') {
   }
   const factorId = data.id;
   const qr = (data.totp.qr_code || '').trim();
+  const uri = data.totp.uri || '';
+  const secret = data.totp.secret || '';
   const qrHtml = qr.startsWith('<svg')
     ? `<div class="qr" role="img" aria-label="Enrolment QR code">${qr}</div>`
     : `<img class="qr" src="${esc(qr)}" alt="Enrolment QR code" />`;
+  // grouped in fours, so it can be read off the screen without losing your place
+  const grouped = (secret.match(/.{1,4}/g) || [secret]).join(' ');
+
   gate(`
     <h1>Add your authenticator</h1>
-    <p class="gate-lede">Scan this with 1Password, Authy or Google Authenticator, then enter the six-digit code it shows.</p>
-    ${qrHtml}
-    <p class="gate-secret">Can't scan? Enter this key by hand:<br /><code>${esc(data.totp.secret)}</code></p>
-    <form id="f">
-      <div class="field"><input type="text" id="code" inputmode="numeric" autocomplete="one-time-code"
-        pattern="[0-9]{6}" maxlength="6" placeholder="000000" required /></div>
-      <div class="err" id="err">${esc(err)}</div>
-      <button class="btn" type="submit">Verify and finish</button>
-    </form>
-    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`);
+    <p class="gate-lede">Brace asks for a six-digit code as well as your password.
+       You only add it once.</p>
+
+    <ol class="steps">
+      <li class="step">
+        <span class="step-n">1</span>
+        <div class="step-body">
+          <h2>Add Brace to your app</h2>
+          <a class="btn" href="${esc(uri)}" id="open">Open my authenticator</a>
+          <details class="alt">
+            <summary>Use my phone, or type it in</summary>
+            <div class="alt-body">
+              ${qrHtml}
+              <p class="alt-cap">Scan with your phone's authenticator</p>
+              <div class="secret-row">
+                <code id="secret">${esc(grouped)}</code>
+                <button type="button" class="btn-copy" id="copy">Copy</button>
+              </div>
+            </div>
+          </details>
+        </div>
+      </li>
+
+      <li class="step">
+        <span class="step-n">2</span>
+        <div class="step-body">
+          <h2>Enter the code it shows</h2>
+          <form id="f">
+            <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code"
+              pattern="[0-9]{6}" maxlength="6" placeholder="000000" required aria-label="Six-digit code" />
+            <div class="err" id="err">${esc(err)}</div>
+            <button class="btn" type="submit">Verify and finish</button>
+          </form>
+        </div>
+      </li>
+    </ol>
+    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`, 'Owners portal · Set-up');
+
+  document.getElementById('copy').addEventListener('click', async (e) => {
+    try {
+      await navigator.clipboard.writeText(secret);      // copy it unspaced
+      e.target.textContent = 'Copied';
+      setTimeout(() => { e.target.textContent = 'Copy'; }, 1600);
+    } catch {
+      const r = document.createRange(); r.selectNode(document.getElementById('secret'));
+      getSelection().removeAllRanges(); getSelection().addRange(r);
+    }
+  });
 
   document.getElementById('f').addEventListener('submit', async (e) => {
     e.preventDefault();
