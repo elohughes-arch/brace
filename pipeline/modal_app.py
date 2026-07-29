@@ -370,9 +370,12 @@ def clip(request: fastapi.Request):
     # theirs here, a batch per run.
     import subprocess
     previewed = 0
+    # Newest first, matching the order the portal lists them — the first
+    # batch previewed must be the batch the owner is looking at.
     todo = (sb.table("pipeline_clips").select("clip_id,file_path")
             .in_("label_status", ["pending", "queued"])
-            .is_("preview_path", "null").limit(40).execute().data)
+            .is_("preview_path", "null")
+            .order("created_at", desc=True).limit(100).execute().data)
     for k in todo:
         try:
             src = Path(k["file_path"])
