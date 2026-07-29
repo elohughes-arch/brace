@@ -129,6 +129,10 @@ def triage(request: fastapi.Request):
     limit = min(int(request.query_params.get("limit", 10) or 10), 25)
 
     def download(url: str, out: Path) -> None:
+        # A failed earlier run can leave a partial file under this name, and
+        # yt-dlp treats an existing file as already downloaded — success, on
+        # top of garbage ffprobe then chokes on. Start clean.
+        out.unlink(missing_ok=True)
         # YouTube refuses anonymous downloads from datacenter addresses
         # ("Sign in to confirm you're not a bot"), so a signed-in session's
         # cookies live on the volume, put there by:
