@@ -177,7 +177,11 @@ def triage(request: fastapi.Request):
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode == 0:
                 return
-            tail = " | ".join((r.stderr or r.stdout or "").strip().splitlines()[-3:])
+            # ERRORs outrank WARNINGs: repeated warnings were eating the
+            # whole record and truncating away the lines that explain.
+            lines = (r.stderr or r.stdout or "").strip().splitlines()
+            errors = [l for l in lines if l.startswith("ERROR")]
+            tail = " | ".join((errors or lines)[-2:])
             saids.append(tail or f"exit {r.returncode}")
         raise RuntimeError(("yt-dlp: " + " /// ".join(saids))[:490])
 
