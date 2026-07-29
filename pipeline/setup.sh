@@ -61,7 +61,10 @@ echo "  YouTube Data API v3 key — the same one you put in Vercel"
 ask YOUTUBE_API_KEY "YouTube API key"
 echo
 echo "  Anthropic API key, for scoring footage — https://console.anthropic.com"
-ask ANTHROPIC_API_KEY "Anthropic API key"
+echo "  Leave blank to skip: everything except the triage scoring still deploys"
+echo "  and works, and re-running this script later slots the key in."
+ask ANTHROPIC_API_KEY "Anthropic API key" optional
+ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 echo
 echo "  Roboflow — https://app.roboflow.com. Leave blank to skip; everything up to"
 echo "  pre-labelling still works, and you can re-run this later."
@@ -73,7 +76,11 @@ else
   ROBOFLOW_API_KEY=""; ROBOFLOW_PROJECT=""
 fi
 
-PIPELINE_TOKEN=$("$PY" -c 'import secrets; print(secrets.token_hex(32))')
+echo
+echo "  If you have run this before and already put a PIPELINE_TOKEN in Vercel,"
+echo "  paste it so the two keep matching. Blank invents a fresh one."
+ask PIPELINE_TOKEN "existing pipeline token (blank for new)" optional
+PIPELINE_TOKEN=${PIPELINE_TOKEN:-$("$PY" -c 'import secrets; print(secrets.token_hex(32))')}
 
 say "3 · Storing them in Modal"
 "$MODAL" secret create brace-pipeline \

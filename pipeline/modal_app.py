@@ -110,6 +110,16 @@ def triage(request: fastapi.Request):
     if not _authorised(request):
         return UNAUTHORISED
 
+    import os
+
+    # setup.sh lets this key be skipped so the rest can deploy. Say so
+    # plainly, rather than failing one video at a time with a bare 401.
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return fastapi.responses.JSONResponse(
+            {"error": "no Anthropic API key in the brace-pipeline secret — "
+                      "re-run pipeline/setup.sh once you have one"},
+            status_code=503)
+
     import subprocess
     import tempfile
 
