@@ -184,13 +184,16 @@ def triage(request: fastapi.Request):
         # PO token", "only images are available"), so keep each attempt's
         # tail, not just the last attempt's last line.
         saids = []
-        for cmd in attempts:
+        for i, cmd in enumerate(attempts, 1):
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode == 0:
                 return
-            # ERRORs outrank WARNINGs: repeated warnings were eating the
-            # whole record and truncating away the lines that explain.
-            lines = (r.stderr or r.stdout or "").strip().splitlines()
+            # The database note keeps the ERROR lines; the container log gets
+            # everything, because the warnings the note drops are the ones
+            # that say whether the token provider actually engaged.
+            all_said = (r.stderr or r.stdout or "").strip()
+            print(f"[download] attempt {i} failed for {url}\n{all_said[-2500:]}")
+            lines = all_said.splitlines()
             errors = [l for l in lines if l.startswith("ERROR")]
             tail = " | ".join((errors or lines)[-2:])
             saids.append(tail or f"exit {r.returncode}")
