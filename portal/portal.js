@@ -371,7 +371,7 @@ const STAGES = [
 
 const RUNS = [
   { stage: 'discover', label: 'Discover', busy: 'Searching', desc: 'Search YouTube for new candidates. Runs on the website itself, so it works before Modal does.' },
-  { stage: 'triage', label: 'Triage', busy: 'Triaging', desc: 'Download the next ten, sample frames, score them for training value. What survives lands in the review queue. Needs Modal.' },
+  { stage: 'triage', label: 'Triage', busy: 'Triaging', desc: 'Download the next batch, sample frames, score them for training value. What survives lands in the review queue. Needs Modal.' },
   { stage: 'clip', label: 'Clip', busy: 'Clipping', desc: 'Find the shots in everything you have approved and cut a clip around each one. Needs Modal.' },
   { stage: 'prelabel', label: 'Pre-label', busy: 'Pre-labelling', desc: 'Draw the first pass of boxes on the clays and push the frames to Roboflow for checking. Needs Modal.', primary: true },
 ];
@@ -410,6 +410,34 @@ async function loadSources() {
   const { data, error } = await supabase.from('pipeline_sources')
     .select('*').order('kind').order('label');
   return error ? [] : (data || []);
+}
+
+async function loadIssues() {
+  const { data, error } = await supabase.from('pipeline_videos')
+    .select('video_id,title,triage_notes,updated_at')
+    .eq('status', 'error')
+    .order('updated_at', { ascending: false })
+    .limit(12);
+  return error ? [] : (data || []);
+}
+
+// Recorded token counts, not a guess. Priced at Haiku rates because that is
+// the default triage model; if TRIAGE_MODEL is changed the tokens stay right
+// and only the multiplication is off.
+const HAIKU_IN_PER_M = 1.00;
+const HAIKU_OUT_PER_M = 5.00;
+
+async function loadSpend() {
+  let data, error;
+  try { ({ data, error } = await supabase.rpc('pipeline_spend')); }
+  catch { return null; }   // a missing function is a blank line, not a broken page
+  if (error || !data || !data.length) return null;
+  const s = data[0];
+  return {
+    scored: Number(s.scored || 0),
+    usd: (Number(s.in_tokens || 0) / 1e6) * HAIKU_IN_PER_M
+       + (Number(s.out_tokens || 0) / 1e6) * HAIKU_OUT_PER_M,
+  };
 }
 
 const judged = new Set();   // survives a queue read that overtakes a decision
@@ -470,7 +498,8 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['review', 'sources'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, loading: true };
+let batch = 10;   // videos per press — survives repaints, resets with the tab
 let poll = null;
 
 /* Every trip through route() bumps `epoch`. A dashboard load that was already
@@ -545,14 +574,21 @@ function controlView() {
       <span>${n('pending')} clips awaiting pre-label</span>
       <span>${n('prelabelled')} pre-labelled</span>
       <span>${n('rejected')} rejected</span>
+      ${state.spend && state.spend.scored
+        ? `<span>${fmt(state.spend.scored)} scored for ~$${state.spend.usd.toFixed(2)}</span>` : ''}
       ${c && c.error ? `<span class="warn">${n('error')} errored
-        <a href="#" id="retry" class="p-act" style="margin-left:6px">Send back</a></span>` : ''}
+        <a href="#" id="retry" class="p-act" style="margin-left:6px">Send all back</a></span>` : ''}
     </div>
 
     <div class="grid">
       <section class="panel">
         <div class="p-head"><span class="p-title">Run a stage</span>
-          <a class="p-act" href="#" id="refresh">Refresh</a></div>
+          <span>
+            <select id="batch" class="mini" title="How many videos one press works through — the cost dial">
+              ${[3, 10, 25].map((v) => `<option value="${v}" ${v === batch ? 'selected' : ''}>${v} at a time</option>`).join('')}
+            </select>
+            <a class="p-act" href="#" id="refresh" style="margin-left:10px">Refresh</a>
+          </span></div>
         <div class="runs">
           ${RUNS.map((r) => `
             <div class="run">
@@ -564,7 +600,9 @@ function controlView() {
         <p class="foot-note">Discover runs here and answers straight away. The other
            three need yt-dlp, ffmpeg and a GPU, so they run on Modal and can outlive
            the request: a button that comes back saying it is still running is Modal
-           working, not a failure, and the counts above move as it goes.</p>
+           working, not a failure, and the counts above move as it goes. The batch
+           size is the cost dial — small while trying things out, larger once a run
+           is trusted.</p>
       </section>
 
       <section class="panel">
@@ -574,7 +612,26 @@ function controlView() {
             <span class="t">${l.t}</span><span class="m">${esc(l.line)}</span>
           </div>`).join('') : '<div class="empty">Nothing run this session yet.</div>'}
       </section>
-    </div>`;
+    </div>
+
+    ${state.issues && state.issues.length ? `
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Issues — what went wrong, in the tool's own words</span></div>
+      ${state.issues.map((v) => `
+        <div class="row">
+          <span class="dot off"></span>
+          <div class="main">
+            <div class="t">${esc(v.title || v.video_id)}</div>
+            <div class="s" title="${esc(v.triage_notes || '')}">${esc(v.triage_notes || 'no detail recorded')}</div>
+          </div>
+          <div class="end">
+            <button class="linky" data-requeue="${esc(v.video_id)}">Send back</button>
+          </div>
+        </div>`).join('')}
+      <p class="foot-note">Send back returns a video to Discovered so the next triage
+         run retries it. If the same words keep coming back, that is the fault to
+         report, verbatim.</p>
+    </section>` : ''}`;
 }
 
 /* ---------- review ---------- */
@@ -811,8 +868,22 @@ function paint(force = false) {
       error ? 'bad' : 'good');
     refresh();
   });
+  document.getElementById('batch')?.addEventListener('change', (e) => {
+    batch = Number(e.target.value) || 10;
+  });
   document.querySelectorAll('[data-stage]').forEach((b) =>
-    b.addEventListener('click', () => runStage(b.dataset.stage)));
+    b.addEventListener('click', () =>
+      runStage(b.dataset.stage, b.dataset.stage === 'discover' ? {} : { limit: batch })));
+  document.querySelectorAll('[data-requeue]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      const { error } = await supabase.from('pipeline_videos')
+        .update({ status: 'discovered', local_path: null })
+        .eq('video_id', b.dataset.requeue).select('video_id');
+      note(error ? `could not send ${b.dataset.requeue} back — ${error.message}`
+        : `${b.dataset.requeue} sent back to discovered`, error ? 'bad' : 'good');
+      refresh();
+    }));
   document.querySelectorAll('.cardv').forEach((el) =>
     el.querySelectorAll('[data-act]').forEach((b) =>
       b.addEventListener('click', () => judge(el.dataset.id, b.dataset.act, el))));
@@ -830,14 +901,18 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources] = await Promise.all([
+    const [counts, queue, sources, issues, spend] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
+      view === 'control' ? loadIssues() : Promise.resolve(state.issues),
+      view === 'control' ? loadSpend() : Promise.resolve(state.spend),
     ]);
     state.counts = counts;
     state.queue = queue;
     state.sources = sources;
+    state.issues = issues;
+    state.spend = spend;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -858,7 +933,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

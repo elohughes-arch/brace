@@ -154,11 +154,16 @@ def score_frames(frames: list[Path]) -> dict:
 
     score = float(data.get("score", 0))
     camera = str(data.get("camera", "unknown"))
+    usage = getattr(msg, "usage", None)
     return {
         "score": max(0.0, min(10.0, score)),
         "camera": camera if camera in CAMERA_VALUES else "unknown",
         "clays_visible": bool(data.get("clays_visible", False)),
         "notes": str(data.get("notes", ""))[:400],
+        # What this verdict actually cost, so the run can be priced from
+        # recorded fact rather than a rate card and a guess.
+        "in_tokens": getattr(usage, "input_tokens", None),
+        "out_tokens": getattr(usage, "output_tokens", None),
     }
 
 

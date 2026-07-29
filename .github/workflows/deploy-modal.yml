@@ -1,0 +1,27 @@
+# Deploys the Modal side whenever pipeline code lands on main, so a pushed
+# fix reaches Modal the same way it reaches Vercel: on its own.
+#
+# Needs two repository secrets (Settings → Secrets and variables → Actions):
+#   MODAL_TOKEN_ID      from ~/.modal.toml on any signed-in machine
+#   MODAL_TOKEN_SECRET  same file
+name: Deploy Modal
+
+on:
+  push:
+    branches: [main]
+    paths: ['pipeline/**']
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet modal fastapi
+      - run: modal deploy modal_app.py
+        working-directory: pipeline
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}

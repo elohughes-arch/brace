@@ -307,6 +307,10 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
 .perm-declined { color: var(--destructive); border-color: rgba(224,112,95,.35); }
 .perm-requested { color: var(--champagne); border-color: rgba(203,190,147,.35); }
 .linky { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+
+/* Small inline select in a panel head — the batch-size dial. */
+.mini { font-size: 12px; color: var(--text-2); background: var(--bg-sunken);
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 8px; }
 .linky:hover { color: var(--text-1); }
 .linky.bad:hover { color: var(--destructive); }
 

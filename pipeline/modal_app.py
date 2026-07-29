@@ -197,6 +197,8 @@ def triage(request: fastapi.Request):
                 "status": "downloaded" if keep else "rejected",
                 "triage_score": r["score"],
                 "triage_notes": f"[{r.get('camera', '?')}] {r.get('notes', '')}",
+                "triage_in_tokens": r.get("in_tokens"),
+                "triage_out_tokens": r.get("out_tokens"),
                 "local_path": str(out) if keep else None,
             }).eq("video_id", vid).execute()
             if not keep:
