@@ -326,11 +326,19 @@ module.exports = async (req, res) => {
   const PIPELINE_TOKEN = process.env.PIPELINE_TOKEN;
   const endpoint = endpointFor(stage);
   if (!PIPELINE_TOKEN || !endpoint) {
+    // Name the absent variable: "not configured" alone cannot distinguish a
+    // missing var from one saved in Vercel but scoped to an environment this
+    // deployment was not built for.
+    const missing = [
+      !PIPELINE_TOKEN && 'PIPELINE_TOKEN',
+      !endpoint && 'MODAL_BASE_URL',
+    ].filter(Boolean).join(' and ');
     return res.status(500).json({
       error: 'Modal not configured',
-      detail: `${stage} needs yt-dlp, ffmpeg or a GPU, so it runs on Modal. `
-        + 'Set PIPELINE_TOKEN and MODAL_BASE_URL once you have deployed it. '
-        + 'Discover works without them.',
+      detail: `${missing} did not reach this deployment. If it is saved in `
+        + 'Vercel, check it is ticked for the environment this deployment '
+        + 'was built for (Production and Preview), then redeploy — variables '
+        + 'only reach new builds.',
     });
   }
 

@@ -455,7 +455,9 @@ async function runStage(stage, query = {}) {
       const said = Object.entries(rest).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`).join(' · ');
       note(`${stage} finished${said ? ` — ${said}` : ''}`, 'good');
     } else {
-      note(`${stage} failed (${res.status}) — ${body.error || body.detail || plain() || 'no detail'}`, 'bad');
+      // error is the headline, detail is the way out — show both when present.
+      const why = [body.error, body.detail].filter(Boolean).join(': ') || plain() || 'no detail';
+      note(`${stage} failed (${res.status}) — ${why}`, 'bad');
     }
   } catch (e) {
     note(`${stage} could not be reached — ${e.message || e}`, 'bad');
