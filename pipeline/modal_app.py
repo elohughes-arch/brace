@@ -128,6 +128,29 @@ def triage(request: fastapi.Request):
 
     limit = min(int(request.query_params.get("limit", 10) or 10), 25)
 
+    def download(url: str, out: Path) -> None:
+        # Two shapes of attempt: the plain one, then one that asks YouTube's
+        # android player for any single ≤720p file. The second dodges two
+        # separate failure modes — web-client bot checks, and videos whose
+        # split video+audio formats are withheld. If both fail, keep
+        # yt-dlp's actual words: "exit status 1" diagnoses nothing.
+        attempts = [
+            ["yt-dlp", "-f", "bv*[height<=720]+ba/b[height<=720]",
+             "--merge-output-format", "mp4", "--no-playlist", "--retries", "2",
+             "-o", str(out), url],
+            ["yt-dlp", "-f", "b[height<=720]/b", "--no-playlist",
+             "--extractor-args", "youtube:player_client=android",
+             "-o", str(out), url],
+        ]
+        last = ""
+        for cmd in attempts:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode == 0:
+                return
+            tail = (r.stderr or r.stdout or "").strip().splitlines()
+            last = tail[-1][:300] if tail else f"exit {r.returncode}"
+        raise RuntimeError(f"yt-dlp: {last}")
+
     sb = _sb()
     rows = (sb.table("pipeline_videos").select("*")
             .eq("status", "discovered").limit(limit).execute().data)
@@ -137,11 +160,7 @@ def triage(request: fastapi.Request):
         try:
             out = Path(MEDIA) / "videos" / f"{vid}.mp4"
             out.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(
-                ["yt-dlp", "-f", "bv*[height<=720]+ba/b[height<=720]",
-                 "--merge-output-format", "mp4", "-o", str(out), row["url"]],
-                check=True, capture_output=True,
-            )
+            download(row["url"], out)
             with tempfile.TemporaryDirectory() as td:
                 frames = sample_frames(out, Path(td))
                 r = score_frames(frames)
