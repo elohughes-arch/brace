@@ -361,6 +361,7 @@ label.row, .pickside { cursor: pointer; }
 .crm-head h1 { font-weight: 600; font-size: 24px; letter-spacing: -.4px; color: var(--c-ivory); }
 .crm-head p { font-size: 13.5px; color: var(--text-3); margin-top: 5px; max-width: 60ch; }
 .crm-head .warn { color: var(--destructive); }
+.chip-on { color: var(--clay) !important; }
 
 /* Stat cards: number first, identity dot from the pipeline rail reused as a
    live indicator. Warn state only when there is actually something wrong. */

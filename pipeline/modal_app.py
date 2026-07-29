@@ -471,6 +471,15 @@ def prelabel(request: fastapi.Request):
                     for b, s in zip(res["boxes"].cpu(), res["scores"].cpu())
                 ]
 
+        # The clipper cuts by sound, which cannot know whether a clay is in
+        # view. This is the first stage that can see — a clip with no clay
+        # in any frame is rejected here rather than sent on as empty work.
+        if not boxes_per_frame:
+            sb.table("pipeline_clips").update(
+                {"label_status": "rejected"}).eq("clip_id", row["clip_id"]).execute()
+            done += 1
+            continue
+
         sb.table("pipeline_labels").upsert({
             "clip_id": row["clip_id"],
             "n_clays": max((len(v) for v in boxes_per_frame.values()), default=0),

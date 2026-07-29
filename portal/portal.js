@@ -13,6 +13,7 @@ const root = document.getElementById('root');
 const ic = (id, w = 18) => `<svg width="${w}" height="${w}" aria-hidden="true"><use href="#i-${id}"/></svg>`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n) => Number(n ?? 0).toLocaleString('en-GB');
+const dateFmt = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—';
 
 // The fallback in index.html reports whichever of these was reached last, so a
 // stall names its step instead of guessing at a cause.
@@ -449,7 +450,7 @@ async function loadSpend() {
 
 async function loadClips() {
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,file_path,created_at')
     .order('created_at', { ascending: false })
     .limit(40);
   if (error) return [];
@@ -465,7 +466,28 @@ async function loadClips() {
       rows.forEach((k) => { k.preview_url = byPath.get(k.preview_path) || null; });
     } catch { /* players fall back to the YouTube link */ }
   }
+  // The id alone reads like noise; the video's own title and the cut's
+  // number make a row say "Shotkam clays — shot 12".
+  const vids = [...new Set(rows.map((k) => k.video_id))];
+  if (vids.length) {
+    const { data: tv } = await supabase.from('pipeline_videos')
+      .select('video_id,title').in('video_id', vids);
+    const titles = new Map((tv || []).map((v) => [v.video_id, v.title]));
+    rows.forEach((k) => {
+      k.title = titles.get(k.video_id) || k.video_id;
+      k.shot_no = Number((k.file_path || '').match(/shot(\d+)/)?.[1] || 0);
+    });
+  }
   return rows;
+}
+
+async function loadSheet() {
+  let q = supabase.from('pipeline_videos')
+    .select('video_id,title,channel,status,triage_score,duration_s,updated_at')
+    .order('updated_at', { ascending: false }).limit(150);
+  if (sheetFilter !== 'all') q = q.eq('status', sheetFilter);
+  const { data, error } = await q;
+  return error ? [] : (data || []);
 }
 
 const judged = new Set();   // survives a queue read that overtakes a decision
@@ -524,9 +546,10 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['review', 'sources', 'labelling'].find((v) => location.hash === `#${v}`) || 'control';
+const viewFromHash = () => ['review', 'sources', 'labelling', 'mastersheet'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sheet: [], loading: true };
+let sheetFilter = 'all';
 let batch = 10;   // videos per press — survives repaints, resets with the tab
 let poll = null;
 
@@ -553,6 +576,7 @@ function shell(body) {
           ${item('review', 'Review', state.counts?.downloaded)}
           ${item('sources', 'Sources')}
           ${item('labelling', 'Labelling', state.counts?.pending)}
+          ${item('mastersheet', 'Mastersheet')}
         </nav>
         <div class="side-foot">
           ${state.spend && state.spend.scored
@@ -761,7 +785,7 @@ function labellingView() {
         ${k.preview_url
     ? `<video class="clipvid" controls preload="metadata" src="${esc(k.preview_url)}"></video>`
     : '<div class="s">Preview rendering — arrives with the next heartbeat. Meanwhile:</div>'}
-        <div class="t">${esc(k.video_id)} at ${mmss(k.shot_ts)}
+        <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ``} · ${mmss(k.shot_ts)}
           · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
         <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
       </div>
@@ -770,8 +794,7 @@ function labellingView() {
     <div class="row">
       <span class="dot ${k.label_status === 'prelabelled' ? 'on' : ''}"></span>
       <div class="main">
-        <div class="t"><a href="${esc(yt(k))}" target="_blank" rel="noopener">${esc(k.video_id)}</a>
-          at ${mmss(k.shot_ts)}</div>
+        <div class="t"><a href="${esc(yt(k))}" target="_blank" rel="noopener">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ``} · ${mmss(k.shot_ts)}</a></div>
         <div class="s">${esc(k.label_status)}${k.roboflow_id ? ' · in Roboflow' : ''}</div>
       </div>
     </div>`;
@@ -834,6 +857,54 @@ async function queueClips(ids, btn) {
     ids.forEach((id) => picked.delete(id));
   }
   await refresh();
+}
+
+/* ---------- mastersheet ---------- */
+
+// Every video the machine has ever touched, in one ledger. Its other job is
+// reassurance: discover writes with ignore-duplicates against this sheet, so
+// nothing on it is ever fetched, scored or clipped twice.
+const SHEET_FILTERS = [
+  ['all', 'All'], ['downloaded', 'Triaged'], ['approved', 'Approved'],
+  ['clipped', 'Clipped'], ['rejected', 'Rejected'], ['discovered', 'Discovered'],
+];
+const SHEET_TONE = { clipped: 'on', approved: 'on', downloaded: 'on' };
+
+function mastersheetView() {
+  if (state.loading) return '<div class="empty">Loading the sheet…</div>';
+  const c = state.counts || {};
+  const row = (v) => `
+    <div class="row">
+      <span class="dot ${SHEET_TONE[v.status] || 'off'}"></span>
+      <div class="main">
+        <div class="t"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}"
+          target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a></div>
+        <div class="s">${esc(v.channel || '')} · ${esc(v.status)}${v.triage_score != null
+    ? ` · scored ${Number(v.triage_score).toFixed(1)}` : ''} · ${mmss(v.duration_s)} · ${dateFmt(v.updated_at)}</div>
+      </div>
+    </div>`;
+
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Mastersheet</h1>
+        <p>Every video the pipeline has touched, and what became of it. Discover
+           checks this sheet before writing, so nothing on it is ever collected,
+           scored or clipped twice.</p>
+      </div>
+    </div>
+
+    <div class="tally">
+      ${SHEET_FILTERS.map(([k, label]) => `
+        <a href="#" class="p-act ${sheetFilter === k ? 'chip-on' : ''}" data-msf="${k}">${label}${k !== 'all' && c[k] != null ? ` ${fmt(c[k])}` : ''}</a>`).join('')}
+    </div>
+
+    <section class="panel">
+      <div class="p-head"><span class="p-title">${sheetFilter === 'all' ? 'Most recent'
+    : SHEET_FILTERS.find(([k]) => k === sheetFilter)[1]} — ${fmt(state.sheet.length)} shown</span></div>
+      ${state.sheet.length ? state.sheet.map(row).join('')
+    : '<div class="empty">Nothing with that status yet.</div>'}
+    </section>`;
 }
 
 /* ---------- sources ---------- */
@@ -1035,6 +1106,7 @@ function paint(force = false) {
   shell(view === 'review' ? reviewView()
     : view === 'sources' ? sourcesView()
     : view === 'labelling' ? labellingView()
+    : view === 'mastersheet' ? mastersheetView()
     : controlView());
 
   document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
@@ -1097,6 +1169,12 @@ function paint(force = false) {
     await queueClips((data || []).map((r) => r.clip_id));
   });
 
+  document.querySelectorAll('[data-msf]').forEach((a) => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    sheetFilter = a.dataset.msf;
+    refresh();
+  }));
+
   document.getElementById('addsrc')?.addEventListener('submit', addSource);
   document.getElementById('bulksrc')?.addEventListener('submit', addBulkSources);
   document.querySelectorAll('[data-toggle]').forEach((b) => b.addEventListener('click', () =>
@@ -1111,13 +1189,14 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, clips] = await Promise.all([
+    const [counts, queue, sources, issues, spend, clips, sheet] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
       view === 'control' ? loadIssues() : Promise.resolve(state.issues),
       view === 'control' ? loadSpend() : Promise.resolve(state.spend),
       view === 'labelling' ? loadClips() : Promise.resolve(state.clips),
+      view === 'mastersheet' ? loadSheet() : Promise.resolve(state.sheet),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -1125,6 +1204,7 @@ async function refresh() {
     state.issues = issues;
     state.spend = spend;
     state.clips = clips;
+    state.sheet = sheet;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -1145,7 +1225,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sheet: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
