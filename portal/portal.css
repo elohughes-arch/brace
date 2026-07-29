@@ -62,10 +62,11 @@ input { font: inherit; }
   color: var(--c-ivory-48); margin-bottom: 24px; }
 .gate h1 { font-weight: 600; font-size: 28px; letter-spacing: -.5px; color: var(--c-ivory-90); margin-bottom: 14px; }
 .field { margin-bottom: 12px; }
-.field input { width: 100%; padding: 12px 14px; border-radius: var(--r-md);
+.field input, .field textarea { width: 100%; padding: 12px 14px; border-radius: var(--r-md);
   background: var(--c-midnight-deep); border: 1px solid var(--c-midnight-hairline);
   color: var(--c-ivory-90); }
-.field input::placeholder { color: var(--c-ivory-48); }
+.field textarea { resize: vertical; font: inherit; font-size: 13px; line-height: 1.5; }
+.field input::placeholder, .field textarea::placeholder { color: var(--c-ivory-48); }
 .gate .err { color: var(--c-brass-bright); font-size: 0.85rem; margin: 4px 0 10px; min-height: 1.2em; }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%;
   padding: 13px 20px; border-radius: var(--r-lg); background: var(--clay); color: var(--ink-on-clay);

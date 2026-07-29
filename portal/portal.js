@@ -790,8 +790,49 @@ function sourcesView() {
         </form>
         <p class="foot-note">Discover runs every source that is in use. Muting one
            keeps it on the list without searching it.</p>
+
+        <div class="p-head" style="margin-top:22px"><span class="p-title">Paste a list</span></div>
+        <form id="bulksrc">
+          <div class="field"><textarea id="s-bulk" rows="6"
+            placeholder="One per line — @handles and channel URLs become channels, video links become videos, anything else becomes a search phrase."></textarea></div>
+          <div class="err" id="bulkerr"></div>
+          <button class="btn btn-ghost" type="submit">Add the lot</button>
+        </form>
       </section>
     </div>`;
+}
+
+// One pasted line → what kind of source it is. Guessing here is fine:
+// every guess is visible as a row and correctable with Remove.
+function classifySource(line) {
+  const s = line.trim();
+  if (!s) return null;
+  if (/^@[\w.-]+$/.test(s)) return { kind: 'channel', ref: s };
+  if (/youtu\.be\/|[?&]v=/.test(s)) return { kind: 'video', ref: s };
+  if (/youtube\.com\/(channel\/|@)/.test(s) || /\bUC[0-9A-Za-z_-]{22}\b/.test(s)) {
+    return { kind: 'channel', ref: s };
+  }
+  return { kind: 'query', ref: s };
+}
+
+async function addBulkSources(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector('.btn');
+  const box = document.getElementById('s-bulk');
+  const err = document.getElementById('bulkerr');
+  const have = new Set(state.sources.map((x) => x.ref.toLowerCase()));
+  const rows = box.value.split('\n').map(classifySource).filter(Boolean)
+    .filter((r) => !have.has(r.ref.toLowerCase()))
+    .map((r) => ({ ...r, permission: 'unknown' }));
+  if (!rows.length) { err.textContent = 'Nothing new on those lines.'; return; }
+  busy(btn, true, 'Adding…'); err.textContent = '';
+  const { error } = await supabase.from('pipeline_sources').insert(rows);
+  busy(btn, false, 'Add the lot');
+  if (error) { err.textContent = error.message; return; }
+  note(`added ${rows.length} sources from the list`, 'good');
+  box.value = '';
+  state.sources = await loadSources();
+  paint(true);
 }
 
 async function addSource(e) {
@@ -903,6 +944,7 @@ function paint(force = false) {
       b.addEventListener('click', () => judge(el.dataset.id, b.dataset.act, el))));
 
   document.getElementById('addsrc')?.addEventListener('submit', addSource);
+  document.getElementById('bulksrc')?.addEventListener('submit', addBulkSources);
   document.querySelectorAll('[data-toggle]').forEach((b) => b.addEventListener('click', () =>
     setSourceEnabled(b.dataset.toggle, !state.sources.find((x) => x.id === b.dataset.toggle)?.enabled)));
   document.querySelectorAll('[data-drop]').forEach((b) => b.addEventListener('click', () =>
