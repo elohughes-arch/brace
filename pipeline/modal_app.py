@@ -149,26 +149,33 @@ def triage(request: fastapi.Request):
         # client's formats separately and not every gate wants a proof-of-
         # trust token from a datacenter address. If all fail, keep yt-dlp's
         # actual words: "exit status 1" diagnoses nothing.
+        # The fallback clients run WITHOUT cookies, deliberately: android_vr
+        # refuses a cookie jar outright ("skipping client ... does not
+        # support cookies"), and it is exactly the client that skips the
+        # proof-of-trust gate the signed-in web client hits.
         attempts = [
             ["yt-dlp", *cookies, "-S", "res:720",
              "--extractor-args", "youtube:player_client=default,tv_simply",
              "--merge-output-format", "mp4", "--no-playlist", "--retries", "2",
              "-o", str(out), url],
-            ["yt-dlp", *cookies, "-S", "res:720", "--no-playlist",
-             "--extractor-args", "youtube:player_client=android_vr,tv_embedded",
+            ["yt-dlp", "-S", "res:720", "--no-playlist",
+             "--extractor-args", "youtube:player_client=android_vr",
+             "-o", str(out), url],
+            ["yt-dlp", "-S", "res:720", "--no-playlist",
+             "--extractor-args", "youtube:player_client=tv",
              "-o", str(out), url],
         ]
-        last = ""
+        # Warnings above the final line name the actual gate ("requires a
+        # PO token", "only images are available"), so keep each attempt's
+        # tail, not just the last attempt's last line.
+        saids = []
         for cmd in attempts:
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode == 0:
                 return
-            # The last line alone hides the warnings above it that name the
-            # actual gate ("requires a PO token", "not available on this
-            # app"), so keep the tail of everything said.
-            said = " | ".join((r.stderr or r.stdout or "").strip().splitlines()[-6:])
-            last = said[-450:] if said else f"exit {r.returncode}"
-        raise RuntimeError(f"yt-dlp: {last}")
+            tail = " | ".join((r.stderr or r.stdout or "").strip().splitlines()[-3:])
+            saids.append(tail or f"exit {r.returncode}")
+        raise RuntimeError(("yt-dlp: " + " /// ".join(saids))[:490])
 
     sb = _sb()
     rows = (sb.table("pipeline_videos").select("*")
