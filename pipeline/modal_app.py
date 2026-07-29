@@ -128,8 +128,13 @@ def _advance():
 
     if videos_in("discovered"):
         hit("triage", "?limit=25")
-    if videos_in("approved"):
-        hit("clip")
+    def clips_unpreviewed():
+        return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
+                .in_("label_status", ["pending", "queued"])
+                .is_("preview_path", "null").execute().count or 0)
+
+    if videos_in("approved") or clips_unpreviewed():
+        hit("clip")   # cuts approved videos and backfills missing previews
     if clips_queued():
         hit("prelabel")
     return {"stage": "advance"}
@@ -356,8 +361,41 @@ def clip(request: fastapi.Request):
         ).eq("video_id", row["video_id"]).execute()
         failed += 1
     volume.commit()
+
+    # Previews: a small render of each cut goes to Supabase storage so the
+    # owner can watch the actual clip in the portal before sending it to the
+    # labeller. Also a backfill — clips cut before previews existed get
+    # theirs here, a batch per run.
+    import subprocess
+    previewed = 0
+    todo = (sb.table("pipeline_clips").select("clip_id,file_path")
+            .in_("label_status", ["pending", "queued"])
+            .is_("preview_path", "null").limit(40).execute().data)
+    for k in todo:
+        try:
+            src = Path(k["file_path"])
+            if not src.exists():
+                continue
+            small = Path("/tmp") / f"{k['clip_id']}.mp4"
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(src), "-vf", "scale=-2:480",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+                 "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart",
+                 str(small)],
+                check=True, capture_output=True)
+            dest = f"previews/{k['clip_id']}.mp4"
+            sb.storage.from_("clips").upload(
+                dest, small.read_bytes(),
+                {"content-type": "video/mp4", "upsert": "true"})
+            sb.table("pipeline_clips").update(
+                {"preview_path": dest}).eq("clip_id", k["clip_id"]).execute()
+            small.unlink(missing_ok=True)
+            previewed += 1
+        except Exception as e:  # noqa: BLE001
+            print(f"[clip] preview failed for {k['clip_id']}: {e}")
+
     return {"stage": "clip", "videos": len(rows), "clips_created": made,
-            "errors": failed}
+            "previews_made": previewed, "errors": failed}
 
 
 # ---------------------------------------------------------------- prelabel

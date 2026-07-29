@@ -299,8 +299,12 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
 .dot.off { background: var(--text-3); opacity: .4; }
 
 /* Clip-check selection */
-label.row { cursor: pointer; }
+label.row, .pickside { cursor: pointer; }
 .row .tick { width: 16px; height: 16px; accent-color: var(--clay); flex: 0 0 auto; }
+.cliprow { align-items: flex-start; }
+.cliprow .pickside { padding-top: 4px; }
+.clipvid { width: 100%; max-width: 400px; aspect-ratio: 16 / 9; background: #000;
+  border-radius: var(--r-md); display: block; margin-bottom: 8px; }
 .mini-btn { width: auto; display: inline-flex; padding: 7px 14px; font-size: 11px; }
 
 .row.src.off { opacity: .5; }

@@ -449,10 +449,23 @@ async function loadSpend() {
 
 async function loadClips() {
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,created_at')
     .order('created_at', { ascending: false })
     .limit(40);
-  return error ? [] : (data || []);
+  if (error) return [];
+  const rows = data || [];
+  // Previews live in a private bucket; a signed URL is the only way a
+  // browser can play one, and signing is itself gated by is_portal_owner().
+  const paths = rows.filter((k) => k.preview_path).map((k) => k.preview_path);
+  if (paths.length) {
+    try {
+      const { data: signed } = await supabase.storage.from('clips')
+        .createSignedUrls(paths, 3600);
+      const byPath = new Map((signed || []).map((x) => [x.path, x.signedUrl]));
+      rows.forEach((k) => { k.preview_url = byPath.get(k.preview_path) || null; });
+    } catch { /* players fall back to the YouTube link */ }
+  }
+  return rows;
 }
 
 const judged = new Set();   // survives a queue read that overtakes a decision
@@ -740,14 +753,19 @@ function labellingView() {
 
   const yt = (k) => `https://www.youtube.com/watch?v=${encodeURIComponent(k.video_id)}&t=${Math.max(0, Math.floor(k.shot_ts || 0))}s`;
   const pendingRow = (k) => `
-    <label class="row">
-      <input type="checkbox" class="tick" data-pick="${esc(k.clip_id)}" ${picked.has(k.clip_id) ? 'checked' : ''} />
+    <div class="row cliprow">
+      <label class="pickside">
+        <input type="checkbox" class="tick" data-pick="${esc(k.clip_id)}" ${picked.has(k.clip_id) ? 'checked' : ''} />
+      </label>
       <div class="main">
-        <div class="t"><a href="${esc(yt(k))}" target="_blank" rel="noopener">Watch the shot ↗</a>
-          · ${esc(k.video_id)} at ${mmss(k.shot_ts)}</div>
+        ${k.preview_url
+    ? `<video class="clipvid" controls preload="metadata" src="${esc(k.preview_url)}"></video>`
+    : '<div class="s">Preview rendering — arrives with the next heartbeat. Meanwhile:</div>'}
+        <div class="t">${esc(k.video_id)} at ${mmss(k.shot_ts)}
+          · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
         <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
       </div>
-    </label>`;
+    </div>`;
   const doneRow = (k) => `
     <div class="row">
       <span class="dot ${k.label_status === 'prelabelled' ? 'on' : ''}"></span>
