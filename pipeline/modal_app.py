@@ -466,7 +466,11 @@ def prelabel(request: fastapi.Request):
             continue
         cap = cv2.VideoCapture(path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        step = max(1, int(round(fps / 5)))
+        # Detection rate. 30 makes the tracked flight boundaries tight to a
+        # frame; PRELABEL_FPS in the secret turns the dial (GPU time scales
+        # with it — a 10s clip is ~300 frames at 30).
+        detect_fps = float(os.environ.get("PRELABEL_FPS", 30))
+        step = max(1, int(round(fps / detect_fps)))
         frames, idx = [], 0
         while True:
             ok, frame = cap.read()
@@ -502,6 +506,43 @@ def prelabel(request: fastapi.Request):
             done += 1
             continue
 
+        # Trim to the tracked flight. The audio found the shot; the
+        # detections across the clip are the track; the file shrinks to
+        # [first box seen, last box seen] — hit and gone, or flown from
+        # view. boxes_json keeps the whole trajectory.
+        import subprocess as sp
+        first_i, last_i = min(boxes_per_frame), max(boxes_per_frame)
+        clip_len = len(frames) * step / fps
+        t0 = max(0.0, first_i * step / fps - 0.3)
+        t1 = min(clip_len, last_i * step / fps + 0.5)
+        new_start = float(row["clip_start"]) + t0
+        new_end = float(row["clip_start"]) + t1
+        pv = row.get("preview_path") or f"previews/{row['clip_id']}.mp4"
+        po = row.get("poster_path") or f"previews/{row['clip_id']}.jpg"
+        if t0 > 0.6 or t1 < clip_len - 0.6:
+            trimmed = Path("/tmp") / f"trim_{row['clip_id']}.mp4"
+            sp.run(["ffmpeg", "-y", "-ss", f"{t0:.2f}", "-to", f"{t1:.2f}",
+                    "-i", path, "-c:v", "libx264", "-preset", "veryfast",
+                    "-crf", "23", "-c:a", "aac", str(trimmed)],
+                   check=True, capture_output=True)
+            Path(path).write_bytes(trimmed.read_bytes())
+            trimmed.unlink()
+            small = Path("/tmp") / f"pv_{row['clip_id']}.mp4"
+            sp.run(["ffmpeg", "-y", "-i", path, "-vf", "scale=-2:480",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+                    "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart",
+                    str(small)], check=True, capture_output=True)
+            sb.storage.from_("clips").upload(pv, small.read_bytes(),
+                {"content-type": "video/mp4", "upsert": "true"})
+            small.unlink(missing_ok=True)
+            still = Path("/tmp") / f"po_{row['clip_id']}.jpg"
+            sp.run(["ffmpeg", "-y", "-ss", "0.5", "-i", path, "-frames:v", "1",
+                    "-vf", "scale=-2:480", "-q:v", "5", str(still)],
+                   check=True, capture_output=True)
+            sb.storage.from_("clips").upload(po, still.read_bytes(),
+                {"content-type": "image/jpeg", "upsert": "true"})
+            still.unlink(missing_ok=True)
+
         sb.table("pipeline_labels").upsert({
             "clip_id": row["clip_id"],
             "n_clays": max((len(v) for v in boxes_per_frame.values()), default=0),
@@ -516,7 +557,8 @@ def prelabel(request: fastapi.Request):
         sure = float(os.environ.get("AUTO_ACCEPT", 0.55))
         tmp = Path("/tmp/frames")
         tmp.mkdir(parents=True, exist_ok=True)
-        for i in list(boxes_per_frame)[::3]:
+        stride = max(1, int(round((fps / step) / 1.7)))
+        for i in list(boxes_per_frame)[::stride]:
             fp = tmp / f"{row['clip_id']}_{i:04d}.jpg"
             cv2.imwrite(str(fp), frames[i])
             h, w = frames[i].shape[:2]
@@ -541,10 +583,13 @@ def prelabel(request: fastapi.Request):
 
         sb.table("pipeline_clips").update(
             {"label_status": "prelabelled",
+             "clip_start": new_start, "clip_end": new_end,
+             "preview_path": pv, "poster_path": po,
              "outcome": outcome, "outcome_conf": conf}
         ).eq("clip_id", row["clip_id"]).execute()
         done += 1
 
+    volume.commit()   # the trims rewrote clip files on the volume
     return {"stage": "prelabel", "processed": done, "frames_uploaded": uploaded}
 
 
@@ -561,9 +606,11 @@ def _judge_shot(row, frames, fps, step):
     try:
         # where in the sampled-frame list the shot falls
         into_clip = float(row["shot_ts"]) - float(row["clip_start"])
-        shot_i = int(round(into_clip * fps / step))
-        picks = [shot_i - 1, shot_i + 1, shot_i + 3, shot_i + 5]
-        picks = [i for i in picks if 0 <= i < len(frames)]
+        frame_dt = step / fps          # seconds between sampled frames
+        shot_i = int(round(into_clip / frame_dt))
+        picks = [shot_i + int(round(off / frame_dt))
+                 for off in (-0.3, 0.3, 0.8, 1.3)]
+        picks = sorted({i for i in picks if 0 <= i < len(frames)})
         if len(picks) < 2:
             return None, None
         blocks = []

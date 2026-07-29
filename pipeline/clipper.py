@@ -22,8 +22,8 @@ import numpy as np
 from scipy.io import wavfile
 
 # Tunables - adjust after testing on real footage
-PRE_S = 4.0          # seconds before shot to include (launch + flight)
-POST_S = 3.0         # seconds after shot (break/dying behaviour window)
+PRE_S = 5.0          # generous raw window: pre-label trims to the tracked flight
+POST_S = 6.0         # a missed clay flies on; the trim reclaims the slack
 PAIR_WINDOW_S = 4.0  # two shots within this = true pair, single merged clip
 MIN_GAP_S = 0.25     # spikes closer than this are one shot (echo/report)
 FRAME_MS = 20        # energy analysis frame size
