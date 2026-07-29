@@ -197,7 +197,8 @@ function renderSetPassword(err = '', change = false) {
     boot();
   });
   document.getElementById('back')?.addEventListener('click', (e) => { e.preventDefault(); boot(); });
-  document.getElementById('out')?.addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
+  document.getElementById('out')?.addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw');
+    sessionStorage.removeItem('brace-portal-otp'); await supabase.auth.signOut(); boot(); });
 }
 
 /* ---------- 3 · enrol an authenticator ---------- */
@@ -232,7 +233,8 @@ async function renderEnrol(err = '') {
   if (error) {
     gate(`<h1>Add your authenticator</h1><div class="err">${esc(error.message)}</div>
           <button class="btn btn-ghost" id="out">Sign out</button>`);
-    document.getElementById('out').addEventListener('click', async () => { sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
+    document.getElementById('out').addEventListener('click', async () => { sessionStorage.removeItem('brace-portal-pw');
+    sessionStorage.removeItem('brace-portal-otp'); await supabase.auth.signOut(); boot(); });
     return;
   }
   const factorId = data.id;
@@ -298,6 +300,7 @@ async function renderEnrol(err = '') {
         factorId, challengeId: ch.data.id, code: document.getElementById('code').value.trim(),
       });
       if (v.error) return setErr(v.error.message);
+      sessionStorage.setItem('brace-portal-otp', '1');   // this tab has proven the code
       boot();
     } catch (err) {
       setErr(err.message || 'Could not reach Supabase. Try again.');
@@ -305,7 +308,8 @@ async function renderEnrol(err = '') {
       busy(btn, false, 'Verify and finish');
     }
   });
-  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
+  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw');
+    sessionStorage.removeItem('brace-portal-otp'); await supabase.auth.signOut(); boot(); });
 }
 
 /* ---------- 4 · the second factor, every sign-in ---------- */
@@ -337,6 +341,7 @@ function renderChallenge(factorId, err = '') {
         factorId, challengeId: ch.data.id, code: document.getElementById('code').value.trim(),
       });
       if (v.error) return setErr(v.error.message);
+      sessionStorage.setItem('brace-portal-otp', '1');   // this tab has proven the code
       boot();
     } catch (err) {
       setErr(err.message || 'Could not reach Supabase. Try again.');
@@ -344,7 +349,8 @@ function renderChallenge(factorId, err = '') {
       busy(btn, false, 'Unlock');
     }
   });
-  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
+  document.getElementById('out').addEventListener('click', async (e) => { e.preventDefault(); sessionStorage.removeItem('brace-portal-pw');
+    sessionStorage.removeItem('brace-portal-otp'); await supabase.auth.signOut(); boot(); });
 }
 
 function renderDenied(email) {
@@ -354,7 +360,8 @@ function renderDenied(email) {
        add it to <code>portal_owners</code> in Supabase.</p>
     <a class="btn" href="../">Back to Brace</a>
     <button class="btn btn-ghost" id="out" style="margin-top:10px">Sign out</button>`);
-  document.getElementById('out').addEventListener('click', async () => { sessionStorage.removeItem('brace-portal-pw'); await supabase.auth.signOut(); boot(); });
+  document.getElementById('out').addEventListener('click', async () => { sessionStorage.removeItem('brace-portal-pw');
+    sessionStorage.removeItem('brace-portal-otp'); await supabase.auth.signOut(); boot(); });
 }
 
 /* ---------- the pipeline ----------
@@ -513,20 +520,28 @@ const dashboardIsCurrent = () => dashEpoch === epoch;
 
 function shell(body) {
   root.dataset.up = '1';
+  const item = (hash, label, badge = 0) => `
+    <a href="#${hash}" class="${view === hash ? 'on' : ''}">${label}
+      ${badge ? `<b>${fmt(badge)}</b>` : ''}</a>`;
   root.innerHTML = `
-    <header class="topbar">
-      <a class="brand" href="../"><img src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" /></a>
-      <span class="scope">Pipeline</span>
-      <nav class="views">
-        <a href="#control" class="${view === 'control' ? 'on' : ''}">Control</a>
-        <a href="#review" class="${view === 'review' ? 'on' : ''}">Review${state.counts?.downloaded ? ` <b>${fmt(state.counts.downloaded)}</b>` : ''}</a>
-        <a href="#sources" class="${view === 'sources' ? 'on' : ''}">Sources</a>
-      </nav>
-      <span class="who"><span>${esc(state.email)}</span>
-        <button class="signout" id="changepw">${ic('lock', 14)} Password</button>
-        <button class="signout" id="signout">${ic('signout', 14)} Sign out</button></span>
-    </header>
-    <main>${body}</main>`;
+    <div class="crm">
+      <aside class="side">
+        <a class="brand" href="../"><img src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" /></a>
+        <nav class="views">
+          ${item('control', 'Control')}
+          ${item('review', 'Review', state.counts?.downloaded)}
+          ${item('sources', 'Sources')}
+        </nav>
+        <div class="side-foot">
+          ${state.spend && state.spend.scored
+    ? `<div class="side-line">${fmt(state.spend.scored)} scored · ~$${state.spend.usd.toFixed(2)}</div>` : ''}
+          <div class="side-line who" title="${esc(state.email)}">${esc(state.email)}</div>
+          <button class="signout" id="changepw">${ic('lock', 14)} Password</button>
+          <button class="signout" id="signout">${ic('signout', 14)} Sign out</button>
+        </div>
+      </aside>
+      <main>${body}</main>
+    </div>`;
   document.getElementById('changepw').addEventListener('click', () => {
     clearInterval(poll);          // else the 8s refresh repaints over the form
     renderSetPassword('', true);
@@ -534,6 +549,7 @@ function shell(body) {
   document.getElementById('signout').addEventListener('click', async () => {
     clearInterval(poll);
     sessionStorage.removeItem('brace-portal-pw');
+    sessionStorage.removeItem('brace-portal-otp');
     // A failed global sign-out used to leave the dashboard sitting there as if
     // nothing had happened. Re-route either way: the local session is gone.
     try { await supabase.auth.signOut(); } catch { /* offline, or already out */ }
@@ -548,36 +564,34 @@ function controlView() {
   const n = (k) => (c && c[k] != null ? fmt(c[k]) : '—');
   const live = (k) => (c && c[k] > 0 ? 'on' : 'off');
 
+  const cardDefs = [
+    ...STAGES.map((s) => ({ key: s.key, label: s.label, sub: s.note })),
+    { key: 'rejected', label: 'Rejected', sub: 'triage said no' },
+    { key: 'error', label: 'Errored', sub: 'needs a retry', warn: true },
+  ];
+
   return `
-    <div class="page-head">
-      <div class="over">Training data</div>
-      <h1>Third-party footage in, <em>labelled clays</em> out.</h1>
-      <p>Discovery runs here and answers straight away. Triage scores what it finds,
-         you decide what is worth cutting, and the detector draws the first pass of
-         boxes before a human ever opens Roboflow — those three run on Modal.</p>
+    <div class="crm-head">
+      <div>
+        <h1>Pipeline</h1>
+        <p>Third-party footage in, labelled clays out. Triage and everything after it run on Modal.</p>
+      </div>
+      ${c && c.error ? `<a href="#" id="retry" class="p-act warn">Send ${n('error')} errored back</a>` : ''}
     </div>
 
-    <div class="rail">
-      ${STAGES.map((s, i) => `
-        <div class="stop">
-          <div class="stop-line">
-            <span class="clay ${live(s.key)}"></span>
-            ${i < STAGES.length - 1 ? '<span class="join"></span>' : ''}
-          </div>
+    <div class="stats">
+      ${cardDefs.map((s) => `
+        <div class="stat ${s.warn && c && c[s.key] ? 'stat-warn' : ''}">
+          <span class="clay ${live(s.key)}"></span>
           <div class="num">${n(s.key)}</div>
           <div class="cap">${s.label}</div>
-          <div class="sub">${s.note}</div>
+          <div class="sub">${s.sub}</div>
         </div>`).join('')}
     </div>
 
     <div class="tally">
       <span>${n('pending')} clips awaiting pre-label</span>
       <span>${n('prelabelled')} pre-labelled</span>
-      <span>${n('rejected')} rejected</span>
-      ${state.spend && state.spend.scored
-        ? `<span>${fmt(state.spend.scored)} scored for ~$${state.spend.usd.toFixed(2)}</span>` : ''}
-      ${c && c.error ? `<span class="warn">${n('error')} errored
-        <a href="#" id="retry" class="p-act" style="margin-left:6px">Send all back</a></span>` : ''}
     </div>
 
     <div class="grid">
@@ -1045,7 +1059,14 @@ async function route() {
   const verified = (factors?.totp || []).filter((f) => f.status === 'verified');
   if (!verified.length) return renderEnrol();
 
-  if (aal?.currentLevel !== 'aal2') return renderChallenge(verified[0].id);
+  // aal2 alone is not enough: the browser keeps the session, so a returning
+  // visit would walk straight in on yesterday's code. The flag lives in
+  // sessionStorage precisely because it dies with the tab — every fresh
+  // window re-proves the second factor, which is the point of having one.
+  if (aal?.currentLevel !== 'aal2'
+      || sessionStorage.getItem('brace-portal-otp') !== '1') {
+    return renderChallenge(verified[0].id);
+  }
 
   // Two factors done. The database makes the final call.
   stage('confirming your access');

@@ -311,6 +311,72 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
 /* Small inline select in a panel head — the batch-size dial. */
 .mini { font-size: 12px; color: var(--text-2); background: var(--bg-sunken);
   border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 8px; }
+
+/* ============================================================================
+   CRM shell — sidebar + working area. The old top bar survives only for the
+   gate screens, which never use it; the dashboard lives in here.
+   ========================================================================== */
+.crm { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100dvh; }
+
+.side { display: flex; flex-direction: column; gap: 26px; padding: 22px 18px;
+  border-right: 1px solid var(--c-midnight-hairline); background: var(--bg-raised);
+  position: sticky; top: 0; height: 100dvh; }
+.side .brand img { height: 18px; width: auto; display: block; }
+
+.side .views { display: flex; flex-direction: column; gap: 4px; }
+.side .views a { display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; font-size: 13.5px; font-weight: 500; color: var(--text-3);
+  padding: 9px 12px; border-radius: var(--r-md); }
+.side .views a:hover { color: var(--text-2); background: rgba(255,255,255,.05); }
+.side .views a.on { color: var(--text-1); background: var(--bg-sunken); }
+.side .views a b { font-weight: 600; font-size: 11.5px; color: var(--clay);
+  font-variant-numeric: tabular-nums; background: rgba(224,112,95,.12);
+  border-radius: var(--r-pill); padding: 2px 8px; }
+
+.side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px;
+  padding-top: 16px; border-top: 1px solid var(--line); }
+.side-line { font-size: 12px; color: var(--text-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* .signout's look lived under .topbar, which the CRM shell no longer has. */
+.side-foot .signout { display: inline-flex; align-items: center; justify-content: center;
+  gap: 7px; font-size: 0.8rem; color: var(--c-ivory-60);
+  border: 1px solid var(--c-midnight-hairline); border-radius: var(--r-pill);
+  padding: 7px 14px; white-space: nowrap; }
+.side-foot .signout:hover { background: rgba(242,244,247,0.06); }
+
+.crm main { max-width: none; margin: 0; padding: 34px 38px 72px; min-width: 0; }
+
+.crm-head { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 26px; }
+.crm-head h1 { font-weight: 600; font-size: 24px; letter-spacing: -.4px; color: var(--c-ivory); }
+.crm-head p { font-size: 13.5px; color: var(--text-3); margin-top: 5px; max-width: 60ch; }
+.crm-head .warn { color: var(--destructive); }
+
+/* Stat cards: number first, identity dot from the pipeline rail reused as a
+   live indicator. Warn state only when there is actually something wrong. */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px; margin-bottom: 14px; }
+.stat { background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: 16px 18px; position: relative; }
+.stat .clay { position: absolute; top: 16px; right: 16px; }
+.stat .num { font-size: 26px; font-weight: 600; letter-spacing: -.5px;
+  color: var(--text-1); font-variant-numeric: tabular-nums; }
+.stat .cap { font-size: 12.5px; font-weight: 500; color: var(--text-2); margin-top: 4px; }
+.stat .sub { font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
+.stat-warn { border-color: rgba(224,112,95,.4); }
+.stat-warn .num { color: var(--destructive); }
+
+@media (max-width: 900px) {
+  .crm { grid-template-columns: minmax(0, 1fr); }
+  .side { position: static; height: auto; flex-direction: row; flex-wrap: wrap;
+    align-items: center; border-right: none;
+    border-bottom: 1px solid var(--c-midnight-hairline); }
+  .side .views { flex-direction: row; width: 100%; order: 3; overflow-x: auto; }
+  .side-foot { margin-top: 0; margin-left: auto; padding-top: 0; border-top: none;
+    flex-direction: row; align-items: center; }
+  .side-foot .side-line.who { display: none; }
+  .crm main { padding: 24px 16px 56px; }
+}
 .linky:hover { color: var(--text-1); }
 .linky.bad:hover { color: var(--destructive); }
 
