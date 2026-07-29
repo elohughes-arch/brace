@@ -449,10 +449,12 @@ async function loadSpend() {
 }
 
 async function loadClips() {
+  const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
     .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,file_path,created_at')
-    .order('created_at', { ascending: false })
-    .limit(40);
+    .eq('label_status', 'pending')
+    .order('video_id').order('shot_ts')
+    .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
   if (error) return [];
   const rows = data || [];
   // Previews live in a private bucket; a signed URL is the only way a
@@ -481,13 +483,12 @@ async function loadClips() {
   return rows;
 }
 
-async function loadSheet() {
-  let q = supabase.from('pipeline_videos')
-    .select('video_id,title,channel,status,triage_score,duration_s,updated_at')
-    .order('updated_at', { ascending: false }).limit(150);
-  if (sheetFilter !== 'all') q = q.eq('status', sheetFilter);
-  const { data, error } = await q;
-  return error ? [] : (data || []);
+async function loadSentClips() {
+  const { data } = await supabase.from('pipeline_clips')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id')
+    .neq('label_status', 'pending')
+    .order('created_at', { ascending: false }).limit(8);
+  return data || [];
 }
 
 const judged = new Set();   // survives a queue read that overtakes a decision
@@ -548,8 +549,9 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['review', 'sources', 'labelling', 'mastersheet'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sheet: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sent: [], sheet: [], loading: true };
 let sheetFilter = 'all';
+let clipPage = 0;   // 40 clips a page, grouped by video
 let batch = 10;   // videos per press — survives repaints, resets with the tab
 let poll = null;
 
@@ -772,8 +774,10 @@ const picked = new Set();
 function labellingView() {
   if (state.loading) return '<div class="empty">Loading clips…</div>';
   const c = state.counts || {};
-  const pending = state.clips.filter((k) => (k.label_status || 'pending') === 'pending');
-  const rest = state.clips.filter((k) => (k.label_status || 'pending') !== 'pending');
+  const PAGE = 40;
+  const totalPending = c.pending ?? 0;
+  const pages = Math.max(1, Math.ceil(totalPending / PAGE));
+  const pending = state.clips;
 
   const yt = (k) => `https://www.youtube.com/watch?v=${encodeURIComponent(k.video_id)}&t=${Math.max(0, Math.floor(k.shot_ts || 0))}s`;
   const pendingRow = (k) => `
@@ -785,16 +789,27 @@ function labellingView() {
         ${k.preview_url
     ? `<video class="clipvid" controls preload="metadata" src="${esc(k.preview_url)}"></video>`
     : '<div class="s">Preview rendering — arrives with the next heartbeat. Meanwhile:</div>'}
-        <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ``} · ${mmss(k.shot_ts)}
+        <div class="t">Shot ${k.shot_no || '?'} · ${mmss(k.shot_ts)}
           · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
         <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
       </div>
     </div>`;
+
+  // One heading per video, its clips beneath it — the page is already
+  // ordered that way, so a heading appears wherever the video changes.
+  let lastVid = null;
+  const grouped = pending.map((k) => {
+    const head = k.video_id !== lastVid
+      ? `<div class="grouphead">${esc(k.title || k.video_id)}</div>` : '';
+    lastVid = k.video_id;
+    return head + pendingRow(k);
+  }).join('');
+
   const doneRow = (k) => `
     <div class="row">
       <span class="dot ${k.label_status === 'prelabelled' ? 'on' : ''}"></span>
       <div class="main">
-        <div class="t"><a href="${esc(yt(k))}" target="_blank" rel="noopener">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ``} · ${mmss(k.shot_ts)}</a></div>
+        <div class="t">${esc(k.video_id)} · ${mmss(k.shot_ts)}</div>
         <div class="s">${esc(k.label_status)}${k.roboflow_id ? ' · in Roboflow' : ''}</div>
       </div>
     </div>`;
@@ -803,10 +818,9 @@ function labellingView() {
     <div class="crm-head">
       <div>
         <h1>Labelling</h1>
-        <p>Check each cut by watching the shot, tick the good ones, and send them
-           to the AI labeller. It boxes the clays and pushes the frames to
-           Roboflow — confident frames to <b>auto-accepted</b>, shaky ones to
-           <b>needs-review</b>.</p>
+        <p>Watch each cut, tick the good ones, and send them to the AI labeller.
+           It boxes the clays and pushes the frames to Roboflow — confident
+           frames to <b>auto-accepted</b>, shaky ones to <b>needs-review</b>.</p>
       </div>
       <a class="p-act" href="${ROBOFLOW_ANNOTATE}" target="_blank" rel="noopener">Open Roboflow ↗</a>
     </div>
@@ -824,25 +838,28 @@ function labellingView() {
     </div>
 
     <section class="panel">
-      <div class="p-head"><span class="p-title">Clips to check${c.pending ? ` — ${fmt(c.pending)}` : ''}</span>
+      <div class="p-head"><span class="p-title">Clips to check${totalPending ? ` — ${fmt(totalPending)}` : ''}</span>
         <span>
           <button class="linky" id="pickall">Select all shown</button>
           <button class="linky" id="picknone" style="margin-left:10px">Clear</button>
           <button class="btn mini-btn" id="sendsel" style="margin-left:14px"
             ${picked.size ? '' : 'disabled'}>Send <span id="pickn">${picked.size}</span> to AI</button>
           <button class="btn btn-ghost mini-btn" id="sendall" style="margin-left:8px"
-            ${c.pending ? '' : 'disabled'}>Send all ${fmt(c.pending ?? 0)}</button>
+            ${totalPending ? '' : 'disabled'}>Send all ${fmt(totalPending)}</button>
         </span></div>
-      ${pending.length ? pending.map(pendingRow).join('')
-        : '<div class="empty">Nothing waiting. Approve videos in Review and the clipper feeds this list within the hour.</div>'}
-      ${pending.length && c.pending > pending.length
-        ? `<p class="foot-note">Showing the ${fmt(pending.length)} most recent of ${fmt(c.pending)} — Send all covers the rest too.</p>` : ''}
+      ${grouped || '<div class="empty">Nothing waiting. Approve videos in Review and the clipper feeds this list within the hour.</div>'}
+      ${pages > 1 ? `
+      <div class="pager">
+        <button class="linky" id="clipprev" ${clipPage ? '' : 'disabled'}>‹ Previous</button>
+        <span>page ${clipPage + 1} of ${pages}</span>
+        <button class="linky" id="clipnext" ${clipPage + 1 < pages ? '' : 'disabled'}>Next ›</button>
+      </div>` : ''}
     </section>
 
-    ${rest.length ? `
+    ${state.sent.length ? `
     <section class="panel" style="margin-top:18px">
       <div class="p-head"><span class="p-title">Recently sent</span></div>
-      ${rest.slice(0, 10).map(doneRow).join('')}
+      ${state.sent.map(doneRow).join('')}
     </section>` : ''}`;
 }
 
@@ -875,12 +892,18 @@ function mastersheetView() {
   const c = state.counts || {};
   const row = (v) => `
     <div class="row">
-      <span class="dot ${SHEET_TONE[v.status] || 'off'}"></span>
+      <label class="pickside" title="Mark as used">
+        <input type="checkbox" class="tick" data-used="${esc(v.video_id)}" ${v.used ? 'checked' : ''} />
+      </label>
       <div class="main">
         <div class="t"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}"
           target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a></div>
         <div class="s">${esc(v.channel || '')} · ${esc(v.status)}${v.triage_score != null
-    ? ` · scored ${Number(v.triage_score).toFixed(1)}` : ''} · ${mmss(v.duration_s)} · ${dateFmt(v.updated_at)}</div>
+    ? ` · scored ${Number(v.triage_score).toFixed(1)}` : ''}${v.weather && v.weather !== 'unknown'
+    ? ` · ${esc(v.weather)}` : ''} · ${mmss(v.duration_s)} · ${dateFmt(v.updated_at)}</div>
+      </div>
+      <div class="end">
+        ${v.clips ? `<span class="s">${fmt(v.clips)} clips · ${fmt(v.sent)} sent</span>` : ''}
       </div>
     </div>`;
 
@@ -1151,6 +1174,12 @@ function paint(force = false) {
     const send = document.getElementById('sendsel');
     if (send) send.disabled = !picked.size;
   }));
+  document.getElementById('clipprev')?.addEventListener('click', () => {
+    clipPage = Math.max(0, clipPage - 1); refresh();
+  });
+  document.getElementById('clipnext')?.addEventListener('click', () => {
+    clipPage += 1; refresh();
+  });
   document.getElementById('pickall')?.addEventListener('click', () => {
     document.querySelectorAll('[data-pick]').forEach((cb) => { cb.checked = true; picked.add(cb.dataset.pick); });
     paint(true);
@@ -1169,6 +1198,11 @@ function paint(force = false) {
     await queueClips((data || []).map((r) => r.clip_id));
   });
 
+  document.querySelectorAll('[data-used]').forEach((cb) => cb.addEventListener('change', async () => {
+    const { error } = await supabase.from('pipeline_videos')
+      .update({ used: cb.checked }).eq('video_id', cb.dataset.used).select('video_id');
+    if (error) { note(`could not mark used — ${error.message}`, 'bad'); cb.checked = !cb.checked; }
+  }));
   document.querySelectorAll('[data-msf]').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
     sheetFilter = a.dataset.msf;
@@ -1189,13 +1223,14 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, clips, sheet] = await Promise.all([
+    const [counts, queue, sources, issues, spend, clips, sent, sheet] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
       view === 'control' ? loadIssues() : Promise.resolve(state.issues),
       view === 'control' ? loadSpend() : Promise.resolve(state.spend),
       view === 'labelling' ? loadClips() : Promise.resolve(state.clips),
+      view === 'labelling' ? loadSentClips() : Promise.resolve(state.sent),
       view === 'mastersheet' ? loadSheet() : Promise.resolve(state.sheet),
     ]);
     state.counts = counts;
@@ -1204,6 +1239,7 @@ async function refresh() {
     state.issues = issues;
     state.spend = spend;
     state.clips = clips;
+    state.sent = sent;
     state.sheet = sheet;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
@@ -1225,7 +1261,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sheet: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sent: [], sheet: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

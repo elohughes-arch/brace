@@ -362,6 +362,12 @@ label.row, .pickside { cursor: pointer; }
 .crm-head p { font-size: 13.5px; color: var(--text-3); margin-top: 5px; max-width: 60ch; }
 .crm-head .warn { color: var(--destructive); }
 .chip-on { color: var(--clay) !important; }
+.grouphead { font-size: 13px; font-weight: 600; color: var(--text-1);
+  padding: 18px 0 4px; border-top: 1px solid var(--line-strong); margin-top: 8px; }
+.grouphead:first-child { border-top: none; margin-top: 0; padding-top: 4px; }
+.pager { display: flex; align-items: center; justify-content: center; gap: 16px;
+  padding-top: 16px; margin-top: 8px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--text-3); }
 
 /* Stat cards: number first, identity dot from the pipeline rail reused as a
    live indicator. Warn state only when there is actually something wrong. */

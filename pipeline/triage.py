@@ -62,7 +62,10 @@ Score 0-10 for training value:
 
 Reply with JSON only, no prose and no code fence:
 {"score": <number 0-10>, "camera": "<pov_glasses|barrel|gopro|third_person|broadcast|unknown>", \
-"clays_visible": <true|false>, "notes": "<one short British-English sentence>"}"""
+"clays_visible": <true|false>, "weather": "<clear|overcast|rain|fog|dusk|indoor|unknown>", \
+"notes": "<one short British-English sentence>"}"""
+
+WEATHER_VALUES = ("clear", "overcast", "rain", "fog", "dusk", "indoor", "unknown")
 
 
 def video_duration_s(video: Path) -> float:
@@ -159,6 +162,8 @@ def score_frames(frames: list[Path]) -> dict:
         "score": max(0.0, min(10.0, score)),
         "camera": camera if camera in CAMERA_VALUES else "unknown",
         "clays_visible": bool(data.get("clays_visible", False)),
+        "weather": (str(data.get("weather", "unknown"))
+                    if str(data.get("weather", "unknown")) in WEATHER_VALUES else "unknown"),
         "notes": str(data.get("notes", ""))[:400],
         # What this verdict actually cost, so the run can be priced from
         # recorded fact rather than a rate card and a guess.
