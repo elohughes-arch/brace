@@ -435,6 +435,12 @@ def prelabel(request: fastapi.Request):
             "boxes_json": boxes_per_frame,
         }).execute()
 
+        # Confidence routing: a frame whose every box clears the bar goes to
+        # a batch that can be bulk-added to the dataset without per-image
+        # review; one shaky box sends the whole frame to the review batch.
+        # Whole frames, not boxes — a frame with one checked and one
+        # unchecked box helps nobody. AUTO_ACCEPT=1.0 turns routing off.
+        sure = float(os.environ.get("AUTO_ACCEPT", 0.55))
         tmp = Path("/tmp/frames")
         tmp.mkdir(parents=True, exist_ok=True)
         for i in list(boxes_per_frame)[::3]:
@@ -448,9 +454,11 @@ def prelabel(request: fastapi.Request):
                              f"{(x2-x1)/w:.6f} {(y2-y1)/h:.6f}")
             ann = fp.with_suffix(".txt")
             ann.write_text("\n".join(lines))
+            confident = all(b["conf"] >= sure for b in boxes_per_frame[i])
             project.upload(str(fp), annotation_path=str(ann),
-                           batch_name="prelabelled-pipeline",
-                           tag_names=["prelabel"])
+                           batch_name="auto-accepted" if confident else "needs-review",
+                           tag_names=["prelabel",
+                                      "confident" if confident else "doubtful"])
             uploaded += 1
 
         sb.table("pipeline_clips").update(
