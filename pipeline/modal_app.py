@@ -169,7 +169,9 @@ def _discover_impl():
 
 # ---------------------------------------------------------------- triage
 
-@app.function(image=base_image, secrets=[secret], timeout=1800,
+# An hour of timeout: fifty downloads plus fifty verdicts fits with room,
+# and the caller stopped waiting at 25 seconds anyway.
+@app.function(image=base_image, secrets=[secret], timeout=3600,
               volumes={MEDIA: volume})
 @web_endpoint(method="POST")
 def triage(request: fastapi.Request):
@@ -192,7 +194,7 @@ def triage(request: fastapi.Request):
     from pathlib import Path
     from triage import sample_frames, score_frames, KEEP_THRESHOLD
 
-    limit = min(int(request.query_params.get("limit", 10) or 10), 25)
+    limit = min(int(request.query_params.get("limit", 10) or 10), 50)
 
     def download(url: str, out: Path) -> None:
         # A failed earlier run can leave a partial file under this name, and

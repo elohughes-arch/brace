@@ -622,7 +622,7 @@ function controlView() {
         <div class="p-head"><span class="p-title">Run a stage</span>
           <span>
             <select id="batch" class="mini" title="How many videos one press works through — the cost dial">
-              ${[3, 10, 25].map((v) => `<option value="${v}" ${v === batch ? 'selected' : ''}>${v} at a time</option>`).join('')}
+              ${[3, 10, 25, 50].map((v) => `<option value="${v}" ${v === batch ? 'selected' : ''}>${v} at a time</option>`).join('')}
             </select>
             <a class="p-act" href="#" id="refresh" style="margin-left:10px">Refresh</a>
           </span></div>
