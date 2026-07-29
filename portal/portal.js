@@ -406,6 +406,12 @@ async function loadCounts() {
   return { ...videos, ...clips };
 }
 
+async function loadSources() {
+  const { data, error } = await supabase.from('pipeline_sources')
+    .select('*').order('kind').order('label');
+  return error ? [] : (data || []);
+}
+
 const judged = new Set();   // survives a queue read that overtakes a decision
 
 async function loadQueue() {
@@ -460,8 +466,9 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-let view = location.hash === '#review' ? 'review' : 'control';
-let state = { email: '', counts: null, queue: [], loading: true };
+const viewFromHash = () => ['review', 'sources'].find((v) => location.hash === `#${v}`) || 'control';
+let view = viewFromHash();
+let state = { email: '', counts: null, queue: [], sources: [], loading: true };
 let poll = null;
 
 /* Every trip through route() bumps `epoch`. A dashboard load that was already
@@ -482,6 +489,7 @@ function shell(body) {
       <nav class="views">
         <a href="#control" class="${view === 'control' ? 'on' : ''}">Control</a>
         <a href="#review" class="${view === 'review' ? 'on' : ''}">Review${state.counts?.downloaded ? ` <b>${fmt(state.counts.downloaded)}</b>` : ''}</a>
+        <a href="#sources" class="${view === 'sources' ? 'on' : ''}">Sources</a>
       </nav>
       <span class="who"><span>${esc(state.email)}</span>
         <button class="signout" id="changepw">${ic('lock', 14)} Password</button>
@@ -629,6 +637,123 @@ async function judge(id, status, el) {
   loadCounts().then((c) => { state.counts = c; }).catch(() => { /* the poll will retry */ });
 }
 
+/* ---------- sources ---------- */
+
+const KINDS = [
+  { k: 'channel', label: 'Channel', hint: '@handle, channel URL, or UC… id' },
+  { k: 'query', label: 'Search phrase', hint: 'e.g. sporting clays first person' },
+  { k: 'video', label: 'One video', hint: 'a YouTube URL or video id' },
+];
+const PERMISSION = {
+  unknown: 'Not asked', requested: 'Asked', granted: 'Given', declined: 'Refused',
+};
+
+function sourcesView() {
+  const list = state.sources;
+  const of = (k) => list.filter((x) => x.kind === k);
+  const cost = list.filter((x) => x.enabled && x.kind === 'query').length * 100
+    + list.filter((x) => x.enabled && x.kind !== 'query').length;
+
+  const row = (x) => `
+    <div class="row src ${x.enabled ? '' : 'off'}" data-src="${esc(x.id)}">
+      <span class="dot ${x.enabled ? 'on' : 'off'}"></span>
+      <div class="main">
+        <div class="t">${esc(x.label || x.ref)}</div>
+        <div class="s">${esc(x.ref)}${x.last_found != null ? ` · found ${fmt(x.last_found)} last run` : ''}</div>
+      </div>
+      <div class="end">
+        <span class="perm perm-${esc(x.permission)}">${esc(PERMISSION[x.permission] || x.permission)}</span>
+        <button class="linky" data-toggle="${esc(x.id)}">${x.enabled ? 'Mute' : 'Use'}</button>
+        <button class="linky bad" data-drop="${esc(x.id)}">Remove</button>
+      </div>
+    </div>`;
+
+  const group = (k, title, blurb) => `
+    <section class="panel">
+      <div class="p-head"><span class="p-title">${title}</span></div>
+      <p class="foot-note" style="margin:0 0 14px;padding:0;border:0">${blurb}</p>
+      ${of(k).map(row).join('') || '<div class="empty">None yet.</div>'}
+    </section>`;
+
+  return `
+    <div class="page-head">
+      <div class="over">Sources</div>
+      <h1>Where the footage <em>comes from</em>.</h1>
+      <p>Search phrases find things you did not know about. Channels are shooters
+         you already trust, and cost a hundredth of the quota — one unit per fifty
+         videos against a hundred per search. Naming a channel is also how you
+         keep track of who you have asked permission from.</p>
+    </div>
+
+    <div class="tally">
+      <span>${fmt(list.filter((x) => x.enabled).length)} in use of ${fmt(list.length)}</span>
+      <span>about ${fmt(cost)} of 10,000 daily quota units a run</span>
+    </div>
+
+    <div class="grid">
+      <div class="stack">
+        ${group('channel', 'Channels', 'A whole back catalogue for one unit per fifty videos. The cheapest and best-aimed way to find footage.')}
+        ${group('query', 'Search phrases', 'A hundred units each. Good for finding shooters you have never heard of; noisy by nature.')}
+        ${group('video', 'Single videos', 'One-offs you have found by hand.')}
+      </div>
+
+      <section class="panel">
+        <div class="p-head"><span class="p-title">Add a source</span></div>
+        <form id="addsrc">
+          <div class="field">
+            <select id="s-kind">
+              ${KINDS.map((k) => `<option value="${k.k}">${k.label}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><input id="s-ref" placeholder="@handle, URL, or phrase" required /></div>
+          <div class="field"><input id="s-label" placeholder="What to call it (optional)" /></div>
+          <div class="field">
+            <select id="s-perm">
+              ${Object.entries(PERMISSION).map(([v, l]) => `<option value="${v}">Permission: ${l}</option>`).join('')}
+            </select>
+          </div>
+          <div class="err" id="err"></div>
+          <button class="btn" type="submit">Add</button>
+        </form>
+        <p class="foot-note">Discover runs every source that is in use. Muting one
+           keeps it on the list without searching it.</p>
+      </section>
+    </div>`;
+}
+
+async function addSource(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector('.btn');
+  const kind = document.getElementById('s-kind').value;
+  const ref = document.getElementById('s-ref').value.trim();
+  const label = document.getElementById('s-label').value.trim();
+  const permission = document.getElementById('s-perm').value;
+  if (!ref) return;
+  busy(btn, true, 'Adding…'); setErr('');
+  const { error } = await supabase.from('pipeline_sources')
+    .insert({ kind, ref, label: label || null, permission });
+  busy(btn, false, 'Add');
+  if (error) return setErr(error.message);
+  note(`added ${kind} ${label || ref}`, 'good');
+  state.sources = await loadSources();
+  paint(true);
+}
+
+async function setSourceEnabled(id, enabled) {
+  const { error } = await supabase.from('pipeline_sources')
+    .update({ enabled }).eq('id', id).select('id');
+  if (error) return note(`could not change that source — ${error.message}`, 'bad');
+  state.sources = await loadSources();
+  paint(true);
+}
+
+async function dropSource(id) {
+  const { error } = await supabase.from('pipeline_sources').delete().eq('id', id);
+  if (error) return note(`could not remove that source — ${error.message}`, 'bad');
+  state.sources = state.sources.filter((x) => x.id !== id);
+  paint(true);
+}
+
 /* ---------- paint + poll ---------- */
 
 // What is on screen, as a string. If a poll tick would draw the same thing,
@@ -638,6 +763,7 @@ function signature() {
   return JSON.stringify([
     view, state.email, state.loading, running, state.counts,
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
+    state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
   ]);
 }
 let painted = '';
@@ -656,12 +782,17 @@ function focusKey() {
 }
 
 function paint(force = false) {
+  // Never redraw over someone who is typing — the poll would eat a half-filled
+  // form, and the sources panel is a form.
+  const a = document.activeElement;
+  if (!force && a && root.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+
   const sig = signature();
   if (!force && sig === painted && root.dataset.up) return;
   painted = sig;
   const refocus = focusKey();
 
-  shell(view === 'review' ? reviewView() : controlView());
+  shell(view === 'review' ? reviewView() : view === 'sources' ? sourcesView() : controlView());
 
   document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
@@ -684,6 +815,12 @@ function paint(force = false) {
     el.querySelectorAll('[data-act]').forEach((b) =>
       b.addEventListener('click', () => judge(el.dataset.id, b.dataset.act, el))));
 
+  document.getElementById('addsrc')?.addEventListener('submit', addSource);
+  document.querySelectorAll('[data-toggle]').forEach((b) => b.addEventListener('click', () =>
+    setSourceEnabled(b.dataset.toggle, !state.sources.find((x) => x.id === b.dataset.toggle)?.enabled)));
+  document.querySelectorAll('[data-drop]').forEach((b) => b.addEventListener('click', () =>
+    dropSource(b.dataset.drop)));
+
   if (refocus) { try { root.querySelector(refocus)?.focus(); } catch { /* gone */ } }
 }
 
@@ -691,12 +828,14 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue] = await Promise.all([
+    const [counts, queue, sources] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
+      view === 'sources' ? loadSources() : Promise.resolve(state.sources),
     ]);
     state.counts = counts;
     state.queue = queue;
+    state.sources = sources;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -707,17 +846,17 @@ async function refresh() {
 
 window.addEventListener('hashchange', () => {
   if (!dashboardIsCurrent()) return;   // the hash means nothing behind the gate
-  const next = location.hash === '#review' ? 'review' : 'control';
+  const next = viewFromHash();
   if (next === view) return;
   view = next;
-  state.loading = view === 'review';
+  state.loading = view !== 'control';
   paint();
   refresh();
 });
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

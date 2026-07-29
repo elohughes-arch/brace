@@ -40,18 +40,15 @@ const WAIT_MS = Number(process.env.PIPELINE_WAIT_MS) || 25_000;
 const PASSTHROUGH = ['limit', 'unreviewed'];
 
 /* ---------------------------------------------------------------- discover */
-// Kept deliberately in step with pipeline/discover.py, which is the same search
-// run from a terminal. Change one, change the other.
+// Candidates come from pipeline_sources, which the portal edits. Three kinds:
+//
+//   query    a search phrase. 100 quota units a call, noisy, finds the unknown.
+//   channel  a shooter you already trust. Listing uploads costs 1 unit per
+//            fifty videos, so a whole back catalogue is nearly free — and it is
+//            how permission-based sourcing works, since a channel row can
+//            record that you asked.
+//   video    one specific video, pasted in.
 
-const QUERIES = [
-  'clay shooting POV',
-  'sporting clays first person',
-  'shotkam clay',
-  'clay pigeon shooting gopro',
-  'simulated game day shooting',
-  'skeet shooting POV',
-  'compak sporting POV',
-];
 const MIN_DURATION_S = 30;
 const MAX_DURATION_S = 3600;
 const REJECT_TITLE_WORDS = [
@@ -59,32 +56,28 @@ const REJECT_TITLE_WORDS = [
   'cleaning', 'reload', 'airsoft', 'video game', 'gameplay',
 ];
 
+const yt = async (path, params) => {
+  const url = new URL(`https://www.googleapis.com/youtube/v3/${path}`);
+  url.search = new URLSearchParams(params).toString();
+  const r = await fetch(url);
+  if (!r.ok) {
+    const body = (await r.text()).slice(0, 200);
+    throw new Error(`YouTube ${path} failed (${r.status}): ${body}`);
+  }
+  return r.json();
+};
+
 function iso8601Seconds(d) {
   const m = /^P(?:\d+D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(d || '');
   if (!m) return 0;
   return Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3] || 0);
 }
 
-async function youtubeCandidates(key, query) {
-  const search = new URL('https://www.googleapis.com/youtube/v3/search');
-  search.search = new URLSearchParams({
-    key, q: query, part: 'snippet', type: 'video',
-    maxResults: '50', videoDuration: 'medium',
-  }).toString();
-  const found = await fetch(search);
-  if (!found.ok) throw new Error(`YouTube search failed (${found.status}): ${(await found.text()).slice(0, 200)}`);
-  const ids = ((await found.json()).items || []).map((i) => i.id?.videoId).filter(Boolean);
-  if (!ids.length) return [];
-
-  const details = new URL('https://www.googleapis.com/youtube/v3/videos');
-  details.search = new URLSearchParams({
-    key, id: ids.join(','), part: 'contentDetails,statistics,snippet',
-  }).toString();
-  const meta = await fetch(details);
-  if (!meta.ok) throw new Error(`YouTube lookup failed (${meta.status})`);
-
+// A row is only worth keeping if it is long enough to hold shooting and its
+// title does not announce that it is something else.
+function rowsFrom(items, sourceId) {
   const out = [];
-  for (const v of (await meta.json()).items || []) {
+  for (const v of items || []) {
     const title = v.snippet?.title || '';
     const seconds = iso8601Seconds(v.contentDetails?.duration);
     if (seconds < MIN_DURATION_S || seconds > MAX_DURATION_S) continue;
@@ -98,9 +91,56 @@ async function youtubeCandidates(key, query) {
       duration_s: seconds,
       view_count: Number(v.statistics?.viewCount || 0),
       status: 'discovered',
+      source_id: sourceId,
     });
   }
   return out;
+}
+
+// Details come back fifty at a time, and cost one unit however many you ask for.
+async function detailsFor(key, ids, sourceId) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    const page = await yt('videos', {
+      key, id: ids.slice(i, i + 50).join(','),
+      part: 'contentDetails,statistics,snippet',
+    });
+    out.push(...rowsFrom(page.items, sourceId));
+  }
+  return out;
+}
+
+const VIDEO_ID = /(?:v=|youtu\.be\/|shorts\/|embed\/)([A-Za-z0-9_-]{11})/;
+
+// A channel can be given as an id, an @handle, or any URL containing either.
+async function channelUploads(key, ref, source, maxPages = 4) {
+  let channelId = source.resolved_id || null;
+  if (!channelId) {
+    const idMatch = /(UC[A-Za-z0-9_-]{22})/.exec(ref);
+    if (idMatch) {
+      channelId = idMatch[1];
+    } else {
+      const handle = (/@([A-Za-z0-9._-]+)/.exec(ref) || [])[1];
+      if (!handle) throw new Error(`not a channel id or @handle: ${ref}`);
+      const found = await yt('channels', { key, forHandle: `@${handle}`, part: 'id' });
+      channelId = found.items?.[0]?.id;
+      if (!channelId) throw new Error(`no channel found for @${handle}`);
+    }
+  }
+  // Every channel's uploads playlist is its id with the second letter changed.
+  const uploads = `UU${channelId.slice(2)}`;
+  const ids = [];
+  let pageToken;
+  for (let page = 0; page < maxPages; page += 1) {
+    const list = await yt('playlistItems', {
+      key, playlistId: uploads, part: 'contentDetails',
+      maxResults: '50', ...(pageToken ? { pageToken } : {}),
+    });
+    ids.push(...(list.items || []).map((i) => i.contentDetails?.videoId).filter(Boolean));
+    pageToken = list.nextPageToken;
+    if (!pageToken) break;
+  }
+  return { ids, channelId };
 }
 
 async function runDiscover({ supabaseUrl, anonKey, auth }) {
@@ -116,52 +156,87 @@ async function runDiscover({ supabaseUrl, anonKey, auth }) {
     };
   }
 
+  const sb = (path, init) => fetch(`${supabaseUrl}/rest/v1/${path}`, {
+    ...init,
+    headers: { apikey: anonKey, authorization: auth, 'content-type': 'application/json', ...(init?.headers || {}) },
+  });
+
+  const listed = await sb('pipeline_sources?enabled=eq.true&select=*');
+  if (!listed.ok) {
+    return { code: 502, body: { error: 'could not read your sources', detail: (await listed.text()).slice(0, 300) } };
+  }
+  const sources = await listed.json();
+  if (!sources.length) {
+    return { code: 200, body: { stage: 'discover', found: 0, added: 0, detail: 'no sources are switched on' } };
+  }
+
   const rows = [];
   const seen = new Set();
   const problems = [];
-  for (const q of QUERIES) {
+  const touched = [];
+
+  for (const src of sources) {
     try {
-      for (const row of await youtubeCandidates(key, q)) {
-        if (seen.has(row.video_id)) continue;   // the queries overlap heavily
+      let got = [];
+      let resolved = src.resolved_id;
+      if (src.kind === 'query') {
+        // No videoDuration filter: it caps at 20 minutes, which would rule out
+        // exactly the long simulated-game-day footage worth having.
+        const hits = await yt('search', {
+          key, q: src.ref, part: 'snippet', type: 'video', maxResults: '50',
+        });
+        const ids = (hits.items || []).map((i) => i.id?.videoId).filter(Boolean);
+        got = await detailsFor(key, ids, src.id);
+      } else if (src.kind === 'channel') {
+        const { ids, channelId } = await channelUploads(key, src.ref, src);
+        resolved = channelId;
+        got = await detailsFor(key, ids, src.id);
+      } else {
+        const id = (VIDEO_ID.exec(src.ref) || [])[1] || src.ref.trim();
+        got = await detailsFor(key, [id], src.id);
+      }
+
+      let fresh = 0;
+      for (const row of got) {
+        if (seen.has(row.video_id)) continue;
         seen.add(row.video_id);
         rows.push(row);
+        fresh += 1;
       }
+      touched.push({ id: src.id, resolved_id: resolved ?? null, last_found: fresh });
     } catch (e) {
-      problems.push(`${q}: ${e.message}`);
+      problems.push(`${src.label || src.ref}: ${e.message}`);
     }
   }
+
+  // Record what each source turned up, so a dead one is visible on the page.
+  const stamp = new Date().toISOString();
+  await Promise.all(touched.map((t) => sb(`pipeline_sources?id=eq.${t.id}`, {
+    method: 'PATCH',
+    headers: { prefer: 'return=minimal' },
+    body: JSON.stringify({ last_run_at: stamp, last_found: t.last_found, resolved_id: t.resolved_id }),
+  }).catch(() => {})));
 
   if (!rows.length) {
     return {
       code: problems.length ? 502 : 200,
       body: problems.length
-        ? { error: 'YouTube would not answer', detail: problems[0] }
+        ? { error: 'nothing could be searched', detail: problems[0] }
         : { stage: 'discover', found: 0, added: 0 },
     };
   }
 
   // Written as the signed-in owner, so RLS decides, exactly as in the browser.
-  // ignore-duplicates keeps a re-run from resetting the status of anything
-  // already part-way through the pipeline.
-  const write = await fetch(
-    `${supabaseUrl}/rest/v1/pipeline_videos?on_conflict=video_id`,
-    {
-      method: 'POST',
-      headers: {
-        apikey: anonKey,
-        authorization: auth,
-        'content-type': 'application/json',
-        prefer: 'resolution=ignore-duplicates,return=representation',
-      },
-      body: JSON.stringify(rows),
-    },
-  );
+  // ignore-duplicates keeps a re-run from resetting anything already part-way
+  // through the pipeline.
+  const write = await sb('pipeline_videos?on_conflict=video_id', {
+    method: 'POST',
+    headers: { prefer: 'resolution=ignore-duplicates,return=representation' },
+    body: JSON.stringify(rows),
+  });
   const text = await write.text();
   if (!write.ok) {
-    return {
-      code: 502,
-      body: { error: 'could not write the candidates', detail: text.slice(0, 300) },
-    };
+    return { code: 502, body: { error: 'could not write the candidates', detail: text.slice(0, 300) } };
   }
   let added = null;
   try { added = JSON.parse(text).length; } catch { /* return=minimal, or odd body */ }
@@ -170,9 +245,10 @@ async function runDiscover({ supabaseUrl, anonKey, auth }) {
     code: 200,
     body: {
       stage: 'discover',
+      sources: sources.length,
       found: rows.length,
       added: added == null ? 'unknown' : added,
-      ...(problems.length ? { warnings: problems.length } : {}),
+      ...(problems.length ? { warnings: problems.slice(0, 3) } : {}),
     },
   };
 }

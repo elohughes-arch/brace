@@ -86,7 +86,8 @@ input { font: inherit; }
 .topbar .word { font-family: var(--f-display); font-weight: 300; font-size: 1.2rem; letter-spacing: 0.14em; color: var(--c-ivory); }
 .topbar .scope { font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
   color: var(--c-ivory-48); border-left: 1px solid var(--c-midnight-hairline); padding-left: 14px; }
-.topbar .who { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 0.82rem; color: var(--c-ivory-48); }
+.topbar .who { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 0.82rem; color: var(--c-ivory-48); min-width: 0; }
+.topbar .who span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .signout { display: inline-flex; align-items: center; gap: 7px; font-size: 0.8rem; color: var(--c-ivory-60);
   border: 1px solid var(--c-midnight-hairline); border-radius: var(--r-pill); padding: 7px 14px;
   white-space: nowrap; }
@@ -189,6 +190,12 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
   .grid { grid-template-columns: minmax(0, 1fr); }
   .rail { grid-template-columns: repeat(2, 1fr); row-gap: 22px; }
   .stop:nth-child(2) .join { display: none; }
+  /* Below this the bar is a row too many: wordmark, section, three tabs, an
+     email and two buttons. The tabs drop to their own line rather than push
+     the sign-out button off the side of the page. */
+  .topbar { flex-wrap: wrap; row-gap: 10px; }
+  .topbar .scope { display: none; }
+  .topbar .views { order: 3; width: 100%; overflow-x: auto; }
 }
 @media (max-width: 560px) {
   .topbar { padding: 14px 16px; gap: 10px; }
@@ -264,3 +271,50 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
 .btn-copy:hover { color: var(--text-1); border-color: var(--text-3); }
 
 .gate-card.centred .gate-foot { text-align: center; margin-top: 22px; }
+
+/* ---------- Sources ----------
+   .row and .dot went out with the old dashboard and nothing used them until
+   now, so they are rebuilt here rather than left as dead selectors. */
+
+/* Several panels stacked inside one column of .grid. The explicit single
+   track matters: a grid with no template gets an implicit `auto` column,
+   whose floor is the widest row's min-content — which is wider than the
+   1.35fr track it sits in, so the panels paint out over the column beside
+   them. minmax(0, 1fr) lets the track be narrower than its contents, and the
+   rows then ellipsis as intended. */
+.stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+
+.row { display: flex; align-items: center; gap: 12px; padding: 12px 0;
+  border-top: 1px solid var(--line); }
+.row:first-of-type { border-top: none; }
+.row .main { flex: 1; min-width: 0; }
+.row .t { font-size: 14px; color: var(--text-1);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .s { font-size: 12px; color: var(--text-3); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--line-strong); }
+.dot.on { background: var(--clay); }
+.dot.off { background: var(--text-3); opacity: .4; }
+
+.row.src.off { opacity: .5; }
+.row .end { margin-left: auto; flex: 0 0 auto;
+  display: flex; align-items: center; gap: 12px; }
+.perm { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--text-3); border: 1px solid var(--line); border-radius: var(--r-pill);
+  padding: 3px 9px; white-space: nowrap; }
+.perm-granted { color: var(--hit); border-color: rgba(111,190,114,.35); }
+.perm-declined { color: var(--destructive); border-color: rgba(224,112,95,.35); }
+.perm-requested { color: var(--champagne); border-color: rgba(203,190,147,.35); }
+.linky { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+.linky:hover { color: var(--text-1); }
+.linky.bad:hover { color: var(--destructive); }
+
+.field select { width: 100%; padding: 12px 14px; border-radius: var(--r-md);
+  border: 1px solid var(--line-strong); background: var(--bg-sunken);
+  color: var(--text-1); font-size: 15px; appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%),
+                    linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+  background-position: calc(100% - 20px) center, calc(100% - 15px) center;
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+.field select:focus, .field input:focus { border-color: var(--clay); outline: none; }

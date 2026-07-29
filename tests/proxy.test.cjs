@@ -29,7 +29,7 @@ function mkRes() {
 }
 
 // Records what the handler asked for, and answers per the scenario.
-function mkFetch({ owner = true, sbThrows = false, modal = { ok: true, status: 200, text: '{"stage":"discover","candidates":47}' }, hang = false, slowBody = false, ytFails = false, writeFails = false }) {
+function mkFetch({ owner = true, sbThrows = false, modal = { ok: true, status: 200, text: '{"stage":"discover","candidates":47}' }, hang = false, slowBody = false, ytFails = false, writeFails = false, sourcesFail = false, SOURCES = [{ id: 's1', kind: 'query', ref: 'clay shooting POV', label: 'Clay POV', enabled: true, permission: 'unknown', resolved_id: null }] }) {
   const calls = [];
   return [calls, async (url, opts) => {
     const u = String(url);
@@ -44,6 +44,17 @@ function mkFetch({ owner = true, sbThrows = false, modal = { ok: true, status: 2
     }
     if (u.includes('googleapis.com/youtube/v3/videos')) {
       return { ok: true, json: async () => YT_VIDEOS };
+    }
+    if (u.includes('/rest/v1/pipeline_sources')) {
+      if (opts?.method === 'PATCH') return { ok: true, status: 204, text: async () => '' };
+      if (sourcesFail) return { ok: false, status: 401, text: async () => 'denied' };
+      return { ok: true, status: 200, json: async () => SOURCES, text: async () => JSON.stringify(SOURCES) };
+    }
+    if (u.includes('googleapis.com/youtube/v3/channels')) {
+      return { ok: true, json: async () => ({ items: [{ id: 'UCabcdefghijklmnopqrstuv' }] }) };
+    }
+    if (u.includes('googleapis.com/youtube/v3/playlistItems')) {
+      return { ok: true, json: async () => ({ items: [{ contentDetails: { videoId: 'good1' } }] }) };
     }
     if (u.includes('/rest/v1/pipeline_videos')) {
       if (writeFails) return { ok: false, status: 401, text: async () => '{"message":"permission denied"}' };
@@ -207,6 +218,51 @@ async function run(name, { env = ENV, req = {}, fetchOpts = {}, expect }) {
       && !c.some((x) => x.url.includes('modal.run')),
   });
 
+  await run('a channel source lists uploads instead of searching', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    fetchOpts: { SOURCES: [{ id: 's2', kind: 'channel', ref: '@TheShootingLine', label: 'The Shooting Line', enabled: true, permission: 'granted', resolved_id: null }] },
+    expect: (r, c) => {
+      // one unit per fifty videos, not a hundred per search: no search call at all
+      const searched = c.some((x) => x.url.includes('youtube/v3/search'));
+      const listed = c.some((x) => x.url.includes('playlistItems'));
+      const write = c.find((x) => x.url.includes('/rest/v1/pipeline_videos'));
+      return !searched && listed && JSON.parse(write.opts.body)[0].source_id === 's2';
+    },
+  });
+
+  await run('a channel handle is resolved to its uploads playlist', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    fetchOpts: { SOURCES: [{ id: 's2', kind: 'channel', ref: '@TheShootingLine', enabled: true, permission: 'unknown', resolved_id: null }] },
+    expect: (r, c) => {
+      const list = c.find((x) => x.url.includes('playlistItems'));
+      // UC… becomes UU… — the channel's own uploads playlist
+      return new URL(list.url).searchParams.get('playlistId') === 'UUabcdefghijklmnopqrstuv';
+    },
+  });
+
+  await run('a single video source needs no search either', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    fetchOpts: { SOURCES: [{ id: 's3', kind: 'video', ref: 'https://www.youtube.com/watch?v=good1', enabled: true, permission: 'unknown', resolved_id: null }] },
+    expect: (r, c) => !c.some((x) => x.url.includes('youtube/v3/search'))
+      && JSON.parse(c.find((x) => x.url.includes('pipeline_videos')).opts.body)[0].video_id === 'good1',
+  });
+
+  await run('no sources switched on is not an error', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    fetchOpts: { SOURCES: [] },
+    expect: (r, c) => r.code === 200 && r.body.found === 0
+      && !c.some((x) => x.url.includes('pipeline_videos')),
+  });
+
+  await run('search no longer caps results at twenty minutes', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    expect: (r, c) => {
+      const search = c.find((x) => x.url.includes('youtube/v3/search'));
+      // videoDuration=medium would rule out long simulated game days
+      return !new URL(search.url).searchParams.has('videoDuration');
+    },
+  });
+
   await run('discover keeps only what passes the filters', {
     req: { query: { stage: 'discover' }, headers: AUTH },
     expect: (r, c) => {
@@ -236,10 +292,23 @@ async function run(name, { env = ENV, req = {}, fetchOpts = {}, expect }) {
       && !c.some((x) => x.url.includes('pipeline_videos')),
   });
 
-  await run('a YouTube quota error is reported, not swallowed', {
+  await run('a YouTube quota error names the source that hit it', {
     req: { query: { stage: 'discover' }, headers: AUTH },
     fetchOpts: { ytFails: true },
-    expect: (r) => r.code === 502 && /YouTube/.test(r.body.error),
+    expect: (r) => r.code === 502 && /quotaExceeded/.test(r.body.detail)
+      && /Clay POV/.test(r.body.detail),
+  });
+
+  await run('one broken source does not stop the others', {
+    req: { query: { stage: 'discover' }, headers: AUTH },
+    fetchOpts: {
+      ytFails: true,
+      SOURCES: [
+        { id: 'bad', kind: 'query', ref: 'boom', label: 'Broken', enabled: true, permission: 'unknown', resolved_id: null },
+        { id: 'ok', kind: 'video', ref: 'good1', label: 'Fine', enabled: true, permission: 'unknown', resolved_id: null },
+      ],
+    },
+    expect: (r) => r.code === 200 && r.body.found === 1 && r.body.warnings.length === 1,
   });
 
   await run('RLS refusing the write surfaces', {
