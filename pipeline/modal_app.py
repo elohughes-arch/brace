@@ -42,8 +42,13 @@ POT = "/opt/bgutil/server/build/generate_once.js"
 
 base_image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("ffmpeg", "nodejs", "npm", "git")
+    .apt_install("ffmpeg", "git", "curl", "ca-certificates")
     .run_commands(
+        # Debian's packaged node is 18, which is end-of-life and not a
+        # runtime the challenge solver accepts. Current node from nodesource.
+        "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - "
+        "&& apt-get install -y nodejs",
+        "node --version",
         "git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider /opt/bgutil",
         "cd /opt/bgutil/server && npm install --no-audit --no-fund && npx tsc",
         f"test -f {POT}",   # fail the build loudly if the layout ever changes
