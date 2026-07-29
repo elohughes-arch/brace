@@ -447,6 +447,14 @@ async function loadSpend() {
   };
 }
 
+async function loadClips() {
+  const { data, error } = await supabase.from('pipeline_clips')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,created_at')
+    .order('created_at', { ascending: false })
+    .limit(40);
+  return error ? [] : (data || []);
+}
+
 const judged = new Set();   // survives a queue read that overtakes a decision
 
 async function loadQueue() {
@@ -503,9 +511,9 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['review', 'sources'].find((v) => location.hash === `#${v}`) || 'control';
+const viewFromHash = () => ['review', 'sources', 'labelling'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], loading: true };
 let batch = 10;   // videos per press — survives repaints, resets with the tab
 let poll = null;
 
@@ -531,6 +539,7 @@ function shell(body) {
           ${item('control', 'Control')}
           ${item('review', 'Review', state.counts?.downloaded)}
           ${item('sources', 'Sources')}
+          ${item('labelling', 'Labelling', state.counts?.pending)}
         </nav>
         <div class="side-foot">
           ${state.spend && state.spend.scored
@@ -708,6 +717,65 @@ async function judge(id, status, el) {
   el.classList.add('gone');
   setTimeout(() => { if (dashboardIsCurrent()) paint(); }, 220);
   loadCounts().then((c) => { state.counts = c; }).catch(() => { /* the poll will retry */ });
+}
+
+
+/* ---------- labelling ---------- */
+
+// The clips are on Modal and the boxes land in Roboflow, so this page is the
+// window between the two: what has been cut, what has been pushed, and the
+// door to the human half of labelling.
+const ROBOFLOW_ANNOTATE = 'https://app.roboflow.com/elohughes-icloud-com/brace-clay/annotate';
+
+function labellingView() {
+  if (state.loading) return '<div class="empty">Loading clips…</div>';
+  const c = state.counts || {};
+  const clips = state.clips;
+  const row = (k) => {
+    const yt = `https://www.youtube.com/watch?v=${encodeURIComponent(k.video_id)}&t=${Math.max(0, Math.floor(k.shot_ts || 0))}s`;
+    return `
+    <div class="row">
+      <span class="dot ${k.label_status === 'prelabelled' ? 'on' : ''}"></span>
+      <div class="main">
+        <div class="t"><a href="${esc(yt)}" target="_blank" rel="noopener">${esc(k.video_id)}</a>
+          · shot at ${mmss(k.shot_ts)}</div>
+        <div class="s">${mmss(k.clip_start)}–${mmss(k.clip_end)}
+          ${k.is_pair ? ' · pair' : ''}
+          · ${esc(k.label_status || 'pending')}${k.roboflow_id ? ' · in Roboflow' : ''}</div>
+      </div>
+    </div>`;
+  };
+
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Labelling</h1>
+        <p>Clip cuts a short clip around every shot in an approved video. Pre-label
+           draws first-pass boxes on the clays and pushes the frames to Roboflow,
+           where the human half happens: checking boxes beats drawing them.</p>
+      </div>
+      <a class="p-act" href="${ROBOFLOW_ANNOTATE}" target="_blank" rel="noopener">Open Roboflow ↗</a>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><span class="clay ${c.pending ? 'on' : 'off'}"></span>
+        <div class="num">${fmt(c.pending ?? 0)}</div>
+        <div class="cap">Awaiting pre-label</div><div class="sub">cut, not yet boxed</div></div>
+      <div class="stat"><span class="clay ${c.prelabelled ? 'on' : 'off'}"></span>
+        <div class="num">${fmt(c.prelabelled ?? 0)}</div>
+        <div class="cap">Pre-labelled</div><div class="sub">boxed, in Roboflow</div></div>
+      <div class="stat"><span class="clay ${c.approved ? 'on' : 'off'}"></span>
+        <div class="num">${fmt(c.approved ?? 0)}</div>
+        <div class="cap">Approved, unclipped</div><div class="sub">press Clip on Control</div></div>
+    </div>
+
+    <section class="panel">
+      <div class="p-head"><span class="p-title">Latest clips</span></div>
+      ${clips.length ? clips.map(row).join('')
+        : `<div class="empty">No clips yet. The path here: approve videos in Review,
+           press Clip on the Control page, then Pre-label. Each clip lands in this
+           list, and its boxed frames land in Roboflow.</div>`}
+    </section>`;
 }
 
 /* ---------- sources ---------- */
@@ -906,7 +974,10 @@ function paint(force = false) {
   painted = sig;
   const refocus = focusKey();
 
-  shell(view === 'review' ? reviewView() : view === 'sources' ? sourcesView() : controlView());
+  shell(view === 'review' ? reviewView()
+    : view === 'sources' ? sourcesView()
+    : view === 'labelling' ? labellingView()
+    : controlView());
 
   document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
@@ -957,18 +1028,20 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend] = await Promise.all([
+    const [counts, queue, sources, issues, spend, clips] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
       view === 'control' ? loadIssues() : Promise.resolve(state.issues),
       view === 'control' ? loadSpend() : Promise.resolve(state.spend),
+      view === 'labelling' ? loadClips() : Promise.resolve(state.clips),
     ]);
     state.counts = counts;
     state.queue = queue;
     state.sources = sources;
     state.issues = issues;
     state.spend = spend;
+    state.clips = clips;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -989,7 +1062,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
