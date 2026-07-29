@@ -48,8 +48,13 @@ base_image = (
         "cd /opt/bgutil/server && npm install --no-audit --no-fund && npx tsc",
         f"test -f {POT}",   # fail the build loudly if the layout ever changes
     )
-    .pip_install("numpy", "scipy", "requests", "supabase", "yt-dlp", "fastapi",
-                 "anthropic", "python-dotenv", "bgutil-ytdlp-pot-provider")
+    # yt-dlp[default] rather than yt-dlp: the extra carries the challenge
+    # solver scripts that current YouTube extraction runs in a JS runtime.
+    # Without them every real format is withheld — "Only images are
+    # available" — and node must be named, since only deno is looked for.
+    .pip_install("numpy", "scipy", "requests", "supabase", "yt-dlp[default]",
+                 "fastapi", "anthropic", "python-dotenv",
+                 "bgutil-ytdlp-pot-provider")
     .add_local_python_source("discover", "triage", "clipper")
 )
 
@@ -169,14 +174,14 @@ def triage(request: fastapi.Request):
         # support cookies"), and it is exactly the client that skips the
         # proof-of-trust gate the signed-in web client hits.
         pot = ["--extractor-args", f"youtubepot-bgutilscript:script_path={POT}"]
+        js = ["--js-runtimes", "node"]   # in the image for the POT server anyway
         attempts = [
-            ["yt-dlp", *cookies, *pot, "-S", "res:720",
-             "--extractor-args", "youtube:player_client=default,tv_simply",
+            ["yt-dlp", *cookies, *pot, *js, "-S", "res:720",
              "--merge-output-format", "mp4", "--no-playlist", "--retries", "2",
              "-o", str(out), url],
-            ["yt-dlp", *pot, "-S", "res:720", "--no-playlist",
+            ["yt-dlp", *pot, *js, "-S", "res:720", "--no-playlist",
              "-o", str(out), url],
-            ["yt-dlp", "-S", "res:720", "--no-playlist",
+            ["yt-dlp", *js, "-S", "res:720", "--no-playlist",
              "--extractor-args", "youtube:player_client=android_vr",
              "-o", str(out), url],
         ]
