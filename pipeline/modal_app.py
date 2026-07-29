@@ -142,17 +142,18 @@ def triage(request: fastapi.Request):
             local.write_bytes(jar.read_bytes())
             cookies = ["--cookies", str(local)]
 
-        # Two shapes of attempt: the plain one, then one that asks YouTube's
-        # android player for any single ≤720p file. The second dodges two
-        # separate failure modes — web-client bot checks, and videos whose
-        # split video+audio formats are withheld. If both fail, keep
-        # yt-dlp's actual words: "exit status 1" diagnoses nothing.
+        # Preference, not demand: -S sorts what YouTube actually offers,
+        # capped at 720p, where a -f selector errors outright when the named
+        # shapes are withheld — which they now routinely are. The second
+        # attempt asks the TV player, which is offered a different format
+        # set. If both fail, keep yt-dlp's actual words: "exit status 1"
+        # diagnoses nothing.
         attempts = [
-            ["yt-dlp", *cookies, "-f", "bv*[height<=720]+ba/b[height<=720]",
+            ["yt-dlp", *cookies, "-S", "res:720",
              "--merge-output-format", "mp4", "--no-playlist", "--retries", "2",
              "-o", str(out), url],
-            ["yt-dlp", *cookies, "-f", "b[height<=720]/b", "--no-playlist",
-             "--extractor-args", "youtube:player_client=android",
+            ["yt-dlp", *cookies, "-S", "res:720", "--no-playlist",
+             "--extractor-args", "youtube:player_client=tv",
              "-o", str(out), url],
         ]
         last = ""
