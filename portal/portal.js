@@ -381,6 +381,7 @@ const RUNS = [
   { stage: 'discover', label: 'Discover', busy: 'Searching', desc: 'Search YouTube for new candidates. Runs on the website itself, so it works before Modal does.' },
   { stage: 'triage', label: 'Triage', busy: 'Triaging', desc: 'Download the next batch, sample frames, score them for training value. What survives lands in the review queue. Needs Modal.' },
   { stage: 'clip', label: 'Clip', busy: 'Clipping', desc: 'Find the shots in everything you have approved and cut a clip around each one. Needs Modal.' },
+  { stage: 'screen', label: 'Screen', busy: 'Screening', desc: 'Detect clays in every raw cut: no clay rejects it, a clay trims it to the flight and sends it for your check. Needs Modal.' },
   { stage: 'prelabel', label: 'Pre-label', busy: 'Pre-labelling', desc: 'Draw the first pass of boxes on the clays and push the frames to Roboflow for checking. Needs Modal.', primary: true },
 ];
 
@@ -409,7 +410,7 @@ async function loadCounts() {
   const [videos, clips] = await Promise.all([
     tally('pipeline_videos', 'video_id', 'status',
       ['discovered', 'downloaded', 'approved', 'clipped', 'rejected', 'error']),
-    tally('pipeline_clips', 'clip_id', 'label_status', ['pending', 'queued', 'prelabelled']),
+    tally('pipeline_clips', 'clip_id', 'label_status', ['raw', 'pending', 'queued', 'prelabelled']),
   ]);
   return { ...videos, ...clips };
 }
@@ -671,6 +672,7 @@ function controlView() {
     </div>
 
     <div class="tally">
+      <span>${n('raw')} clips being screened for clays</span>
       <span>${n('pending')} clips awaiting your check</span>
       <span>${n('queued')} queued for AI labelling</span>
       <span>${n('prelabelled')} pre-labelled</span>
@@ -861,7 +863,7 @@ function triageClipsView() {
     <div class="stats">
       <div class="stat"><span class="clay ${c.pending ? 'on' : 'off'}"></span>
         <div class="num">${fmt(c.pending ?? 0)}</div>
-        <div class="cap">Awaiting your check</div><div class="sub">cut, not yet sent</div></div>
+        <div class="cap">Awaiting your check</div><div class="sub">clay-verified, trimmed to flight</div></div>
       <div class="stat"><span class="clay ${c.queued ? 'on' : 'off'}"></span>
         <div class="num">${fmt(c.queued ?? 0)}</div>
         <div class="cap">Queued for AI</div><div class="sub">boxed within the hour</div></div>

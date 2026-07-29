@@ -27,7 +27,7 @@
      MODAL_URL_TRIAGE / _CLIP / _PRELABEL   optional per-stage overrides
    ========================================================================== */
 
-const STAGES = ['discover', 'triage', 'clip', 'prelabel'];
+const STAGES = ['discover', 'triage', 'clip', 'screen', 'prelabel'];
 const LOCAL_STAGES = ['discover'];      // run here, not on Modal
 
 // Vercel functions are capped well below Modal's 30-minute timeouts, so we

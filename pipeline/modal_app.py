@@ -59,7 +59,10 @@ base_image = (
     # available" — and node must be named, since only deno is looked for.
     .pip_install("numpy", "scipy", "requests", "supabase", "yt-dlp[default]",
                  "fastapi", "anthropic", "python-dotenv",
-                 "bgutil-ytdlp-pot-provider")
+                 "bgutil-ytdlp-pot-provider",
+                 # the upload stage runs here now: it reads stored boxes and
+                 # ships frames to Roboflow, no GPU involved
+                 "roboflow", "opencv-python-headless")
     .add_local_python_source("discover", "triage", "clipper")
 )
 
@@ -133,8 +136,14 @@ def _advance():
                 .in_("label_status", ["pending", "queued"])
                 .or_("preview_path.is.null,poster_path.is.null").execute().count or 0)
 
+    def clips_in(status):
+        return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
+                .eq("label_status", status).execute().count or 0)
+
     if videos_in("approved") or clips_unpreviewed():
         hit("clip")   # cuts approved videos and backfills missing previews
+    if clips_in("raw"):
+        hit("screen")
     if clips_queued():
         hit("prelabel")
     return {"stage": "advance"}
@@ -352,7 +361,7 @@ def clip(request: fastapi.Request):
                 "is_pair": spec["is_pair"],
                 "pair_gap_s": spec["pair_gap_s"],
                 "file_path": str(out),
-                "label_status": "pending",
+                "label_status": "raw",   # screening promotes clay-bearing cuts to pending
             })
         if inserts:
             sb.table("pipeline_clips").insert(inserts).execute()
@@ -422,12 +431,16 @@ def clip(request: fastapi.Request):
             "previews_made": previewed, "errors": failed}
 
 
-# ---------------------------------------------------------------- prelabel
+# ---------------------------------------------------------------- screen
 
+# The machine's eyes, in front of the owner's. Every raw cut is detected at
+# PRELABEL_FPS: no clay in any frame rejects it before a human ever sees it;
+# a clay promotes it to the check queue, trimmed to its tracked flight, with
+# the shot's verdict attached and the whole trajectory stored.
 @app.function(image=gpu_image, secrets=[secret], gpu="T4", timeout=1800,
               volumes={MEDIA: volume})
 @web_endpoint(method="POST")
-def prelabel(request: fastapi.Request):
+def screen(request: fastapi.Request):
     if not _authorised(request):
         return UNAUTHORISED
 
@@ -441,23 +454,17 @@ def prelabel(request: fastapi.Request):
 
     DETECT_PROMPT = "flying clay pigeon. small orange disc. small black disc in sky."
     sb = _sb()
-    # 'queued' is set by the owner in the portal after eyeballing the cut;
-    # 'pending' clips are waiting for that check and are not touched here.
     rows = (sb.table("pipeline_clips").select("*")
-            .eq("label_status", "queued").limit(10).execute().data)
+            .eq("label_status", "raw").limit(10).execute().data)
     if not rows:
-        return {"stage": "prelabel", "processed": 0, "uploaded": 0}
+        return {"stage": "screen", "processed": 0}
 
     device = "cuda"
     proc = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
     gdino = AutoModelForZeroShotObjectDetection.from_pretrained(
         "IDEA-Research/grounding-dino-base").to(device)
 
-    from roboflow import Roboflow
-    rf = Roboflow(api_key=os.environ["ROBOFLOW_API_KEY"])
-    project = rf.workspace().project(os.environ["ROBOFLOW_PROJECT"])
-
-    done = uploaded = 0
+    done = kept = 0
     for row in rows:
         path = row["file_path"]
         if not Path(path).exists():
@@ -547,34 +554,9 @@ def prelabel(request: fastapi.Request):
             "clip_id": row["clip_id"],
             "n_clays": max((len(v) for v in boxes_per_frame.values()), default=0),
             "boxes_json": boxes_per_frame,
+            "frame_dt": step / fps,
+            "t_offset": t0 if (t0 > 0.6 or t1 < clip_len - 0.6) else 0.0,
         }).execute()
-
-        # Confidence routing: a frame whose every box clears the bar goes to
-        # a batch that can be bulk-added to the dataset without per-image
-        # review; one shaky box sends the whole frame to the review batch.
-        # Whole frames, not boxes — a frame with one checked and one
-        # unchecked box helps nobody. AUTO_ACCEPT=1.0 turns routing off.
-        sure = float(os.environ.get("AUTO_ACCEPT", 0.55))
-        tmp = Path("/tmp/frames")
-        tmp.mkdir(parents=True, exist_ok=True)
-        stride = max(1, int(round((fps / step) / 1.7)))
-        for i in list(boxes_per_frame)[::stride]:
-            fp = tmp / f"{row['clip_id']}_{i:04d}.jpg"
-            cv2.imwrite(str(fp), frames[i])
-            h, w = frames[i].shape[:2]
-            lines = []
-            for b in boxes_per_frame[i]:
-                x1, y1, x2, y2 = b["xyxy"]
-                lines.append(f"0 {(x1+x2)/2/w:.6f} {(y1+y2)/2/h:.6f} "
-                             f"{(x2-x1)/w:.6f} {(y2-y1)/h:.6f}")
-            ann = fp.with_suffix(".txt")
-            ann.write_text("\n".join(lines))
-            confident = all(b["conf"] >= sure for b in boxes_per_frame[i])
-            project.upload(str(fp), annotation_path=str(ann),
-                           batch_name="auto-accepted" if confident else "needs-review",
-                           tag_names=["prelabel",
-                                      "confident" if confident else "doubtful"])
-            uploaded += 1
 
         # The verdict: did the clay break? Four frames straddling the shot —
         # a hit fragments and vanishes in a puff, a miss keeps flying. The
@@ -582,14 +564,92 @@ def prelabel(request: fastapi.Request):
         outcome, conf = _judge_shot(row, frames, fps, step)
 
         sb.table("pipeline_clips").update(
-            {"label_status": "prelabelled",
+            {"label_status": "pending",
              "clip_start": new_start, "clip_end": new_end,
              "preview_path": pv, "poster_path": po,
              "outcome": outcome, "outcome_conf": conf}
         ).eq("clip_id", row["clip_id"]).execute()
         done += 1
+        kept += 1
 
     volume.commit()   # the trims rewrote clip files on the volume
+    return {"stage": "screen", "processed": done, "kept": kept}
+
+
+# ---------------------------------------------------------------- prelabel
+
+# Upload only, no GPU: the boxes were drawn at screening and stored; this
+# reopens the trimmed clip, lifts the same frames, and ships them to
+# Roboflow with confidence routing.
+@app.function(image=base_image, secrets=[secret], timeout=900,
+              volumes={MEDIA: volume})
+@web_endpoint(method="POST")
+def prelabel(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+
+    import os
+    import cv2
+    from pathlib import Path
+
+    volume.reload()
+    sb = _sb()
+    rows = (sb.table("pipeline_clips").select("*")
+            .eq("label_status", "queued").limit(25).execute().data)
+    if not rows:
+        return {"stage": "prelabel", "processed": 0, "uploaded": 0}
+
+    from roboflow import Roboflow
+    rf = Roboflow(api_key=os.environ["ROBOFLOW_API_KEY"])
+    project = rf.workspace().project(os.environ["ROBOFLOW_PROJECT"])
+
+    sure = float(os.environ.get("AUTO_ACCEPT", 0.55))
+    done = uploaded = 0
+    for row in rows:
+        lab = (sb.table("pipeline_labels").select("boxes_json,frame_dt,t_offset")
+               .eq("clip_id", row["clip_id"]).execute().data)
+        boxes = lab[0].get("boxes_json") if lab else None
+        if not boxes or not Path(row["file_path"]).exists():
+            sb.table("pipeline_clips").update(
+                {"label_status": "rejected"}).eq("clip_id", row["clip_id"]).execute()
+            continue
+        frame_dt = float(lab[0].get("frame_dt") or 0.2)
+        t_off = float(lab[0].get("t_offset") or 0.0)
+        cap = cv2.VideoCapture(row["file_path"])
+        tmp = Path("/tmp/frames")
+        tmp.mkdir(parents=True, exist_ok=True)
+        idxs = sorted(int(k) for k in boxes)
+        stride = max(1, int(round((1.0 / frame_dt) / 1.7)))
+        for i in idxs[::stride]:
+            t = i * frame_dt - t_off
+            if t < 0:
+                continue           # trimmed off the front of the file
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            fp = tmp / f"{row['clip_id']}_{i:04d}.jpg"
+            cv2.imwrite(str(fp), frame)
+            h, w = frame.shape[:2]
+            bxs = boxes[str(i)] if str(i) in boxes else boxes.get(i, [])
+            lines = []
+            for b in bxs:
+                x1, y1, x2, y2 = b["xyxy"]
+                lines.append(f"0 {(x1+x2)/2/w:.6f} {(y1+y2)/2/h:.6f} "
+                             f"{(x2-x1)/w:.6f} {(y2-y1)/h:.6f}")
+            ann = fp.with_suffix(".txt")
+            ann.write_text("\n".join(lines))
+            confident = all(b["conf"] >= sure for b in bxs) if bxs else False
+            project.upload(str(fp), annotation_path=str(ann),
+                           batch_name="auto-accepted" if confident else "needs-review",
+                           tag_names=["prelabel",
+                                      "confident" if confident else "doubtful"])
+            uploaded += 1
+        cap.release()
+        sb.table("pipeline_clips").update(
+            {"label_status": "prelabelled"}).eq("clip_id", row["clip_id"]).execute()
+        done += 1
+
     return {"stage": "prelabel", "processed": done, "frames_uploaded": uploaded}
 
 
