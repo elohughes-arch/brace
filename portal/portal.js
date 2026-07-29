@@ -408,7 +408,7 @@ async function loadCounts() {
   const [videos, clips] = await Promise.all([
     tally('pipeline_videos', 'video_id', 'status',
       ['discovered', 'downloaded', 'approved', 'clipped', 'rejected', 'error']),
-    tally('pipeline_clips', 'clip_id', 'label_status', ['pending', 'prelabelled']),
+    tally('pipeline_clips', 'clip_id', 'label_status', ['pending', 'queued', 'prelabelled']),
   ]);
   return { ...videos, ...clips };
 }
@@ -599,7 +599,8 @@ function controlView() {
     </div>
 
     <div class="tally">
-      <span>${n('pending')} clips awaiting pre-label</span>
+      <span>${n('pending')} clips awaiting your check</span>
+      <span>${n('queued')} queued for AI labelling</span>
       <span>${n('prelabelled')} pre-labelled</span>
     </div>
 
@@ -727,32 +728,44 @@ async function judge(id, status, el) {
 // door to the human half of labelling.
 const ROBOFLOW_ANNOTATE = 'https://app.roboflow.com/elohughes-icloud-com/brace-clay/annotate';
 
+// Ticked clips survive the 8-second repaint because the selection lives here,
+// not in the DOM the repaint replaces.
+const picked = new Set();
+
 function labellingView() {
   if (state.loading) return '<div class="empty">Loading clips…</div>';
   const c = state.counts || {};
-  const clips = state.clips;
-  const row = (k) => {
-    const yt = `https://www.youtube.com/watch?v=${encodeURIComponent(k.video_id)}&t=${Math.max(0, Math.floor(k.shot_ts || 0))}s`;
-    return `
+  const pending = state.clips.filter((k) => (k.label_status || 'pending') === 'pending');
+  const rest = state.clips.filter((k) => (k.label_status || 'pending') !== 'pending');
+
+  const yt = (k) => `https://www.youtube.com/watch?v=${encodeURIComponent(k.video_id)}&t=${Math.max(0, Math.floor(k.shot_ts || 0))}s`;
+  const pendingRow = (k) => `
+    <label class="row">
+      <input type="checkbox" class="tick" data-pick="${esc(k.clip_id)}" ${picked.has(k.clip_id) ? 'checked' : ''} />
+      <div class="main">
+        <div class="t"><a href="${esc(yt(k))}" target="_blank" rel="noopener">Watch the shot ↗</a>
+          · ${esc(k.video_id)} at ${mmss(k.shot_ts)}</div>
+        <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
+      </div>
+    </label>`;
+  const doneRow = (k) => `
     <div class="row">
       <span class="dot ${k.label_status === 'prelabelled' ? 'on' : ''}"></span>
       <div class="main">
-        <div class="t"><a href="${esc(yt)}" target="_blank" rel="noopener">${esc(k.video_id)}</a>
-          · shot at ${mmss(k.shot_ts)}</div>
-        <div class="s">${mmss(k.clip_start)}–${mmss(k.clip_end)}
-          ${k.is_pair ? ' · pair' : ''}
-          · ${esc(k.label_status || 'pending')}${k.roboflow_id ? ' · in Roboflow' : ''}</div>
+        <div class="t"><a href="${esc(yt(k))}" target="_blank" rel="noopener">${esc(k.video_id)}</a>
+          at ${mmss(k.shot_ts)}</div>
+        <div class="s">${esc(k.label_status)}${k.roboflow_id ? ' · in Roboflow' : ''}</div>
       </div>
     </div>`;
-  };
 
   return `
     <div class="crm-head">
       <div>
         <h1>Labelling</h1>
-        <p>Clip cuts a short clip around every shot in an approved video. Pre-label
-           draws first-pass boxes on the clays and pushes the frames to Roboflow,
-           where the human half happens: checking boxes beats drawing them.</p>
+        <p>Check each cut by watching the shot, tick the good ones, and send them
+           to the AI labeller. It boxes the clays and pushes the frames to
+           Roboflow — confident frames to <b>auto-accepted</b>, shaky ones to
+           <b>needs-review</b>.</p>
       </div>
       <a class="p-act" href="${ROBOFLOW_ANNOTATE}" target="_blank" rel="noopener">Open Roboflow ↗</a>
     </div>
@@ -760,22 +773,49 @@ function labellingView() {
     <div class="stats">
       <div class="stat"><span class="clay ${c.pending ? 'on' : 'off'}"></span>
         <div class="num">${fmt(c.pending ?? 0)}</div>
-        <div class="cap">Awaiting pre-label</div><div class="sub">cut, not yet boxed</div></div>
+        <div class="cap">Awaiting your check</div><div class="sub">cut, not yet sent</div></div>
+      <div class="stat"><span class="clay ${c.queued ? 'on' : 'off'}"></span>
+        <div class="num">${fmt(c.queued ?? 0)}</div>
+        <div class="cap">Queued for AI</div><div class="sub">boxed within the hour</div></div>
       <div class="stat"><span class="clay ${c.prelabelled ? 'on' : 'off'}"></span>
         <div class="num">${fmt(c.prelabelled ?? 0)}</div>
         <div class="cap">Pre-labelled</div><div class="sub">boxed, in Roboflow</div></div>
-      <div class="stat"><span class="clay ${c.approved ? 'on' : 'off'}"></span>
-        <div class="num">${fmt(c.approved ?? 0)}</div>
-        <div class="cap">Approved, unclipped</div><div class="sub">press Clip on Control</div></div>
     </div>
 
     <section class="panel">
-      <div class="p-head"><span class="p-title">Latest clips</span></div>
-      ${clips.length ? clips.map(row).join('')
-        : `<div class="empty">No clips yet. The path here: approve videos in Review,
-           press Clip on the Control page, then Pre-label. Each clip lands in this
-           list, and its boxed frames land in Roboflow.</div>`}
-    </section>`;
+      <div class="p-head"><span class="p-title">Clips to check${c.pending ? ` — ${fmt(c.pending)}` : ''}</span>
+        <span>
+          <button class="linky" id="pickall">Select all shown</button>
+          <button class="linky" id="picknone" style="margin-left:10px">Clear</button>
+          <button class="btn mini-btn" id="sendsel" style="margin-left:14px"
+            ${picked.size ? '' : 'disabled'}>Send <span id="pickn">${picked.size}</span> to AI</button>
+          <button class="btn btn-ghost mini-btn" id="sendall" style="margin-left:8px"
+            ${c.pending ? '' : 'disabled'}>Send all ${fmt(c.pending ?? 0)}</button>
+        </span></div>
+      ${pending.length ? pending.map(pendingRow).join('')
+        : '<div class="empty">Nothing waiting. Approve videos in Review and the clipper feeds this list within the hour.</div>'}
+      ${pending.length && c.pending > pending.length
+        ? `<p class="foot-note">Showing the ${fmt(pending.length)} most recent of ${fmt(c.pending)} — Send all covers the rest too.</p>` : ''}
+    </section>
+
+    ${rest.length ? `
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Recently sent</span></div>
+      ${rest.slice(0, 10).map(doneRow).join('')}
+    </section>` : ''}`;
+}
+
+async function queueClips(ids, btn) {
+  if (!ids.length) return;
+  if (btn) busy(btn, true, 'Sending…');
+  const { error } = await supabase.from('pipeline_clips')
+    .update({ label_status: 'queued' }).in('clip_id', ids).select('clip_id');
+  if (error) note(`could not queue clips — ${error.message}`, 'bad');
+  else {
+    note(`${ids.length} clip${ids.length === 1 ? '' : 's'} queued for AI labelling`, 'good');
+    ids.forEach((id) => picked.delete(id));
+  }
+  await refresh();
 }
 
 /* ---------- sources ---------- */
@@ -1013,6 +1053,31 @@ function paint(force = false) {
   document.querySelectorAll('.cardv').forEach((el) =>
     el.querySelectorAll('[data-act]').forEach((b) =>
       b.addEventListener('click', () => judge(el.dataset.id, b.dataset.act, el))));
+
+  document.querySelectorAll('[data-pick]').forEach((cb) => cb.addEventListener('change', () => {
+    cb.checked ? picked.add(cb.dataset.pick) : picked.delete(cb.dataset.pick);
+    const n = document.getElementById('pickn');
+    if (n) n.textContent = picked.size;
+    const send = document.getElementById('sendsel');
+    if (send) send.disabled = !picked.size;
+  }));
+  document.getElementById('pickall')?.addEventListener('click', () => {
+    document.querySelectorAll('[data-pick]').forEach((cb) => { cb.checked = true; picked.add(cb.dataset.pick); });
+    paint(true);
+  });
+  document.getElementById('picknone')?.addEventListener('click', () => {
+    picked.clear(); paint(true);
+  });
+  document.getElementById('sendsel')?.addEventListener('click', (e) =>
+    queueClips([...picked], e.target));
+  document.getElementById('sendall')?.addEventListener('click', async (e) => {
+    // every pending clip, not just the page shown
+    busy(e.target, true, 'Sending…');
+    const { data, error } = await supabase.from('pipeline_clips')
+      .select('clip_id').eq('label_status', 'pending').limit(1000);
+    if (error) { note(`could not list pending clips — ${error.message}`, 'bad'); return refresh(); }
+    await queueClips((data || []).map((r) => r.clip_id));
+  });
 
   document.getElementById('addsrc')?.addEventListener('submit', addSource);
   document.getElementById('bulksrc')?.addEventListener('submit', addBulkSources);

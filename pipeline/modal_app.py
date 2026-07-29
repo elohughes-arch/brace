@@ -117,9 +117,9 @@ def _advance():
         return (sb.table("pipeline_videos").select("video_id", count="exact", head=True)
                 .eq("status", status).execute().count or 0)
 
-    def clips_pending():
+    def clips_queued():
         return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
-                .eq("label_status", "pending").execute().count or 0)
+                .eq("label_status", "queued").execute().count or 0)
 
     def hit(stage, query=""):
         r = requests.post(f"{base}-{stage}.modal.run{query}",
@@ -130,7 +130,7 @@ def _advance():
         hit("triage", "?limit=25")
     if videos_in("approved"):
         hit("clip")
-    if clips_pending():
+    if clips_queued():
         hit("prelabel")
     return {"stage": "advance"}
 
@@ -379,8 +379,10 @@ def prelabel(request: fastapi.Request):
 
     DETECT_PROMPT = "flying clay pigeon. small orange disc. small black disc in sky."
     sb = _sb()
+    # 'queued' is set by the owner in the portal after eyeballing the cut;
+    # 'pending' clips are waiting for that check and are not touched here.
     rows = (sb.table("pipeline_clips").select("*")
-            .eq("label_status", "pending").limit(10).execute().data)
+            .eq("label_status", "queued").limit(10).execute().data)
     if not rows:
         return {"stage": "prelabel", "processed": 0, "uploaded": 0}
 
