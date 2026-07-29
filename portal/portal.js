@@ -523,6 +523,28 @@ async function loadSentClips() {
   return data || [];
 }
 
+async function loadSheet() {
+  let q = supabase.from('pipeline_videos')
+    .select('video_id,title,channel,status,triage_score,duration_s,used,weather,updated_at')
+    .order('updated_at', { ascending: false }).limit(150);
+  if (sheetFilter !== 'all') q = q.eq('status', sheetFilter);
+  const { data, error } = await q;
+  state.sheetErr = error ? (error.message || String(error)) : '';
+  if (error) return [];
+  const rows = data || [];
+  // clips cut / sent per video, computed fresh rather than stored
+  try {
+    const { data: cc } = await supabase.rpc('sheet_clip_counts');
+    const byVid = new Map((cc || []).map((x) => [x.video_id, x]));
+    rows.forEach((v) => {
+      const x = byVid.get(v.video_id);
+      v.clips = x ? Number(x.clips) : 0;
+      v.sent = x ? Number(x.sent) : 0;
+    });
+  } catch { /* counts stay undefined; the sheet still lists */ }
+  return rows;
+}
+
 const judged = new Set();   // survives a queue read that overtakes a decision
 
 async function loadQueue() {
