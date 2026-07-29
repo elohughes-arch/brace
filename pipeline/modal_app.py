@@ -129,16 +129,29 @@ def triage(request: fastapi.Request):
     limit = min(int(request.query_params.get("limit", 10) or 10), 25)
 
     def download(url: str, out: Path) -> None:
+        # YouTube refuses anonymous downloads from datacenter addresses
+        # ("Sign in to confirm you're not a bot"), so a signed-in session's
+        # cookies live on the volume, put there by:
+        #   modal volume put brace-media cookies.txt /cookies/cookies.txt
+        # yt-dlp rewrites the file as YouTube rotates the session, hence the
+        # copy to local disk: the mounted original stays as exported.
+        cookies: list[str] = []
+        jar = Path(MEDIA) / "cookies" / "cookies.txt"
+        if jar.exists():
+            local = Path(tempfile.gettempdir()) / "cookies.txt"
+            local.write_bytes(jar.read_bytes())
+            cookies = ["--cookies", str(local)]
+
         # Two shapes of attempt: the plain one, then one that asks YouTube's
         # android player for any single ≤720p file. The second dodges two
         # separate failure modes — web-client bot checks, and videos whose
         # split video+audio formats are withheld. If both fail, keep
         # yt-dlp's actual words: "exit status 1" diagnoses nothing.
         attempts = [
-            ["yt-dlp", "-f", "bv*[height<=720]+ba/b[height<=720]",
+            ["yt-dlp", *cookies, "-f", "bv*[height<=720]+ba/b[height<=720]",
              "--merge-output-format", "mp4", "--no-playlist", "--retries", "2",
              "-o", str(out), url],
-            ["yt-dlp", "-f", "b[height<=720]/b", "--no-playlist",
+            ["yt-dlp", *cookies, "-f", "b[height<=720]/b", "--no-playlist",
              "--extractor-args", "youtube:player_client=android",
              "-o", str(out), url],
         ]
