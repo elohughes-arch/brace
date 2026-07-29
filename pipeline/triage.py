@@ -15,7 +15,7 @@ Usage:
     python triage.py path/to/video.mp4
     python triage.py path/to/video.mp4 --frames 12 --json
 
-Env (.env): ANTHROPIC_API_KEY
+Env (.env): ANTHROPIC_API_KEY, optionally TRIAGE_MODEL
 """
 
 import argparse
@@ -28,7 +28,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-MODEL = "claude-opus-5"
+# Haiku by default: scoring eight thumbnails against a rubric is well within
+# its reach, and it is about a fifth of a penny per video against four pence
+# on Opus. Set TRIAGE_MODEL in the Modal secret to trade money for judgement
+# — e.g. claude-opus-5 if the scores start letting junk through.
+MODEL = os.environ.get("TRIAGE_MODEL", "claude-haiku-4-5")
 
 # 0-10. Six is 'usable footage with visible clays'; below that the clip stage
 # would be cutting around shots we could never label.
@@ -131,15 +135,18 @@ def score_frames(frames: list[Path]) -> dict:
     blocks.append({"type": "text", "text": "Score this video. JSON only."})
 
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    # max_tokens caps thinking *and* the reply. Too tight and the model can
-    # spend the lot reasoning about eight frames and return no text at all,
-    # which reaches _parse_json as "no JSON in reply".
+    # Adaptive thinking exists on the 4.6+ families but is rejected with a
+    # 400 by Haiku, so it follows the model choice. With thinking on,
+    # max_tokens caps the reasoning *and* the reply — too tight and the model
+    # can spend the lot reasoning about eight frames and return no text at
+    # all, which reaches _parse_json as "no JSON in reply".
+    extra = {} if "haiku" in MODEL else {"thinking": {"type": "adaptive"}}
     msg = client.messages.create(
         model=MODEL,
-        max_tokens=8192,
-        thinking={"type": "adaptive"},
+        max_tokens=1024 if "haiku" in MODEL else 8192,
         system=SYSTEM,
         messages=[{"role": "user", "content": blocks}],
+        **extra,
     )
 
     text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
