@@ -686,8 +686,11 @@ def _judge_shot(row, frames, fps, step):
                 "type": "base64", "media_type": "image/jpeg",
                 "data": base64.standard_b64encode(jpg.tobytes()).decode()}})
         blocks.append({"type": "text", "text": "Verdict. JSON only."})
+        # Its own dial, and a sharper default than triage's: the verdict is
+        # fine-grained perception on a small volume, so the upgrade costs
+        # half a cent a clip and buys real accuracy. VERDICT_MODEL overrides.
         msg = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"]).messages.create(
-            model=os.environ.get("TRIAGE_MODEL", "claude-haiku-4-5"),
+            model=os.environ.get("VERDICT_MODEL", "claude-sonnet-5"),
             max_tokens=200,
             system=("A clay pigeon is shot at between the 'before' and 'after' "
                     "frames. Hit: the clay breaks into fragments or a puff of "
