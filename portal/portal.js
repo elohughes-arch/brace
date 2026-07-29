@@ -451,7 +451,7 @@ async function loadSpend() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,file_path,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
@@ -459,26 +459,57 @@ async function loadClips() {
   const rows = data || [];
   // Previews live in a private bucket; a signed URL is the only way a
   // browser can play one, and signing is itself gated by is_portal_owner().
-  const paths = rows.filter((k) => k.preview_path).map((k) => k.preview_path);
-  if (paths.length) {
-    try {
-      const { data: signed } = await supabase.storage.from('clips')
-        .createSignedUrls(paths, 3600);
-      const byPath = new Map((signed || []).map((x) => [x.path, x.signedUrl]));
-      rows.forEach((k) => { k.preview_url = byPath.get(k.preview_path) || null; });
-    } catch { /* players fall back to the YouTube link */ }
-  }
-  // The id alone reads like noise; the video's own title and the cut's
-  // number make a row say "Shotkam clays — shot 12".
-  const vids = [...new Set(rows.map((k) => k.video_id))];
-  if (vids.length) {
-    const { data: tv } = await supabase.from('pipeline_videos')
-      .select('video_id,title').in('video_id', vids);
-    const titles = new Map((tv || []).map((v) => [v.video_id, v.title]));
+  await signClipMedia(rows);
+  await titleClips(rows);
+  return rows;
+}
+
+// Previews and posters live in a private bucket; signed URLs are the only
+// way a browser can fetch them, and signing is gated by is_portal_owner().
+async function signClipMedia(rows) {
+  const paths = rows.flatMap((k) => [k.preview_path, k.poster_path]).filter(Boolean);
+  if (!paths.length) return;
+  try {
+    const { data: signed } = await supabase.storage.from('clips')
+      .createSignedUrls(paths, 3600);
+    const byPath = new Map((signed || []).map((x) => [x.path, x.signedUrl]));
     rows.forEach((k) => {
-      k.title = titles.get(k.video_id) || k.video_id;
-      k.shot_no = Number((k.file_path || '').match(/shot(\d+)/)?.[1] || 0);
+      k.preview_url = byPath.get(k.preview_path) || null;
+      k.poster_url = byPath.get(k.poster_path) || null;
     });
+  } catch { /* players fall back to the YouTube link */ }
+}
+
+async function titleClips(rows) {
+  const vids = [...new Set(rows.map((k) => k.video_id))];
+  if (!vids.length) return;
+  const { data: tv } = await supabase.from('pipeline_videos')
+    .select('video_id,title').in('video_id', vids);
+  const titles = new Map((tv || []).map((v) => [v.video_id, v.title]));
+  rows.forEach((k) => {
+    k.title = titles.get(k.video_id) || k.video_id;
+    k.shot_no = Number((k.file_path || '').match(/shot(\d+)/)?.[1] || 0);
+  });
+}
+
+// The AI's queue and its output, for oversight: what is waiting to be boxed,
+// what has been boxed, and how many clays it claims per clip.
+async function loadAiClips() {
+  const PAGE = 40;
+  const { data, error } = await supabase.from('pipeline_clips')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,created_at')
+    .in('label_status', ['queued', 'prelabelled'])
+    .order('created_at', { ascending: false })
+    .range(aiPage * PAGE, aiPage * PAGE + PAGE - 1);
+  if (error) return [];
+  const rows = data || [];
+  await Promise.all([signClipMedia(rows), titleClips(rows)]);
+  const ids = rows.map((k) => k.clip_id);
+  if (ids.length) {
+    const { data: lab } = await supabase.from('pipeline_labels')
+      .select('clip_id,n_clays').in('clip_id', ids);
+    const byClip = new Map((lab || []).map((x) => [x.clip_id, x.n_clays]));
+    rows.forEach((k) => { k.n_clays = byClip.get(k.clip_id); });
   }
   return rows;
 }
@@ -547,11 +578,12 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['review', 'sources', 'labelling', 'mastersheet'].find((v) => location.hash === `#${v}`) || 'control';
+const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sent: [], sheet: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sent: [], ai: [], sheet: [], sheetErr: '', loading: true };
 let sheetFilter = 'all';
 let clipPage = 0;   // 40 clips a page, grouped by video
+let aiPage = 0;
 let batch = 10;   // videos per press — survives repaints, resets with the tab
 let poll = null;
 
@@ -577,7 +609,8 @@ function shell(body) {
           ${item('control', 'Control')}
           ${item('review', 'Review', state.counts?.downloaded)}
           ${item('sources', 'Sources')}
-          ${item('labelling', 'Labelling', state.counts?.pending)}
+          ${item('triage', 'Triage', state.counts?.pending)}
+          ${item('labelling', 'Labelling', state.counts?.queued)}
           ${item('mastersheet', 'Mastersheet')}
         </nav>
         <div class="side-foot">
@@ -771,7 +804,7 @@ const ROBOFLOW_ANNOTATE = 'https://app.roboflow.com/elohughes-icloud-com/brace-c
 // not in the DOM the repaint replaces.
 const picked = new Set();
 
-function labellingView() {
+function triageClipsView() {
   if (state.loading) return '<div class="empty">Loading clips…</div>';
   const c = state.counts || {};
   const PAGE = 40;
@@ -787,7 +820,7 @@ function labellingView() {
       </label>
       <div class="main">
         ${k.preview_url
-    ? `<video class="clipvid" controls preload="metadata" src="${esc(k.preview_url)}"></video>`
+    ? `<video class="clipvid" controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
     : '<div class="s">Preview rendering — arrives with the next heartbeat. Meanwhile:</div>'}
         <div class="t">Shot ${k.shot_no || '?'} · ${mmss(k.shot_ts)}
           · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
@@ -817,7 +850,7 @@ function labellingView() {
   return `
     <div class="crm-head">
       <div>
-        <h1>Labelling</h1>
+        <h1>Triage</h1>
         <p>Watch each cut, tick the good ones, and send them to the AI labeller.
            It boxes the clays and pushes the frames to Roboflow — confident
            frames to <b>auto-accepted</b>, shaky ones to <b>needs-review</b>.</p>
@@ -861,6 +894,60 @@ function labellingView() {
       <div class="p-head"><span class="p-title">Recently sent</span></div>
       ${state.sent.map(doneRow).join('')}
     </section>` : ''}`;
+}
+
+function labellingView() {
+  if (state.loading) return '<div class="empty">Loading…</div>';
+  const c = state.counts || {};
+  const PAGE = 40;
+  const total = (c.queued ?? 0) + (c.prelabelled ?? 0);
+  const pages = Math.max(1, Math.ceil(total / PAGE));
+
+  const row = (k) => `
+    <div class="row cliprow">
+      <span class="dot ${k.label_status === 'prelabelled' ? 'on' : ''}" style="margin-top:8px"></span>
+      <div class="main">
+        ${k.preview_url
+    ? `<video class="clipvid" controls preload="none" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>` : ''}
+        <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ''}</div>
+        <div class="s">${k.label_status === 'queued'
+    ? 'queued — the AI boxes it within the hour'
+    : `pre-labelled${k.n_clays != null ? ` · ${fmt(k.n_clays)} clay${k.n_clays === 1 ? '' : 's'} boxed` : ''} · frames in Roboflow`}</div>
+      </div>
+    </div>`;
+
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Labelling</h1>
+        <p>The AI's queue and its output. Queued clips get boxed on the next
+           heartbeat; pre-labelled ones are in Roboflow — confident frames under
+           <b>auto-accepted</b>, shaky ones under <b>needs-review</b>, where the
+           final human check happens.</p>
+      </div>
+      <a class="p-act" href="${ROBOFLOW_ANNOTATE}" target="_blank" rel="noopener">Open Roboflow ↗</a>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><span class="clay ${c.queued ? 'on' : 'off'}"></span>
+        <div class="num">${fmt(c.queued ?? 0)}</div>
+        <div class="cap">Queued for AI</div><div class="sub">boxed within the hour</div></div>
+      <div class="stat"><span class="clay ${c.prelabelled ? 'on' : 'off'}"></span>
+        <div class="num">${fmt(c.prelabelled ?? 0)}</div>
+        <div class="cap">Pre-labelled</div><div class="sub">boxed, in Roboflow</div></div>
+    </div>
+
+    <section class="panel">
+      <div class="p-head"><span class="p-title">${fmt(total)} clips with the AI</span></div>
+      ${state.ai.length ? state.ai.map(row).join('')
+    : '<div class="empty">Nothing here yet — send clips from the Triage page and they appear the moment they are queued.</div>'}
+      ${pages > 1 ? `
+      <div class="pager">
+        <button class="linky" id="aiprev" ${aiPage ? '' : 'disabled'}>‹ Previous</button>
+        <span>page ${aiPage + 1} of ${pages}</span>
+        <button class="linky" id="ainext" ${aiPage + 1 < pages ? '' : 'disabled'}>Next ›</button>
+      </div>` : ''}
+    </section>`;
 }
 
 async function queueClips(ids, btn) {
@@ -922,9 +1009,10 @@ function mastersheetView() {
         <a href="#" class="p-act ${sheetFilter === k ? 'chip-on' : ''}" data-msf="${k}">${label}${k !== 'all' && c[k] != null ? ` ${fmt(c[k])}` : ''}</a>`).join('')}
     </div>
 
+    ${state.sheetErr ? `<div class="err" style="margin-bottom:14px">The sheet could not load: ${esc(state.sheetErr)}</div>` : ''}
     <section class="panel">
       <div class="p-head"><span class="p-title">${sheetFilter === 'all' ? 'Most recent'
-    : SHEET_FILTERS.find(([k]) => k === sheetFilter)[1]} — ${fmt(state.sheet.length)} shown</span></div>
+    : (SHEET_FILTERS.find(([k]) => k === sheetFilter) || ['', sheetFilter])[1]} — ${fmt(state.sheet.length)} shown</span></div>
       ${state.sheet.length ? state.sheet.map(row).join('')
     : '<div class="empty">Nothing with that status yet.</div>'}
     </section>`;
@@ -1128,6 +1216,7 @@ function paint(force = false) {
 
   shell(view === 'review' ? reviewView()
     : view === 'sources' ? sourcesView()
+    : view === 'triage' ? triageClipsView()
     : view === 'labelling' ? labellingView()
     : view === 'mastersheet' ? mastersheetView()
     : controlView());
@@ -1174,6 +1263,12 @@ function paint(force = false) {
     const send = document.getElementById('sendsel');
     if (send) send.disabled = !picked.size;
   }));
+  document.getElementById('aiprev')?.addEventListener('click', () => {
+    aiPage = Math.max(0, aiPage - 1); refresh();
+  });
+  document.getElementById('ainext')?.addEventListener('click', () => {
+    aiPage += 1; refresh();
+  });
   document.getElementById('clipprev')?.addEventListener('click', () => {
     clipPage = Math.max(0, clipPage - 1); refresh();
   });
@@ -1223,14 +1318,15 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, clips, sent, sheet] = await Promise.all([
+    const [counts, queue, sources, issues, spend, clips, sent, ai, sheet] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
       view === 'control' ? loadIssues() : Promise.resolve(state.issues),
       view === 'control' ? loadSpend() : Promise.resolve(state.spend),
-      view === 'labelling' ? loadClips() : Promise.resolve(state.clips),
-      view === 'labelling' ? loadSentClips() : Promise.resolve(state.sent),
+      view === 'triage' ? loadClips() : Promise.resolve(state.clips),
+      view === 'triage' ? loadSentClips() : Promise.resolve(state.sent),
+      view === 'labelling' ? loadAiClips() : Promise.resolve(state.ai),
       view === 'mastersheet' ? loadSheet() : Promise.resolve(state.sheet),
     ]);
     state.counts = counts;
@@ -1240,6 +1336,7 @@ async function refresh() {
     state.spend = spend;
     state.clips = clips;
     state.sent = sent;
+    state.ai = ai;
     state.sheet = sheet;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
@@ -1261,7 +1358,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sent: [], sheet: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sent: [], ai: [], sheet: [], sheetErr: '', loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

@@ -131,7 +131,7 @@ def _advance():
     def clips_unpreviewed():
         return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
                 .in_("label_status", ["pending", "queued"])
-                .is_("preview_path", "null").execute().count or 0)
+                .or_("preview_path.is.null,poster_path.is.null").execute().count or 0)
 
     if videos_in("approved") or clips_unpreviewed():
         hit("clip")   # cuts approved videos and backfills missing previews
@@ -269,7 +269,9 @@ def triage(request: fastapi.Request):
             with tempfile.TemporaryDirectory() as td:
                 frames = sample_frames(out, Path(td))
                 r = score_frames(frames)
-            keep = r["score"] >= KEEP_THRESHOLD
+            # A passing score without a clay in sight keeps nothing: the
+            # judge is asked both questions, and the whole dataset is clays.
+            keep = r["score"] >= KEEP_THRESHOLD and bool(r.get("clays_visible"))
             # 'downloaded' means triaged and waiting on a human in the review
             # queue. Only 'approved' reaches the clip stage.
             sb.table("pipeline_videos").update({
@@ -373,29 +375,45 @@ def clip(request: fastapi.Request):
     previewed = 0
     # Newest first, matching the order the portal lists them — the first
     # batch previewed must be the batch the owner is looking at.
-    todo = (sb.table("pipeline_clips").select("clip_id,file_path")
+    todo = (sb.table("pipeline_clips").select("clip_id,file_path,preview_path,poster_path")
             .in_("label_status", ["pending", "queued"])
-            .is_("preview_path", "null")
+            .or_("preview_path.is.null,poster_path.is.null")
             .order("created_at", desc=True).limit(100).execute().data)
     for k in todo:
         try:
             src = Path(k["file_path"])
             if not src.exists():
                 continue
-            small = Path("/tmp") / f"{k['clip_id']}.mp4"
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", str(src), "-vf", "scale=-2:480",
-                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
-                 "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart",
-                 str(small)],
-                check=True, capture_output=True)
-            dest = f"previews/{k['clip_id']}.mp4"
-            sb.storage.from_("clips").upload(
-                dest, small.read_bytes(),
-                {"content-type": "video/mp4", "upsert": "true"})
-            sb.table("pipeline_clips").update(
-                {"preview_path": dest}).eq("clip_id", k["clip_id"]).execute()
-            small.unlink(missing_ok=True)
+            patch = {}
+            if not k.get("preview_path"):
+                small = Path("/tmp") / f"{k['clip_id']}.mp4"
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(src), "-vf", "scale=-2:480",
+                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+                     "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart",
+                     str(small)],
+                    check=True, capture_output=True)
+                patch["preview_path"] = f"previews/{k['clip_id']}.mp4"
+                sb.storage.from_("clips").upload(
+                    patch["preview_path"], small.read_bytes(),
+                    {"content-type": "video/mp4", "upsert": "true"})
+                small.unlink(missing_ok=True)
+            if not k.get("poster_path"):
+                # a second in: past any black lead-in, before the shot
+                still = Path("/tmp") / f"{k['clip_id']}.jpg"
+                subprocess.run(
+                    ["ffmpeg", "-y", "-ss", "1", "-i", str(src),
+                     "-frames:v", "1", "-vf", "scale=-2:480", "-q:v", "5",
+                     str(still)],
+                    check=True, capture_output=True)
+                patch["poster_path"] = f"previews/{k['clip_id']}.jpg"
+                sb.storage.from_("clips").upload(
+                    patch["poster_path"], still.read_bytes(),
+                    {"content-type": "image/jpeg", "upsert": "true"})
+                still.unlink(missing_ok=True)
+            if patch:
+                sb.table("pipeline_clips").update(patch).eq(
+                    "clip_id", k["clip_id"]).execute()
             previewed += 1
         except Exception as e:  # noqa: BLE001
             print(f"[clip] preview failed for {k['clip_id']}: {e}")
