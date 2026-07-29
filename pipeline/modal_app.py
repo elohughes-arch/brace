@@ -95,6 +95,46 @@ def _sb():
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
 
+# ---------------------------------------------------------------- advance
+
+# The pipeline's heartbeat. Every hour it pushes work downhill: triage what
+# discover found, clip what the owner approved, pre-label what clip cut.
+# The review gate stays human on purpose — this automates everything either
+# side of it, so the owner's whole job is approving and checking boxes.
+# It calls the stages over HTTP with the pipeline's own token, so the logic
+# and its limits live in exactly one place.
+@app.function(image=base_image, secrets=[secret], timeout=3500,
+              schedule=modal.Cron("30 * * * *"))
+def _advance():
+    import os
+    import requests
+
+    sb = _sb()
+    base = "https://elohughes-arch--brace-pipeline"   # this deployment's own prefix
+    headers = {"x-pipeline-token": os.environ["PIPELINE_TOKEN"]}
+
+    def videos_in(status):
+        return (sb.table("pipeline_videos").select("video_id", count="exact", head=True)
+                .eq("status", status).execute().count or 0)
+
+    def clips_pending():
+        return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
+                .eq("label_status", "pending").execute().count or 0)
+
+    def hit(stage, query=""):
+        r = requests.post(f"{base}-{stage}.modal.run{query}",
+                          headers=headers, timeout=3000)
+        print(f"[advance] {stage}: {r.status_code} {r.text[:300]}")
+
+    if videos_in("discovered"):
+        hit("triage", "?limit=25")
+    if videos_in("approved"):
+        hit("clip")
+    if clips_pending():
+        hit("prelabel")
+    return {"stage": "advance"}
+
+
 # ---------------------------------------------------------------- discover
 
 @app.function(image=base_image, secrets=[secret], timeout=300)
