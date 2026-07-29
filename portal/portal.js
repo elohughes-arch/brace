@@ -606,7 +606,7 @@ function shell(body) {
       <aside class="side">
         <a class="brand" href="../"><img src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" /></a>
         <nav class="views">
-          ${item('control', 'Control')}
+          ${item('control', 'Home')}
           ${item('review', 'Review', state.counts?.downloaded)}
           ${item('sources', 'Sources')}
           ${item('triage', 'Triage', state.counts?.pending)}
