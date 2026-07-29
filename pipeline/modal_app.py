@@ -144,16 +144,18 @@ def triage(request: fastapi.Request):
 
         # Preference, not demand: -S sorts what YouTube actually offers,
         # capped at 720p, where a -f selector errors outright when the named
-        # shapes are withheld — which they now routinely are. The second
-        # attempt asks the TV player, which is offered a different format
-        # set. If both fail, keep yt-dlp's actual words: "exit status 1"
-        # diagnoses nothing.
+        # shapes are withheld — which they now routinely are. Each attempt
+        # asks a different set of player clients, because YouTube gates each
+        # client's formats separately and not every gate wants a proof-of-
+        # trust token from a datacenter address. If all fail, keep yt-dlp's
+        # actual words: "exit status 1" diagnoses nothing.
         attempts = [
             ["yt-dlp", *cookies, "-S", "res:720",
+             "--extractor-args", "youtube:player_client=default,tv_simply",
              "--merge-output-format", "mp4", "--no-playlist", "--retries", "2",
              "-o", str(out), url],
             ["yt-dlp", *cookies, "-S", "res:720", "--no-playlist",
-             "--extractor-args", "youtube:player_client=tv",
+             "--extractor-args", "youtube:player_client=android_vr,tv_embedded",
              "-o", str(out), url],
         ]
         last = ""
@@ -161,8 +163,11 @@ def triage(request: fastapi.Request):
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode == 0:
                 return
-            tail = (r.stderr or r.stdout or "").strip().splitlines()
-            last = tail[-1][:300] if tail else f"exit {r.returncode}"
+            # The last line alone hides the warnings above it that name the
+            # actual gate ("requires a PO token", "not available on this
+            # app"), so keep the tail of everything said.
+            said = " | ".join((r.stderr or r.stdout or "").strip().splitlines()[-6:])
+            last = said[-450:] if said else f"exit {r.returncode}"
         raise RuntimeError(f"yt-dlp: {last}")
 
     sb = _sb()
