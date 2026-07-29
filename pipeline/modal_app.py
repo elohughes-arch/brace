@@ -69,7 +69,7 @@ gpu_image = (
     .pip_install(
         "torch", "torchvision", "transformers>=4.44",
         "supabase", "roboflow", "opencv-python-headless", "pillow", "numpy",
-        "fastapi",
+        "fastapi", "anthropic",   # anthropic: the hit/miss verdict on each shot
     )
 )
 
@@ -534,8 +534,68 @@ def prelabel(request: fastapi.Request):
                                       "confident" if confident else "doubtful"])
             uploaded += 1
 
+        # The verdict: did the clay break? Four frames straddling the shot —
+        # a hit fragments and vanishes in a puff, a miss keeps flying. The
+        # boxes say where the clay is; this says what happened to it.
+        outcome, conf = _judge_shot(row, frames, fps, step)
+
         sb.table("pipeline_clips").update(
-            {"label_status": "prelabelled"}).eq("clip_id", row["clip_id"]).execute()
+            {"label_status": "prelabelled",
+             "outcome": outcome, "outcome_conf": conf}
+        ).eq("clip_id", row["clip_id"]).execute()
         done += 1
 
     return {"stage": "prelabel", "processed": done, "frames_uploaded": uploaded}
+
+
+def _judge_shot(row, frames, fps, step):
+    """hit / miss / unclear for one clip, from frames around the gunshot."""
+    import base64
+    import json
+    import os
+    import re
+
+    import anthropic
+    import cv2
+
+    try:
+        # where in the sampled-frame list the shot falls
+        into_clip = float(row["shot_ts"]) - float(row["clip_start"])
+        shot_i = int(round(into_clip * fps / step))
+        picks = [shot_i - 1, shot_i + 1, shot_i + 3, shot_i + 5]
+        picks = [i for i in picks if 0 <= i < len(frames)]
+        if len(picks) < 2:
+            return None, None
+        blocks = []
+        for n, i in enumerate(picks, 1):
+            ok, jpg = cv2.imencode(".jpg", frames[i],
+                                   [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if not ok:
+                return None, None
+            when = "before" if i < shot_i else "after"
+            blocks.append({"type": "text",
+                           "text": f"Frame {n} ({when} the shot):"})
+            blocks.append({"type": "image", "source": {
+                "type": "base64", "media_type": "image/jpeg",
+                "data": base64.standard_b64encode(jpg.tobytes()).decode()}})
+        blocks.append({"type": "text", "text": "Verdict. JSON only."})
+        msg = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"]).messages.create(
+            model=os.environ.get("TRIAGE_MODEL", "claude-haiku-4-5"),
+            max_tokens=200,
+            system=("A clay pigeon is shot at between the 'before' and 'after' "
+                    "frames. Hit: the clay breaks into fragments or a puff of "
+                    "dust and is gone from later frames. Miss: the same clay "
+                    "continues its flight intact. If the clay cannot be "
+                    "followed across the frames, say unclear. Reply with JSON "
+                    'only: {"outcome": "hit|miss|unclear", "confidence": <0-1>}'),
+            messages=[{"role": "user", "content": blocks}])
+        text = "".join(b.text for b in msg.content
+                       if getattr(b, "type", "") == "text")
+        data = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
+        outcome = str(data.get("outcome", "unclear"))
+        if outcome not in ("hit", "miss", "unclear"):
+            outcome = "unclear"
+        return outcome, max(0.0, min(1.0, float(data.get("confidence", 0))))
+    except Exception as e:  # noqa: BLE001 — a verdict is never worth a crash
+        print(f"[prelabel] verdict failed for {row.get('clip_id')}: {e}")
+        return None, None

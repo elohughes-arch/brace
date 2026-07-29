@@ -497,7 +497,7 @@ async function titleClips(rows) {
 async function loadAiClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,created_at')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,created_at')
     .in('label_status', ['queued', 'prelabelled'])
     .order('created_at', { ascending: false })
     .range(aiPage * PAGE, aiPage * PAGE + PAGE - 1);
@@ -912,7 +912,9 @@ function labellingView() {
         <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ''}</div>
         <div class="s">${k.label_status === 'queued'
     ? 'queued — the AI boxes it within the hour'
-    : `pre-labelled${k.n_clays != null ? ` · ${fmt(k.n_clays)} clay${k.n_clays === 1 ? '' : 's'} boxed` : ''} · frames in Roboflow`}</div>
+    : `pre-labelled${k.n_clays != null ? ` · ${fmt(k.n_clays)} clay${k.n_clays === 1 ? '' : 's'} boxed` : ''}${k.outcome
+      ? ` · <b class="${k.outcome === 'hit' ? 'v-hit' : k.outcome === 'miss' ? 'v-miss' : ''}">${esc(k.outcome)}</b>${k.outcome_conf != null ? ` ${Math.round(k.outcome_conf * 100)}%` : ''}`
+      : ''} · frames in Roboflow`}</div>
       </div>
     </div>`;
 
