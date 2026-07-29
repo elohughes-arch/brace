@@ -34,11 +34,22 @@ web_endpoint = getattr(modal, "fastapi_endpoint", None) or modal.web_endpoint
 volume = modal.Volume.from_name("brace-media", create_if_missing=True)
 MEDIA = "/media"
 
+# The PO-token provider: YouTube withholds real formats from datacenter
+# addresses unless the request carries a proof-of-trust token that its own
+# player normally generates. This runs that generation locally (it needs
+# node), and the yt-dlp plugin asks it for a token per download.
+POT = "/opt/bgutil/server/build/generate_once.js"
+
 base_image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("ffmpeg")
+    .apt_install("ffmpeg", "nodejs", "npm", "git")
+    .run_commands(
+        "git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider /opt/bgutil",
+        "cd /opt/bgutil/server && npm install --no-audit --no-fund && npx tsc",
+        f"test -f {POT}",   # fail the build loudly if the layout ever changes
+    )
     .pip_install("numpy", "scipy", "requests", "supabase", "yt-dlp", "fastapi",
-                 "anthropic", "python-dotenv")
+                 "anthropic", "python-dotenv", "bgutil-ytdlp-pot-provider")
     .add_local_python_source("discover", "triage", "clipper")
 )
 
@@ -157,16 +168,16 @@ def triage(request: fastapi.Request):
         # refuses a cookie jar outright ("skipping client ... does not
         # support cookies"), and it is exactly the client that skips the
         # proof-of-trust gate the signed-in web client hits.
+        pot = ["--extractor-args", f"youtubepot-bgutilscript:script_path={POT}"]
         attempts = [
-            ["yt-dlp", *cookies, "-S", "res:720",
+            ["yt-dlp", *cookies, *pot, "-S", "res:720",
              "--extractor-args", "youtube:player_client=default,tv_simply",
              "--merge-output-format", "mp4", "--no-playlist", "--retries", "2",
              "-o", str(out), url],
-            ["yt-dlp", "-S", "res:720", "--no-playlist",
-             "--extractor-args", "youtube:player_client=android_vr",
+            ["yt-dlp", *pot, "-S", "res:720", "--no-playlist",
              "-o", str(out), url],
             ["yt-dlp", "-S", "res:720", "--no-playlist",
-             "--extractor-args", "youtube:player_client=tv",
+             "--extractor-args", "youtube:player_client=android_vr",
              "-o", str(out), url],
         ]
         # Warnings above the final line name the actual gate ("requires a
