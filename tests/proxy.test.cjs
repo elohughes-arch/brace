@@ -321,7 +321,7 @@ async function run(name, { env = ENV, req = {}, fetchOpts = {}, expect }) {
     env: { SUPABASE_URL: ENV.SUPABASE_URL, SUPABASE_ANON_KEY: ENV.SUPABASE_ANON_KEY },
     req: { query: { stage: 'clip' }, headers: AUTH },
     expect: (r) => r.code === 500 && /Modal/.test(r.body.error)
-      && /Discover works without them/.test(r.body.detail),
+      && /PIPELINE_TOKEN and MODAL_BASE_URL/.test(r.body.detail),
   });
 
   const bad = results.filter((r) => !r.pass);
