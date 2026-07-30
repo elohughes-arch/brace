@@ -111,6 +111,20 @@ def _hold(video_id: str) -> bool:
     return int(hashlib.md5(video_id.encode()).hexdigest()[:7], 16) % 100 < 15
 
 
+def _split(video_id: str) -> str:
+    """The split judge: deal a whole video into train, valid or test.
+
+    Same arithmetic as _hold and the split_judge migration, extended to
+    three ways: under 15 test (the golden ruler, human-verified, never
+    trained on), under 30 valid (tunes training runs), the rest train —
+    ~70/15/15, Roboflow's recommended shape. Dealt at video level so no
+    flight's near-duplicate frames ever straddle a set boundary.
+    """
+    import hashlib
+    h = int(hashlib.md5(video_id.encode()).hexdigest()[:7], 16) % 100
+    return "test" if h < 15 else "valid" if h < 30 else "train"
+
+
 # ---------------------------------------------------------------- advance
 
 # The pipeline's heartbeat. Every hour it pushes work downhill: triage what
@@ -380,10 +394,13 @@ def clip(request: fastapi.Request):
         # every clip cut from it. Drawn here rather than at discovery so the
         # ~15% is spent only on videos that actually produced clips.
         hold = row.get("holdout")
-        if hold is None:
+        split = row.get("rf_split")
+        if hold is None or split is None:
             hold = _hold(row["video_id"])
+            split = _split(row["video_id"])
             sb.table("pipeline_videos").update(
-                {"holdout": hold}).eq("video_id", row["video_id"]).execute()
+                {"holdout": hold, "rf_split": split}
+            ).eq("video_id", row["video_id"]).execute()
 
         # Slow-motion footage has sharp, unblurred clays — superb for early
         # labelling, but the deployed model watches real-speed blur, so these
@@ -417,6 +434,7 @@ def clip(request: fastapi.Request):
                 "file_path": str(out),
                 "label_status": "raw",   # screening promotes clay-bearing cuts to pending
                 "holdout": bool(hold),
+                "rf_split": split,
                 "slo_mo": slo_mo,
             })
         if inserts:
@@ -678,8 +696,9 @@ def prelabel(request: fastapi.Request):
 
     volume.reload()
     sb = _sb()
+    limit = min(int(request.query_params.get("limit", 25)), 50)
     rows = (sb.table("pipeline_clips").select("*")
-            .eq("label_status", "queued").limit(25).execute().data)
+            .eq("label_status", "queued").limit(limit).execute().data)
     if not rows:
         return {"stage": "prelabel", "processed": 0, "uploaded": 0}
 
@@ -705,11 +724,12 @@ def prelabel(request: fastapi.Request):
         tmp.mkdir(parents=True, exist_ok=True)
         idxs = sorted(int(k) for k in boxes)
         stride = max(1, int(round((1.0 / frame_dt) / 1.7)))
-        # Golden-holdout clips are the ruler the model is measured with:
-        # their frames land in Roboflow's *test* split so no training run
-        # can ever see them, and they are never auto-accepted — ground
-        # truth is only ground truth once a human has verified every box.
-        golden = bool(row.get("holdout"))
+        # The split judge dealt every video once: test is the golden ruler
+        # (human-verified, never trained on), valid tunes training runs, and
+        # only train may auto-accept — the sets the model is measured and
+        # steered by deserve human-checked boxes, whatever the confidence.
+        split = row.get("rf_split") or ("test" if row.get("holdout") else "train")
+        golden = split == "test"
         all_confident = True
         sent = 0
         for i in idxs[::stride]:
@@ -731,17 +751,18 @@ def prelabel(request: fastapi.Request):
                              f"{(x2-x1)/w:.6f} {(y2-y1)/h:.6f}")
             ann = fp.with_suffix(".txt")
             ann.write_text("\n".join(lines))
-            confident = (not golden) and (
+            confident = (split == "train") and (
                 all(b["conf"] >= sure for b in bxs) if bxs else False)
             all_confident = all_confident and confident
-            tags = ["prelabel", "confident" if confident else "doubtful"]
+            tags = ["prelabel", "confident" if confident else "doubtful", split]
             if golden:
                 tags.append("golden")
             if row.get("slo_mo"):
                 tags.append("slo-mo")
             project.upload(str(fp), annotation_path=str(ann),
-                           split="test" if golden else "train",
+                           split=split,
                            batch_name=("golden-holdout" if golden
+                                       else "valid-check" if split == "valid"
                                        else "auto-accepted" if confident
                                        else "needs-review"),
                            tag_names=tags,
@@ -753,6 +774,7 @@ def prelabel(request: fastapi.Request):
         cap.release()
         # Where this clip's frames went, worn on the Labelling page.
         batch = ("golden-holdout" if golden
+                 else "valid-check" if split == "valid"
                  else "auto-accepted" if (sent and all_confident)
                  else "needs-review")
         sb.table("pipeline_clips").update(

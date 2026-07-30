@@ -538,6 +538,14 @@ async function loadSentClips() {
   return rows;
 }
 
+// What one press of the handover button would deal to each Roboflow set.
+async function loadSplitPreview() {
+  try {
+    const { data, error } = await supabase.rpc('split_preview');
+    return error ? [] : (data || []);
+  } catch { return []; }
+}
+
 // The machine's discards, for auditing: clips screening threw out as
 // clayless. A wrong rejection is a training example lost silently, so the
 // owner can watch each one and send any mistake back for re-screening.
@@ -758,7 +766,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], loading: true };
 let sheetFilter = 'all';
 let clipPage = 0;   // 40 clips a page, grouped by video
 let aiPage = 0;
@@ -1115,8 +1123,15 @@ function triageClipsView() {
           <button class="btn mini-btn" id="sendsel" style="margin-left:14px"
             ${picked.size ? '' : 'disabled'}>Send <span id="pickn">${picked.size}</span> to AI</button>
           <button class="btn btn-ghost mini-btn" id="sendall" style="margin-left:8px"
-            ${totalPending ? '' : 'disabled'}>Send all ${fmt(totalPending)}</button>
+            ${totalPending ? '' : 'disabled'}>Push all ${fmt(totalPending)} to Roboflow</button>
         </span></div>
+      ${state.split && state.split.length ? `
+      <p class="split-line">One press deals the whole queue by the split judge:
+        ${['train', 'valid', 'test'].map((s) => {
+    const r = state.split.find((x) => x.split === s);
+    return `<b>${fmt(Number(r?.clips || 0))}</b> ${s}`;
+  }).join(' · ')}
+        — dealt per video, so no flight's frames ever straddle a set.</p>` : ''}
       ${grouped ? `<div class="clipgrid">${grouped}</div>`
     : '<div class="empty">Nothing waiting. Approve videos in Review and the clipper feeds this list within the hour.</div>'}
       ${pages > 1 ? `
@@ -1253,12 +1268,13 @@ async function queueClips(ids, btn) {
   if (btn) busy(btn, true, 'Sending…');
   const { error } = await supabase.from('pipeline_clips')
     .update({ label_status: 'queued' }).in('clip_id', ids).select('clip_id');
-  if (error) note(`could not queue clips — ${error.message}`, 'bad');
-  else {
-    note(`${ids.length} clip${ids.length === 1 ? '' : 's'} queued for AI labelling`, 'good');
-    ids.forEach((id) => picked.delete(id));
-  }
-  await refresh();
+  if (error) { note(`could not queue clips — ${error.message}`, 'bad'); await refresh(); return; }
+  note(`${ids.length} clip${ids.length === 1 ? '' : 's'} queued — handing over to Roboflow now`, 'good');
+  ids.forEach((id) => picked.delete(id));
+  // The handover is one press: queueing alone would wait for the half-past
+  // heartbeat, so the labeller is fired immediately. It works through 50 a
+  // run; the heartbeat sweeps up anything beyond that within the hour.
+  await runStage('prelabel', { limit: 50 });
 }
 
 /* ---------- mastersheet ---------- */
@@ -1501,6 +1517,7 @@ function signature() {
     state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '') + (v.ds_level ?? '')),
     state.progress,
     state.cats,
+    state.split,
     state.coverage,
   ]);
 }
@@ -1662,7 +1679,7 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, ai, sheet, progress, cats] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, sheet, progress, cats] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
@@ -1672,6 +1689,7 @@ async function refresh() {
       view === 'triage' ? loadClips() : Promise.resolve(state.clips),
       view === 'triage' ? loadSentClips() : Promise.resolve(state.sent),
       view === 'triage' ? loadRejectedClips() : Promise.resolve(state.rej),
+      view === 'triage' ? loadSplitPreview() : Promise.resolve(state.split),
       view === 'labelling' ? loadAiClips() : Promise.resolve(state.ai),
       view === 'mastersheet' ? loadSheet() : Promise.resolve(state.sheet),
       view === 'strategy' ? loadProgress() : Promise.resolve(state.progress),
@@ -1686,6 +1704,7 @@ async function refresh() {
     state.clips = clips;
     state.sent = sent;
     state.rej = rej;
+    state.split = splitPrev;
     state.ai = ai;
     state.sheet = sheet;
     state.progress = progress;
@@ -1710,7 +1729,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
