@@ -65,14 +65,26 @@ class GroupPairs(unittest.TestCase):
         cs = clipper.group_pairs([10.0, 10.0 + exact + 0.01])
         self.assertEqual(len(cs), 2, "a hair over the window is two singles")
 
-    def test_a_shot_is_only_used_once(self):
-        # Three shots in quick succession: the first two pair, the third is its
-        # own clip even though it is close to the second.
-        cs = clipper.group_pairs([10.0, 12.0, 13.0])
-        self.assertEqual(len(cs), 2)
-        self.assertTrue(cs[0]["is_pair"])
-        self.assertFalse(cs[1]["is_pair"])
-        self.assertEqual(cs[1]["shot_ts"], 13.0)
+    def test_a_burst_of_three_is_one_clip(self):
+        # Three shots in quick succession are one presentation — the old
+        # pairing logic stopped at two and cut the third clay off mid-flight.
+        (c,) = clipper.group_bursts([10.0, 12.0, 13.0])
+        self.assertEqual(c["n_shots"], 3)
+        self.assertEqual(c["shot_offsets"], [0.0, 2.0, 3.0])
+        self.assertTrue(c["is_pair"])
+        self.assertAlmostEqual(c["end"], 13.0 + clipper.POST_S,
+                               msg="the clip must run to the *last* shot")
+
+    def test_a_burst_chains_shot_to_shot(self):
+        # Each shot within the window of the one before extends the burst,
+        # even when the last is far from the first.
+        (c,) = clipper.group_bursts([10.0, 13.5, 17.0])
+        self.assertEqual(c["n_shots"], 3)
+
+    def test_burst_fields_on_a_single(self):
+        (c,) = clipper.group_bursts([10.0])
+        self.assertEqual(c["n_shots"], 1)
+        self.assertEqual(c["shot_offsets"], [0.0])
 
     def test_every_clip_has_positive_duration(self):
         for shots in ([0.0], [0.5, 0.6], [1.0, 4.9], [100.0, 104.0, 200.0]):

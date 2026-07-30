@@ -288,6 +288,27 @@ def triage(request: fastapi.Request):
             out = Path(MEDIA) / "videos" / f"{vid}.mp4"
             out.parent.mkdir(parents=True, exist_ok=True)
             download(row["url"], out)
+
+            # The ears go first, and they are free. A video with no
+            # gunshot-shaped sound in it cannot be shooting footage —
+            # whatever its thumbnails look like — and it dies here without
+            # costing a single Claude token. The count also rides along in
+            # the notes for every video that passes.
+            from clipper import extract_audio, detect_shots
+            with tempfile.TemporaryDirectory() as td:
+                wav = Path(td) / "a.wav"
+                extract_audio(out, wav)
+                shots_heard = len(detect_shots(wav))
+            if shots_heard == 0:
+                sb.table("pipeline_videos").update({
+                    "status": "rejected",
+                    "triage_score": 0,
+                    "triage_notes": "no gunshots heard — dropped before scoring",
+                }).eq("video_id", vid).execute()
+                out.unlink(missing_ok=True)
+                dropped += 1
+                continue
+
             with tempfile.TemporaryDirectory() as td:
                 frames = sample_frames(out, Path(td))
                 r = score_frames(frames)
@@ -299,7 +320,7 @@ def triage(request: fastapi.Request):
             sb.table("pipeline_videos").update({
                 "status": "downloaded" if keep else "rejected",
                 "triage_score": r["score"],
-                "triage_notes": f"[{r.get('camera', '?')}] {r.get('notes', '')}",
+                "triage_notes": f"[{r.get('camera', '?')}] {shots_heard} shots heard · {r.get('notes', '')}",
                 "triage_in_tokens": r.get("in_tokens"),
                 "triage_out_tokens": r.get("out_tokens"),
                 "weather": r.get("weather"),
@@ -328,7 +349,7 @@ def clip(request: fastapi.Request):
         return UNAUTHORISED
 
     from pathlib import Path
-    from clipper import extract_audio, detect_shots, group_pairs, cut_clip
+    from clipper import extract_audio, detect_shots, group_bursts, cut_clip
     import tempfile
 
     volume.reload()   # triage committed these from a different container
@@ -377,7 +398,7 @@ def clip(request: fastapi.Request):
             wav = Path(td) / "a.wav"
             extract_audio(Path(src), wav)
             shots = detect_shots(wav)
-        specs = group_pairs(shots)
+        specs = group_bursts(shots)
         outdir = Path(MEDIA) / "clips"
         outdir.mkdir(parents=True, exist_ok=True)
         inserts = []
@@ -391,6 +412,8 @@ def clip(request: fastapi.Request):
                 "clip_end": spec["end"],
                 "is_pair": spec["is_pair"],
                 "pair_gap_s": spec["pair_gap_s"],
+                "n_shots": spec["n_shots"],
+                "shot_offsets": spec["shot_offsets"],
                 "file_path": str(out),
                 "label_status": "raw",   # screening promotes clay-bearing cuts to pending
                 "holdout": bool(hold),
@@ -609,23 +632,16 @@ def screen(request: fastapi.Request):
         # a hit fragments and vanishes in a puff, a miss keeps flying. The
         # boxes say where the clay is, and now they aim the judge's eye:
         # each frame is cropped around the tracked clay before Sonnet sees it.
-        outcome, conf = _judge_shot(row, frames, fps, step, boxes_per_frame)
-        # A pair is two shots: the second bang gets its own verdict, its
-        # impact window shifted by the gap the clipper heard between them.
-        outcome2 = conf2 = None
-        if row.get("is_pair") and row.get("pair_gap_s"):
-            outcome2, conf2 = _judge_shot(row, frames, fps, step, boxes_per_frame,
-                                          extra_offset=float(row["pair_gap_s"]))
+        verdicts = _judge_burst(row, frames, fps, step, boxes_per_frame)
 
         metrics = _shot_metrics(
             float(row["shot_ts"]) - float(row["clip_start"]),
             boxes_per_frame, step / fps,
-            frames[0].shape[1] if frames else 0, outcome)
+            frames[0].shape[1] if frames else 0, verdicts.get("outcome"))
 
         update = {"label_status": "pending",
                   "clip_start": new_start, "clip_end": new_end,
-                  "outcome": outcome, "outcome_conf": conf,
-                  "outcome_2": outcome2, "outcome_2_conf": conf2, **metrics}
+                  **verdicts, **metrics}
         # Only claim a preview that was actually rendered. Stamping the path
         # without the file behind it is how 143 clips once became unwatchable:
         # the backfill saw a non-null path and skipped them forever.
@@ -748,6 +764,28 @@ def prelabel(request: fastapi.Request):
 
     return {"stage": "prelabel", "processed": done,
             "frames_uploaded": uploaded, "errors": failed}
+
+
+def _judge_burst(row, frames, fps, step, boxes_per_frame):
+    """One verdict per bang in the burst, up to three.
+
+    The bangs' distances from the first ride on the clip as shot_offsets;
+    older rows fall back to pair_gap_s, and a single is just offset zero.
+    Each bang gets its own impact window and its own crop aim.
+    """
+    offsets = row.get("shot_offsets") or (
+        [0.0, float(row["pair_gap_s"])]
+        if row.get("is_pair") and row.get("pair_gap_s") else [0.0])
+    cols = {"outcome": None, "outcome_conf": None,
+            "outcome_2": None, "outcome_2_conf": None,
+            "outcome_3": None, "outcome_3_conf": None}
+    names = [("outcome", "outcome_conf"), ("outcome_2", "outcome_2_conf"),
+             ("outcome_3", "outcome_3_conf")]
+    for (oc, cc), off in zip(names, offsets[:3]):
+        o, c = _judge_shot(row, frames, fps, step, boxes_per_frame,
+                           extra_offset=float(off))
+        cols[oc], cols[cc] = o, c
+    return cols
 
 
 def _ask_gemini(model, system, blocks):
@@ -915,21 +953,20 @@ def rejudge(request: fastapi.Request):
             shifted = {int(k) - shift: v for k, v in boxes.items()
                        if int(k) - shift >= 0}
             if metrics_only:
-                outcome, conf = row.get("outcome"), row.get("outcome_conf")
+                outcome = row.get("outcome")
+                verdicts = {}
             else:
                 if not frames:
                     skipped += 1
                     continue
-                outcome, conf = _judge_shot(row, frames, fps, step, shifted)
+                verdicts = _judge_burst(row, frames, fps, step, shifted)
+                outcome = verdicts.get("outcome")
                 if outcome is None:
                     skipped += 1
                     continue
-                if outcome != row.get("outcome") or conf != row.get("outcome_conf"):
+                if outcome != row.get("outcome") \
+                        or verdicts.get("outcome_conf") != row.get("outcome_conf"):
                     changed += 1
-            outcome2 = conf2 = None
-            if not metrics_only and row.get("is_pair") and row.get("pair_gap_s"):
-                outcome2, conf2 = _judge_shot(row, frames, fps, step, shifted,
-                                              extra_offset=float(row["pair_gap_s"]))
             metrics = _shot_metrics(
                 float(row["shot_ts"]) - float(row["clip_start"]),
                 shifted, frame_dt, frame_w, outcome)
@@ -937,9 +974,7 @@ def rejudge(request: fastapi.Request):
                 skipped += 1
                 continue
             sb.table("pipeline_clips").update(
-                metrics if metrics_only
-                else {"outcome": outcome, "outcome_conf": conf,
-                      "outcome_2": outcome2, "outcome_2_conf": conf2, **metrics}
+                metrics if metrics_only else {**verdicts, **metrics}
             ).eq("clip_id", row["clip_id"]).execute()
             done += 1
         except Exception as e:  # noqa: BLE001

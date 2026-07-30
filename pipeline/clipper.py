@@ -24,10 +24,12 @@ from scipy.io import wavfile
 # Tunables - adjust after testing on real footage
 PRE_S = 5.0          # generous raw window: pre-label trims to the tracked flight
 POST_S = 6.0         # a missed clay flies on; the trim reclaims the slack
-PAIR_WINDOW_S = 4.0  # two shots within this = true pair, single merged clip
+PAIR_WINDOW_S = 4.0  # shots chained within this of each other = one burst, one clip
 MIN_GAP_S = 0.25     # spikes closer than this are one shot (echo/report)
 FRAME_MS = 20        # energy analysis frame size
 K_MAD = 12.0         # spike threshold: median + K * MAD of frame energy
+MAX_REPORT_S = 0.35  # a gunshot report, echo included, dies within this; anything
+                     # louder for longer is wind, crowd, music — not a shot
 
 
 def extract_audio(video: Path, wav_path: Path) -> None:
@@ -54,13 +56,30 @@ def detect_shots(wav_path: Path) -> list[float]:
     mad = np.median(np.abs(energy - med)) + 1e-9
     threshold = med + K_MAD * mad
 
-    spike_frames = np.where(energy > threshold)[0]
-    if len(spike_frames) == 0:
+    spike = energy > threshold
+    if not spike.any():
         return []
 
-    # tolist() also gets us plain floats: numpy scalars do not survive the trip
-    # into Supabase as JSON.
-    return merge_spikes((spike_frames * FRAME_MS / 1000.0).tolist())
+    # A loud moment is only a shot if it is *shaped* like one: a report is a
+    # sharp transient that dies within MAX_REPORT_S. A run of loud frames
+    # longer than that is sustained racket — wind, a crowd, music, the trap
+    # machine — and filtering it here is what keeps a shooting-free video
+    # from producing 'shots' at all.
+    events: list[float] = []
+    i, n = 0, len(spike)
+    while i < n:
+        if spike[i]:
+            j = i
+            while j + 1 < n and spike[j + 1]:
+                j += 1
+            if (j - i + 1) * FRAME_MS / 1000.0 <= MAX_REPORT_S:
+                # float() because numpy scalars do not survive the trip into
+                # Supabase as JSON.
+                events.append(float(i * FRAME_MS / 1000.0))
+            i = j + 1
+        else:
+            i += 1
+    return merge_spikes(events)
 
 
 def merge_spikes(times: list[float], min_gap: float = MIN_GAP_S) -> list[float]:
@@ -86,32 +105,37 @@ def merge_spikes(times: list[float], min_gap: float = MIN_GAP_S) -> list[float]:
     return shots
 
 
-def group_pairs(shots: list[float]) -> list[dict]:
-    """Group shots into clip specs, merging true pairs into one clip."""
+def group_bursts(shots: list[float]) -> list[dict]:
+    """Group shots into clip specs, one clip per burst.
+
+    A burst is every shot fired at the same presentation: shots chain while
+    each is within PAIR_WINDOW_S of the one before, however many that is.
+    The old pairing logic stopped at two, so a pair-plus-reload third clay
+    fell just past the clip's end and was cut off mid-flight — the clip now
+    runs from the first bang to POST_S after the last.
+    """
     clips = []
     i = 0
     while i < len(shots):
-        first = shots[i]
-        if i + 1 < len(shots) and shots[i + 1] - first <= PAIR_WINDOW_S:
-            second = shots[i + 1]
-            clips.append({
-                "shot_ts": first,
-                "is_pair": True,
-                "pair_gap_s": round(second - first, 2),
-                "start": max(0.0, first - PRE_S),
-                "end": second + POST_S,
-            })
-            i += 2
-        else:
-            clips.append({
-                "shot_ts": first,
-                "is_pair": False,
-                "pair_gap_s": None,
-                "start": max(0.0, first - PRE_S),
-                "end": first + POST_S,
-            })
+        burst = [shots[i]]
+        while i + 1 < len(shots) and shots[i + 1] - burst[-1] <= PAIR_WINDOW_S:
             i += 1
+            burst.append(shots[i])
+        first, last = burst[0], burst[-1]
+        clips.append({
+            "shot_ts": first,
+            "n_shots": len(burst),
+            "shot_offsets": [round(t - first, 2) for t in burst],
+            "is_pair": len(burst) >= 2,
+            "pair_gap_s": round(burst[1] - first, 2) if len(burst) >= 2 else None,
+            "start": max(0.0, first - PRE_S),
+            "end": last + POST_S,
+        })
+        i += 1
     return clips
+
+
+group_pairs = group_bursts   # the old name, for callers and muscle memory
 
 
 def cut_clip(video: Path, spec: dict, out_path: Path) -> None:
