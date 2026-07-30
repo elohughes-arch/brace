@@ -98,6 +98,19 @@ def _sb():
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
 
+def _hold(video_id: str) -> bool:
+    """Deterministic ~15% golden-holdout draw, per video.
+
+    Whole videos go to the holdout, never individual clips: frames from one
+    flight are near-duplicates, and splitting them across train and test is
+    how a model scores 100% on paper and misses in the field. Must stay
+    identical to the SQL backfill in the golden_holdout migration —
+    first seven hex chars of md5, mod 100, under 15.
+    """
+    import hashlib
+    return int(hashlib.md5(video_id.encode()).hexdigest()[:7], 16) % 100 < 15
+
+
 # ---------------------------------------------------------------- advance
 
 # The pipeline's heartbeat. Every hour it pushes work downhill: triage what
@@ -342,6 +355,24 @@ def clip(request: fastapi.Request):
                  "triage_notes": "file was not on the volume; queued to fetch again"}
             ).eq("video_id", row["video_id"]).execute()
             continue
+        # Golden-holdout membership is drawn once per video and inherited by
+        # every clip cut from it. Drawn here rather than at discovery so the
+        # ~15% is spent only on videos that actually produced clips.
+        hold = row.get("holdout")
+        if hold is None:
+            hold = _hold(row["video_id"])
+            sb.table("pipeline_videos").update(
+                {"holdout": hold}).eq("video_id", row["video_id"]).execute()
+
+        # Slow-motion footage has sharp, unblurred clays — superb for early
+        # labelling, but the deployed model watches real-speed blur, so these
+        # frames are tagged all the way to Roboflow and capped in the mix.
+        import cv2
+        probe = cv2.VideoCapture(src)
+        src_fps = probe.get(cv2.CAP_PROP_FPS) or 30.0
+        probe.release()
+        slo_mo = src_fps >= 45.0
+
         with tempfile.TemporaryDirectory() as td:
             wav = Path(td) / "a.wav"
             extract_audio(Path(src), wav)
@@ -362,6 +393,8 @@ def clip(request: fastapi.Request):
                 "pair_gap_s": spec["pair_gap_s"],
                 "file_path": str(out),
                 "label_status": "raw",   # screening promotes clay-bearing cuts to pending
+                "holdout": bool(hold),
+                "slo_mo": slo_mo,
             })
         if inserts:
             sb.table("pipeline_clips").insert(inserts).execute()
@@ -639,11 +672,24 @@ def prelabel(request: fastapi.Request):
                              f"{(x2-x1)/w:.6f} {(y2-y1)/h:.6f}")
             ann = fp.with_suffix(".txt")
             ann.write_text("\n".join(lines))
-            confident = all(b["conf"] >= sure for b in bxs) if bxs else False
+            # Golden-holdout frames are the ruler the model is measured with:
+            # they land in Roboflow's *test* split so no training run can
+            # ever see them, and they are never auto-accepted — ground truth
+            # is only ground truth once a human has verified every box.
+            golden = bool(row.get("holdout"))
+            confident = (not golden) and (
+                all(b["conf"] >= sure for b in bxs) if bxs else False)
+            tags = ["prelabel", "confident" if confident else "doubtful"]
+            if golden:
+                tags.append("golden")
+            if row.get("slo_mo"):
+                tags.append("slo-mo")
             project.upload(str(fp), annotation_path=str(ann),
-                           batch_name="auto-accepted" if confident else "needs-review",
-                           tag_names=["prelabel",
-                                      "confident" if confident else "doubtful"])
+                           split="test" if golden else "train",
+                           batch_name=("golden-holdout" if golden
+                                       else "auto-accepted" if confident
+                                       else "needs-review"),
+                           tag_names=tags)
             uploaded += 1
         cap.release()
         sb.table("pipeline_clips").update(

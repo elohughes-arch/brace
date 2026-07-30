@@ -449,6 +449,17 @@ async function loadSpend() {
   };
 }
 
+// The coverage matrix: surviving clips per weather slice, split into what
+// trains the model and what measures it (the golden holdout). This is the
+// sourcing dashboard — a thin row is a condition the model hasn't been
+// taught yet, and that row names the next filming day or channel to chase.
+async function loadCoverage() {
+  try {
+    const { data, error } = await supabase.rpc('coverage_matrix');
+    return error ? [] : (data || []);
+  } catch { return []; }   // a missing function is a blank panel, not a broken page
+}
+
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
@@ -603,7 +614,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sent: [], ai: [], sheet: [], sheetErr: '', loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], ai: [], sheet: [], sheetErr: '', loading: true };
 let sheetFilter = 'all';
 let clipPage = 0;   // 40 clips a page, grouped by video
 let aiPage = 0;
@@ -734,6 +745,8 @@ function controlView() {
       </section>
     </div>
 
+    ${coveragePanel()}
+
     ${state.issues && state.issues.length ? `
     <section class="panel" style="margin-top:18px">
       <div class="p-head"><span class="p-title">Issues — what went wrong, in the tool's own words</span></div>
@@ -752,6 +765,53 @@ function controlView() {
          run retries it. If the same words keep coming back, that is the fault to
          report, verbatim.</p>
     </section>` : ''}`;
+}
+
+// The scorecard behind the data strategy. Rows are condition slices, the two
+// column pairs are the two jobs a clip can have: teaching the model, or
+// measuring it. Roughly one video in seven is drawn into the golden holdout
+// — whole videos, so frames from one flight never straddle the line — and
+// its frames go to Roboflow's test split, which no training run can see.
+const WEATHER_ORDER = ['clear', 'overcast', 'rain', 'fog', 'dusk', 'indoor', 'unknown'];
+
+function coveragePanel() {
+  const rows = state.coverage || [];
+  if (!rows.length) return '';
+  const by = new Map();
+  rows.forEach((r) => {
+    const w = r.weather || 'unknown';
+    const c = by.get(w) || { train: 0, trainLab: 0, gold: 0, goldLab: 0 };
+    if (r.golden) { c.gold += Number(r.clips); c.goldLab += Number(r.labelled); }
+    else { c.train += Number(r.clips); c.trainLab += Number(r.labelled); }
+    by.set(w, c);
+  });
+  const order = [...WEATHER_ORDER.filter((w) => by.has(w)),
+    ...[...by.keys()].filter((w) => !WEATHER_ORDER.includes(w))];
+  const tot = { train: 0, trainLab: 0, gold: 0, goldLab: 0 };
+  order.forEach((w) => { const c = by.get(w); tot.train += c.train; tot.trainLab += c.trainLab; tot.gold += c.gold; tot.goldLab += c.goldLab; });
+  return `
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Coverage — what the model is taught, and what it is measured with</span></div>
+      <table class="matrix">
+        <thead><tr><th>Condition</th><th>Training clips</th><th>labelled</th>
+          <th>Golden clips</th><th>verified</th></tr></thead>
+        <tbody>
+          ${order.map((w) => { const c = by.get(w); return `
+          <tr><td>${esc(w)}</td>
+            <td>${fmt(c.train)}</td><td class="dim">${fmt(c.trainLab)}</td>
+            <td>${fmt(c.gold)}</td><td class="dim">${fmt(c.goldLab)}</td></tr>`; }).join('')}
+          <tr class="matrix-tot"><td>all</td>
+            <td>${fmt(tot.train)}</td><td class="dim">${fmt(tot.trainLab)}</td>
+            <td>${fmt(tot.gold)}</td><td class="dim">${fmt(tot.goldLab)}</td></tr>
+        </tbody>
+      </table>
+      <p class="foot-note">Golden clips are the held-out test set: about one video in
+         seven, drawn whole so no flight ever sits on both sides of the line. Their
+         frames land in Roboflow's <em>test</em> split, are never auto-accepted, and
+         no training run can see them — so the accuracy Roboflow reports after each
+         train is a real number, not the model marking its own homework. A thin row
+         here is the next condition to go and source.</p>
+    </section>`;
 }
 
 /* ---------- review ---------- */
@@ -1344,12 +1404,13 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, clips, sent, ai, sheet] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, ai, sheet] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
       view === 'control' ? loadIssues() : Promise.resolve(state.issues),
       view === 'control' ? loadSpend() : Promise.resolve(state.spend),
+      view === 'control' ? loadCoverage() : Promise.resolve(state.coverage),
       view === 'triage' ? loadClips() : Promise.resolve(state.clips),
       view === 'triage' ? loadSentClips() : Promise.resolve(state.sent),
       view === 'labelling' ? loadAiClips() : Promise.resolve(state.ai),
@@ -1360,6 +1421,7 @@ async function refresh() {
     state.sources = sources;
     state.issues = issues;
     state.spend = spend;
+    state.coverage = coverage;
     state.clips = clips;
     state.sent = sent;
     state.ai = ai;
@@ -1384,7 +1446,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, clips: [], sent: [], ai: [], sheet: [], sheetErr: '', loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], ai: [], sheet: [], sheetErr: '', loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

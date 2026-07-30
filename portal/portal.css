@@ -153,6 +153,19 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
 .foot-note { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line);
   font-size: 12px; color: var(--text-3); line-height: 1.55; }
 
+/* ---------- Coverage matrix ---------- */
+.matrix { width: 100%; border-collapse: collapse; font-size: 13px;
+  font-variant-numeric: tabular-nums; }
+.matrix th { text-align: left; font-size: 11px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--text-3);
+  padding: 6px 14px 8px 0; border-bottom: 1px solid var(--line); }
+.matrix td { padding: 8px 14px 8px 0; border-bottom: 1px solid var(--line);
+  color: var(--text-2); }
+.matrix td:first-child { color: var(--text-1); text-transform: capitalize; }
+.matrix tr:last-child td { border-bottom: none; }
+.matrix .dim { color: var(--text-3); }
+.matrix-tot td { color: var(--text-1); border-top: 1px solid var(--line-strong); }
+
 /* ---------- Activity ---------- */
 .line { display: flex; gap: 12px; font-size: 13px; padding: 6px 0;
   color: var(--text-3); font-variant-numeric: tabular-nums; }
