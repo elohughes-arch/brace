@@ -78,6 +78,36 @@ Targets are **distinct shots** — the strategy's currency — and sum to
 A rung is *done* when its slice holds target on the golden set — then stop
 buying it and fund the thinnest rung instead.
 
+## The split doctrine
+
+The split is where everything can silently fail, so it is held to the
+strictest protocol the literature names: **held-out scenes**. Leakage has
+rungs, and each rung invalidates the reliability number a different way:
+
+1. **Frame-level** random splits (Roboflow's default) put near-identical
+   frames of one flight in train and test — the model memorises, scores
+   ~100%, and the number is fiction.
+2. **Clip/flight-level** splits still share the same video's background,
+   light and camera between sets.
+3. **Video-level** splits still test the model on *grounds it trained on*:
+   one channel is one shooter at one ground with one camera, and thirty of
+   our channels straddled sets under a video-level deal.
+4. **Scene-level (channel-level) held-out splits** are the only protocol
+   that eliminates all train/test information sharing — the test set is
+   grounds the model has genuinely never seen, which is exactly the claim
+   "X% reliable" makes to a customer.
+
+So the judge deals **whole channels** (falling back to the single video
+where no channel is recorded), deterministically — md5 of the channel name,
+first 7 hex chars mod 100: <15 test, <30 valid, else train, ~70/15/15. The
+same maths lives in `_split()` (pipeline) and the `channel_level_split`
+migration (SQL), so no two parts of the system can ever disagree. Test is
+the golden ruler (human-verified, never trained on, never used for any
+decision); valid steers training runs and is also human-checked; only train
+may auto-accept boxes. Owned filming days at one ground count as one scene
+— diversity of *scenes* in test is what makes the reliability number
+portable to a customer's ground.
+
 ## Standing rules
 
 - No condition exceeds ~40% of the training set by the end.

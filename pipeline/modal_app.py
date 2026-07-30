@@ -98,30 +98,21 @@ def _sb():
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
 
-def _hold(video_id: str) -> bool:
-    """Deterministic ~15% golden-holdout draw, per video.
+def _split(group: str) -> str:
+    """The split judge: deal a whole scene into train, valid or test.
 
-    Whole videos go to the holdout, never individual clips: frames from one
-    flight are near-duplicates, and splitting them across train and test is
-    how a model scores 100% on paper and misses in the field. Must stay
-    identical to the SQL backfill in the golden_holdout migration —
-    first seven hex chars of md5, mod 100, under 15.
+    The group is the channel when one is recorded, else the video id. A
+    channel is a scene — the same shooter at the same ground with the same
+    camera across every upload — and held-out scenes are the only split
+    protocol that eliminates all train/test information sharing: frame-level
+    splits leak near-duplicate frames, video-level splits still test the
+    model on grounds it trained on. Deterministic md5, first seven hex chars
+    mod 100: under 15 test (the golden ruler, human-verified, never trained
+    on), under 30 valid (tunes training runs), the rest train — ~70/15/15.
+    Must stay identical to the channel_level_split migration.
     """
     import hashlib
-    return int(hashlib.md5(video_id.encode()).hexdigest()[:7], 16) % 100 < 15
-
-
-def _split(video_id: str) -> str:
-    """The split judge: deal a whole video into train, valid or test.
-
-    Same arithmetic as _hold and the split_judge migration, extended to
-    three ways: under 15 test (the golden ruler, human-verified, never
-    trained on), under 30 valid (tunes training runs), the rest train —
-    ~70/15/15, Roboflow's recommended shape. Dealt at video level so no
-    flight's near-duplicate frames ever straddle a set boundary.
-    """
-    import hashlib
-    h = int(hashlib.md5(video_id.encode()).hexdigest()[:7], 16) % 100
+    h = int(hashlib.md5(group.encode()).hexdigest()[:7], 16) % 100
     return "test" if h < 15 else "valid" if h < 30 else "train"
 
 
@@ -390,17 +381,17 @@ def clip(request: fastapi.Request):
                  "triage_notes": "file was not on the volume; queued to fetch again"}
             ).eq("video_id", row["video_id"]).execute()
             continue
-        # Golden-holdout membership is drawn once per video and inherited by
-        # every clip cut from it. Drawn here rather than at discovery so the
-        # ~15% is spent only on videos that actually produced clips.
-        hold = row.get("holdout")
-        split = row.get("rf_split")
-        if hold is None or split is None:
-            hold = _hold(row["video_id"])
-            split = _split(row["video_id"])
-            sb.table("pipeline_videos").update(
-                {"holdout": hold, "rf_split": split}
-            ).eq("video_id", row["video_id"]).execute()
+        # The split judge deals the whole scene — channel when known, the
+        # video alone otherwise — and every clip cut here inherits the deal.
+        # Recomputed each time rather than cached: the maths is deterministic,
+        # so this is idempotent, and it self-heals rows dealt before the
+        # judge learned about channels.
+        key = (row.get("channel") or "").strip() or row["video_id"]
+        split = _split(key)
+        hold = split == "test"
+        sb.table("pipeline_videos").update(
+            {"holdout": hold, "rf_split": split}
+        ).eq("video_id", row["video_id"]).execute()
 
         # Slow-motion footage has sharp, unblurred clays — superb for early
         # labelling, but the deployed model watches real-speed blur, so these
