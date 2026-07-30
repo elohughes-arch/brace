@@ -495,3 +495,9 @@ label.row, .pickside { cursor: pointer; }
 .crit-tag.lv { background: rgba(255,255,255,.06); border-color: var(--line-strong);
   color: var(--text-2); text-transform: none; }
 .judge .mini { flex: 0 0 auto; }
+
+/* Health page */
+.dot.warned { background: var(--champagne); }
+.h-warn { color: var(--champagne); }
+.h-fail { color: var(--destructive); }
+.row .dim2 { opacity: .7; }

@@ -824,6 +824,92 @@ async function exportCsv() {
   note(`manifest downloaded — ${lines.length - 1} clips`, 'good');
 }
 
+/* ---------- health ---------- */
+
+// The machine's physical, read from pipeline_health. Probes are written
+// server-side (daily cron, or the refresh button); the page only judges
+// freshness — a heartbeat that has not stamped the clock in over an hour
+// and a half is a dead machine whatever its last status said.
+const HEALTH_LABELS = {
+  heartbeat: ['Heartbeat', 'the hourly beat that pushes work through every stage'],
+  anthropic: ['Claude API', 'triage scoring and shot verdicts — dies silently when credits run out'],
+  youtube: ['YouTube API', 'discovery fuel — 10,000 units/day, criteria searches cost ~100 each'],
+  cookies: ['YouTube cookies', 'downloads need them; YouTube rotates them without warning'],
+  roboflow: ['Roboflow', 'where labelled frames land, split by the judge'],
+  backlogs: ['Backlogs', 'work waiting at each stage — errors outrank volume'],
+};
+
+async function loadHealth() {
+  const { data, error } = await supabase.from('pipeline_health')
+    .select('*').order('probe');
+  return error ? [] : (data || []);
+}
+
+function ago(iso) {
+  const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  return m < 2 ? 'just now' : m < 60 ? `${m}m ago`
+    : m < 2880 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
+}
+
+function healthStatus(h) {
+  // The heartbeat's status is its age: a stale 'ok' is the failure.
+  if (h.probe === 'heartbeat') {
+    const mins = (Date.now() - new Date(h.checked_at).getTime()) / 60000;
+    if (mins > 150) return ['fail', `no beat for ${Math.round(mins / 60)}h — the hourly cycle has stopped`];
+    if (mins > 75) return ['warn', 'beat overdue'];
+    return ['ok', h.detail];
+  }
+  return [h.status, h.detail];
+}
+
+function healthView() {
+  if (state.loading) return '<div class="empty">Reading the vitals…</div>';
+  const rows = state.health || [];
+  const worst = rows.reduce((w, h) => {
+    const [st] = healthStatus(h);
+    return st === 'fail' ? 'fail' : (st === 'warn' && w !== 'fail') ? 'warn' : w;
+  }, 'ok');
+  const row = (h) => {
+    const [st, detail] = healthStatus(h);
+    const [label, sub] = HEALTH_LABELS[h.probe] || [h.probe, ''];
+    return `
+    <div class="row">
+      <span class="dot ${st === 'ok' ? 'on' : st === 'warn' ? 'warned' : 'off'}"></span>
+      <div class="main">
+        <div class="t">${esc(label)} — <span class="${st === 'ok' ? '' : st === 'warn' ? 'h-warn' : 'h-fail'}">${esc(st === 'ok' ? 'healthy' : st === 'warn' ? 'attention' : 'down')}</span></div>
+        <div class="s" title="${esc(detail || '')}">${esc(detail || '')}</div>
+        <div class="s dim2">${esc(sub)}</div>
+      </div>
+      <div class="end"><span class="s">${ago(h.checked_at)}</span></div>
+    </div>`;
+  };
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Health</h1>
+        <p>The machine's physical: every dependency the pipeline stands on, probed
+           server-side. It checks itself daily at 8am; the button asks for a fresh
+           opinion right now.</p>
+      </div>
+      <button class="btn mini-btn" id="healthrun" ${running ? 'disabled' : ''}>
+        ${running === 'health' ? 'Probing…' : 'Run a check-up now'}</button>
+    </div>
+
+    <section class="panel ${worst === 'fail' ? 'stat-warn' : ''}">
+      <div class="p-head"><span class="p-title">${rows.length ? {
+    ok: 'All systems healthy', warn: 'Running, with warnings', fail: 'Something is down',
+  }[worst] : 'No check-up recorded yet'}</span></div>
+      ${rows.length ? rows.map(row).join('')
+    : '<div class="empty">Press the button — the first check-up writes this page, and the daily 8am one keeps it honest.</div>'}
+      <p class="foot-note">Probes run on Modal with the pipeline's own keys, so what
+         is tested is exactly what production uses: a live one-token Claude call
+         (catches an empty credit balance), a one-unit YouTube call (catches spent
+         quota), Roboflow reachability, cookie age, and the stage backlogs. The
+         heartbeat row is stamped by every hourly beat — its age, not its word, is
+         the proof of life.</p>
+    </section>`;
+}
+
 /* ---------- running a stage ---------- */
 
 let running = null;
@@ -869,9 +955,9 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export'].find((v) => location.hash === `#${v}`) || 'control';
+const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -906,6 +992,7 @@ function shell(body) {
           ${item('mastersheet', 'Mastersheet')}
           ${item('strategy', 'Dataset strategy')}
           ${item('export', 'Export')}
+          ${item('health', 'Health', (state.health || []).filter((h) => healthStatus(h)[0] !== 'ok').length)}
         </nav>
         <div class="side-foot">
           ${state.spend && state.spend.scored
@@ -1647,6 +1734,7 @@ function signature() {
     state.cats,
     state.split,
     state.exp,
+    state.health,
     state.coverage,
   ]);
 }
@@ -1683,6 +1771,7 @@ function paint(force = false) {
     : view === 'mastersheet' ? mastersheetView()
     : view === 'strategy' ? strategyView()
     : view === 'export' ? exportView()
+    : view === 'health' ? healthView()
     : controlView());
 
   document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
@@ -1710,6 +1799,7 @@ function paint(force = false) {
   // written for that ladder rung and stamp what's found with its level.
   document.querySelectorAll('[data-dsfind]').forEach((b) =>
     b.addEventListener('click', () => runStage('discover', { level: b.dataset.dsfind })));
+  document.getElementById('healthrun')?.addEventListener('click', () => runStage('health'));
   // The bulk handover and the ledger download, from the Export page.
   document.getElementById('exportall')?.addEventListener('click', async () => {
     const { data, error } = await supabase.from('pipeline_clips')
@@ -1835,7 +1925,7 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, sheet, progress, cats, exp] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, sheet, progress, cats, exp, health] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
@@ -1851,6 +1941,7 @@ async function refresh() {
       view === 'strategy' ? loadProgress() : Promise.resolve(state.progress),
       view === 'strategy' ? loadCategories() : Promise.resolve(state.cats),
       view === 'export' ? loadExport() : Promise.resolve(state.exp),
+      loadHealth(),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -1867,6 +1958,7 @@ async function refresh() {
     state.progress = progress;
     state.cats = cats;
     state.exp = exp;
+    state.health = health;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -1887,7 +1979,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

@@ -164,7 +164,122 @@ def _advance():
         hit("screen")
     if clips_queued():
         hit("prelabel")
+
+    # The pulse: every beat stamps the clock, so the Health page can tell a
+    # quiet machine from a dead one.
+    import datetime
+    sb.table("pipeline_health").upsert({
+        "probe": "heartbeat", "status": "ok", "detail": "beat completed",
+        "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }).execute()
     return {"stage": "advance"}
+
+
+# ---------------------------------------------------------------- health
+
+# The machine's physical: probe every external dependency the pipeline
+# stands on and write the findings where the portal can read them. Runs
+# daily on its own, and on demand from the Health page — because an
+# autonomous system that cannot report its own sickness fails silently,
+# and every outage this pipeline has had was discovered by accident.
+@app.function(image=base_image, secrets=[secret], timeout=600,
+              volumes={MEDIA: volume},
+              schedule=modal.Cron("0 7 * * *"))  # daily, 7am UTC
+def _health_impl():
+    import datetime
+    import os
+    import requests
+    from pathlib import Path
+
+    volume.reload()
+    sb = _sb()
+
+    def put(probe, status, detail=""):
+        sb.table("pipeline_health").upsert({
+            "probe": probe, "status": status, "detail": str(detail)[:300],
+            "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }).execute()
+
+    # Anthropic — the judgement. A one-token ping catches a dead key and,
+    # crucially, an empty credit balance: the outage that silently blinded
+    # every verdict for an afternoon.
+    try:
+        import anthropic
+        anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"]).messages.create(
+            model="claude-haiku-4-5", max_tokens=1,
+            messages=[{"role": "user", "content": "ping"}])
+        put("anthropic", "ok", "key live, credits present")
+    except Exception as e:  # noqa: BLE001
+        s = str(e)
+        put("anthropic", "fail",
+            "credits exhausted — top up at console.anthropic.com" if "credit" in s.lower()
+            else s)
+
+    # YouTube Data API — discovery's fuel. 10,000 units/day; each criteria
+    # search costs ~100. A 403 here is quota gone or key revoked.
+    try:
+        r = requests.get("https://www.googleapis.com/youtube/v3/videos",
+                         params={"key": os.environ["YOUTUBE_API_KEY"],
+                                 "id": "dQw4w9WgXcQ", "part": "id"}, timeout=20)
+        if r.status_code == 200:
+            put("youtube", "ok", "key live, quota available")
+        elif r.status_code == 403:
+            put("youtube", "warn", "quota exhausted or key restricted — "
+                "resets midnight Pacific; searches cost 100 units each")
+        else:
+            put("youtube", "fail", f"HTTP {r.status_code}: {r.text[:150]}")
+    except Exception as e:  # noqa: BLE001
+        put("youtube", "fail", str(e))
+
+    # Roboflow — where the labels land.
+    try:
+        from roboflow import Roboflow
+        Roboflow(api_key=os.environ["ROBOFLOW_API_KEY"]).workspace().project(
+            os.environ["ROBOFLOW_PROJECT"])
+        put("roboflow", "ok", "key and project reachable")
+    except Exception as e:  # noqa: BLE001
+        put("roboflow", "fail", str(e))
+
+    # Cookies — YouTube downloads die without them, and YouTube rotates
+    # them when the browser session is reused. Age is the early warning.
+    try:
+        ck = Path(MEDIA) / "cookies" / "cookies.txt"
+        if not ck.exists():
+            put("cookies", "fail", "no cookies file on the volume — "
+                "downloads will fail their first attempt chain")
+        else:
+            days = (__import__("time").time() - ck.stat().st_mtime) / 86400
+            put("cookies", "ok" if days < 14 else "warn",
+                f"{days:.0f} days old" + ("" if days < 14 else
+                " — re-export from an incognito window when downloads start failing"))
+    except Exception as e:  # noqa: BLE001
+        put("cookies", "fail", str(e))
+
+    # Backlogs — where work is queued or stuck. Errors outrank volume.
+    try:
+        def n(table, col, vals):
+            return (sb.table(table).select("*", count="exact", head=True)
+                    .in_(col, vals).execute().count or 0)
+        errs = n("pipeline_videos", "status", ["error"])
+        detail = (f"{n('pipeline_videos', 'status', ['discovered'])} to triage · "
+                  f"{n('pipeline_videos', 'status', ['downloaded'])} to review · "
+                  f"{n('pipeline_clips', 'label_status', ['raw'])} to screen · "
+                  f"{n('pipeline_clips', 'label_status', ['queued'])} to upload · "
+                  f"{errs} errored")
+        put("backlogs", "warn" if errs else "ok", detail)
+    except Exception as e:  # noqa: BLE001
+        put("backlogs", "fail", str(e))
+
+    return {"stage": "health", "probes": 5}
+
+
+@app.function(image=base_image, secrets=[secret], timeout=600,
+              volumes={MEDIA: volume})
+@web_endpoint(method="POST")
+def health(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+    return _health_impl.local()
 
 
 # ---------------------------------------------------------------- discover
