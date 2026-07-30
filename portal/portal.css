@@ -478,3 +478,9 @@ label.row, .pickside { cursor: pointer; }
   background-position: calc(100% - 20px) center, calc(100% - 15px) center;
   background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
 .field select:focus, .field input:focus { border-color: var(--clay); outline: none; }
+
+/* Rejected-video audit on the Mastersheet */
+.row .why { white-space: normal; color: var(--text-2); margin-top: 3px; }
+.embedrow { padding: 6px 0 14px 28px; }
+.embedrow iframe { width: 100%; max-width: 560px; aspect-ratio: 16 / 9;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: #000; }

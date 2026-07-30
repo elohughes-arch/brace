@@ -563,7 +563,7 @@ async function loadRejectedClips() {
 
 async function loadSheet() {
   let q = supabase.from('pipeline_videos')
-    .select('video_id,title,channel,status,triage_score,duration_s,used,weather,ds_level,updated_at')
+    .select('video_id,title,channel,status,triage_score,triage_notes,duration_s,used,weather,ds_level,updated_at')
     .order('updated_at', { ascending: false }).limit(150);
   if (sheetFilter !== 'all') q = q.eq('status', sheetFilter);
   const { data, error } = await q;
@@ -768,6 +768,7 @@ const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'masters
 let view = viewFromHash();
 let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], loading: true };
 let sheetFilter = 'all';
+let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
 let aiPage = 0;
 let batch = 10;   // videos per press — survives repaints, resets with the tab
@@ -1291,6 +1292,9 @@ const SHEET_TONE = { clipped: 'on', approved: 'on', downloaded: 'on' };
 function mastersheetView() {
   if (state.loading) return '<div class="empty">Loading the sheet…</div>';
   const c = state.counts || {};
+  // On the Rejected filter the sheet becomes triage's audit: the reason in
+  // triage's own words, an in-page player, and a way to overrule the call.
+  const auditing = sheetFilter === 'rejected';
   const row = (v) => `
     <div class="row">
       <label class="pickside" title="Mark as used">
@@ -1302,15 +1306,24 @@ function mastersheetView() {
         <div class="s">${esc(v.channel || '')} · ${esc(v.status)}${v.triage_score != null
     ? ` · scored ${Number(v.triage_score).toFixed(1)}` : ''}${v.weather && v.weather !== 'unknown'
     ? ` · ${esc(v.weather)}` : ''} · ${mmss(v.duration_s)} · ${dateFmt(v.updated_at)}</div>
+        ${auditing && v.triage_notes ? `<div class="s why" title="${esc(v.triage_notes)}">${esc(v.triage_notes)}</div>` : ''}
       </div>
       <div class="end">
         ${v.clips ? `<span class="s">${fmt(v.clips)} clips · ${fmt(v.sent)} sent</span>` : ''}
+        ${auditing ? `
+          <button class="linky" data-watch="${esc(v.video_id)}">${watching === v.video_id ? 'Close' : 'Watch'}</button>
+          <button class="linky" data-retriage="${esc(v.video_id)}">Re-triage</button>` : ''}
         <select class="mini" data-dslevel="${esc(v.video_id)}" title="Dataset strategy level — which rung of the ladder this footage serves">
           <option value="">L—</option>
           ${DS_LADDER.map((l) => `<option value="${l.n}" ${v.ds_level === l.n ? 'selected' : ''}>L${l.n}</option>`).join('')}
         </select>
       </div>
-    </div>`;
+    </div>
+    ${auditing && watching === v.video_id ? `
+    <div class="embedrow">
+      <iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(v.video_id)}"
+        title="Rejected video" allow="fullscreen" allowfullscreen loading="lazy"></iframe>
+    </div>` : ''}`;
 
   return `
     <div class="crm-head">
@@ -1507,7 +1520,7 @@ function signature() {
     view, state.email, state.loading, running, state.counts,
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
-    clipPage, aiPage, sheetFilter,
+    clipPage, aiPage, sheetFilter, watching,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     state.rej?.total,
@@ -1580,6 +1593,23 @@ function paint(force = false) {
   // written for that ladder rung and stamp what's found with its level.
   document.querySelectorAll('[data-dsfind]').forEach((b) =>
     b.addEventListener('click', () => runStage('discover', { level: b.dataset.dsfind })));
+  // The rejected-video audit: watch triage's discards in place, and
+  // overrule a wrong call by sending the video back for a fresh score.
+  document.querySelectorAll('[data-watch]').forEach((b) =>
+    b.addEventListener('click', () => {
+      watching = watching === b.dataset.watch ? null : b.dataset.watch;
+      paint(true);
+    }));
+  document.querySelectorAll('[data-retriage]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      const { error } = await supabase.from('pipeline_videos')
+        .update({ status: 'discovered', local_path: null })
+        .eq('video_id', b.dataset.retriage).select('video_id');
+      note(error ? `could not re-triage — ${error.message}`
+        : `${b.dataset.retriage} sent back — the next triage run rescores it`, error ? 'bad' : 'good');
+      refresh();
+    }));
   // Placing a video on the ladder by hand, from the Mastersheet.
   document.querySelectorAll('[data-dslevel]').forEach((sel) =>
     sel.addEventListener('change', async () => {
