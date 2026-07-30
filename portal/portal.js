@@ -509,7 +509,7 @@ async function titleClips(rows) {
 async function loadAiClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,det_conf,range_m,speed_mph,created_at')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,det_conf,range_m,speed_mph,created_at')
     .in('label_status', ['queued', 'prelabelled'])
     .order('created_at', { ascending: false })
     .range(aiPage * PAGE, aiPage * PAGE + PAGE - 1);
@@ -1008,10 +1008,13 @@ function labellingView() {
     <div class="metric"><span class="k">${label}</span>
       <span class="v ${cls}">${value}</span></div>`;
   const row = (k) => {
-    const vclass = k.outcome === 'hit' ? 'v-hit' : k.outcome === 'miss' ? 'v-miss' : '';
+    const vc = (o) => (o === 'hit' ? 'v-hit' : o === 'miss' ? 'v-miss' : '');
+    const show = (o, c) => `${esc(o)}${c != null ? ` · ${Math.round(c * 100)}%` : ''}`;
     const panel = [
-      metric('Verdict', k.outcome
-        ? `${esc(k.outcome)}${k.outcome_conf != null ? ` · ${Math.round(k.outcome_conf * 100)}%` : ''}` : '—', vclass),
+      // A pair is two shots, so it wears two verdicts.
+      metric(k.outcome_2 ? 'First clay' : 'Verdict',
+        k.outcome ? show(k.outcome, k.outcome_conf) : '—', vc(k.outcome)),
+      k.outcome_2 ? metric('Second clay', show(k.outcome_2, k.outcome_2_conf), vc(k.outcome_2)) : '',
       metric('Clay detection', k.det_conf != null ? `${Math.round(k.det_conf * 100)}%` : '—'),
       // Speed and distance come from the bang-to-break clock, which only a
       // hit can stop — a miss flies on, so there is nothing to time yet.
@@ -1313,7 +1316,7 @@ function signature() {
     clipPage, aiPage, sheetFilter,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     state.ai.map((k) => k.clip_id + k.label_status + (k.preview_url ? 'v' : '')
-      + (k.outcome || '') + (k.speed_mph ?? '') + (k.range_m ?? '')),
+      + (k.outcome || '') + (k.outcome_2 || '') + (k.speed_mph ?? '') + (k.range_m ?? '')),
     state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '')),
     state.coverage,
   ]);

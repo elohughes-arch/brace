@@ -601,6 +601,12 @@ def screen(request: fastapi.Request):
         # boxes say where the clay is, and now they aim the judge's eye:
         # each frame is cropped around the tracked clay before Sonnet sees it.
         outcome, conf = _judge_shot(row, frames, fps, step, boxes_per_frame)
+        # A pair is two shots: the second bang gets its own verdict, its
+        # impact window shifted by the gap the clipper heard between them.
+        outcome2 = conf2 = None
+        if row.get("is_pair") and row.get("pair_gap_s"):
+            outcome2, conf2 = _judge_shot(row, frames, fps, step, boxes_per_frame,
+                                          extra_offset=float(row["pair_gap_s"]))
 
         metrics = _shot_metrics(
             float(row["shot_ts"]) - float(row["clip_start"]),
@@ -611,7 +617,8 @@ def screen(request: fastapi.Request):
             {"label_status": "pending",
              "clip_start": new_start, "clip_end": new_end,
              "preview_path": pv, "poster_path": po,
-             "outcome": outcome, "outcome_conf": conf, **metrics}
+             "outcome": outcome, "outcome_conf": conf,
+             "outcome_2": outcome2, "outcome_2_conf": conf2, **metrics}
         ).eq("clip_id", row["clip_id"]).execute()
         done += 1
         kept += 1
@@ -898,6 +905,10 @@ def rejudge(request: fastapi.Request):
                     continue
                 if outcome != row.get("outcome") or conf != row.get("outcome_conf"):
                     changed += 1
+            outcome2 = conf2 = None
+            if not metrics_only and row.get("is_pair") and row.get("pair_gap_s"):
+                outcome2, conf2 = _judge_shot(row, frames, fps, step, shifted,
+                                              extra_offset=float(row["pair_gap_s"]))
             metrics = _shot_metrics(
                 float(row["shot_ts"]) - float(row["clip_start"]),
                 shifted, frame_dt, frame_w, outcome)
@@ -906,7 +917,8 @@ def rejudge(request: fastapi.Request):
                 continue
             sb.table("pipeline_clips").update(
                 metrics if metrics_only
-                else {"outcome": outcome, "outcome_conf": conf, **metrics}
+                else {"outcome": outcome, "outcome_conf": conf,
+                      "outcome_2": outcome2, "outcome_2_conf": conf2, **metrics}
             ).eq("clip_id", row["clip_id"]).execute()
             done += 1
         except Exception as e:  # noqa: BLE001
@@ -917,14 +929,19 @@ def rejudge(request: fastapi.Request):
             "verdicts_changed": changed, "skipped": skipped}
 
 
-def _judge_shot(row, frames, fps, step, boxes_per_frame=None):
-    """hit / miss / unclear for one clip, from frames around the gunshot.
+def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
+    """hit / miss / unclear for one shot, from frames around its gunshot.
 
     The detector's boxes aim the judge's eye. At full width a distant clay
     is a handful of grey pixels and the only honest verdict is 'unclear' —
     so each frame sent to the model is cropped around the tracked clay and
     enlarged. A frame with no detection near it falls back to the full
     picture rather than guessing where to look.
+
+    One call judges one bang. A pair is judged twice, the second call
+    passing pair_gap_s as extra_offset so its impact window — and the crop,
+    which follows the strongest box near each pick — belongs to the second
+    clay's moment, not the first's.
     """
     import base64
     import json
@@ -936,7 +953,7 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None):
 
     try:
         # where in the sampled-frame list the shot falls
-        into_clip = float(row["shot_ts"]) - float(row["clip_start"])
+        into_clip = float(row["shot_ts"]) - float(row["clip_start"]) + extra_offset
         frame_dt = step / fps          # seconds between sampled frames
         shot_i = int(round(into_clip / frame_dt))
         # Slow motion for the judge, from footage we already have: pellets
