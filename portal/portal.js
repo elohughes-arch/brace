@@ -527,11 +527,15 @@ async function loadAiClips() {
 }
 
 async function loadSentClips() {
+  // Only clips that have actually gone to the AI — a raw cut still waiting on
+  // screening is not "sent", and listing it here read as a bug.
   const { data } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id')
-    .neq('label_status', 'pending')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,file_path')
+    .in('label_status', ['queued', 'prelabelled'])
     .order('created_at', { ascending: false }).limit(8);
-  return data || [];
+  const rows = data || [];
+  await titleClips(rows);
+  return rows;
 }
 
 async function loadSheet() {
@@ -897,15 +901,23 @@ function triageClipsView() {
   const pending = state.clips;
 
   const yt = (k) => `https://www.youtube.com/watch?v=${encodeURIComponent(k.video_id)}&t=${Math.max(0, Math.floor(k.shot_ts || 0))}s`;
-  const pendingRow = (k) => `
-    <div class="row cliprow">
-      <label class="pickside">
-        <input type="checkbox" class="tick" data-pick="${esc(k.clip_id)}" ${picked.has(k.clip_id) ? 'checked' : ''} />
-      </label>
-      <div class="main">
+  // Every clip is the same card whether its preview exists yet or not: the
+  // media box keeps its 16:9 shape and the grid never staggers. A rendered
+  // preview plays in place; a poster-only clip shows its still with a badge;
+  // a brand-new cut holds the space with a note.
+  const pendingCard = (k) => `
+    <div class="clipcard">
+      <div class="clipmedia">
+        <label class="clippick" title="Pick this clip">
+          <input type="checkbox" class="tick" data-pick="${esc(k.clip_id)}" ${picked.has(k.clip_id) ? 'checked' : ''} />
+        </label>
         ${k.preview_url
-    ? `<video class="clipvid" controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
-    : '<div class="s">Preview rendering — arrives with the next heartbeat. Meanwhile:</div>'}
+    ? `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    : k.poster_url
+      ? `<img src="${esc(k.poster_url)}" alt="" /><span class="rendering badge">rendering…</span>`
+      : '<span class="rendering">Preview rendering — plays here within the hour</span>'}
+      </div>
+      <div class="clipcap">
         <div class="t">Shot ${k.shot_no || '?'} · ${mmss(k.shot_ts)}
           · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
         <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
@@ -919,15 +931,15 @@ function triageClipsView() {
     const head = k.video_id !== lastVid
       ? `<div class="grouphead">${esc(k.title || k.video_id)}</div>` : '';
     lastVid = k.video_id;
-    return head + pendingRow(k);
+    return head + pendingCard(k);
   }).join('');
 
   const doneRow = (k) => `
     <div class="row">
       <span class="dot ${k.label_status === 'prelabelled' ? 'on' : ''}"></span>
       <div class="main">
-        <div class="t">${esc(k.video_id)} · ${mmss(k.shot_ts)}</div>
-        <div class="s">${esc(k.label_status)}${k.roboflow_id ? ' · in Roboflow' : ''}</div>
+        <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ''} · ${mmss(k.shot_ts)}</div>
+        <div class="s">${k.label_status === 'queued' ? 'queued — boxed within the hour' : 'pre-labelled'}${k.roboflow_id ? ' · in Roboflow' : ''}</div>
       </div>
     </div>`;
 
@@ -964,7 +976,8 @@ function triageClipsView() {
           <button class="btn btn-ghost mini-btn" id="sendall" style="margin-left:8px"
             ${totalPending ? '' : 'disabled'}>Send all ${fmt(totalPending)}</button>
         </span></div>
-      ${grouped || '<div class="empty">Nothing waiting. Approve videos in Review and the clipper feeds this list within the hour.</div>'}
+      ${grouped ? `<div class="clipgrid">${grouped}</div>`
+    : '<div class="empty">Nothing waiting. Approve videos in Review and the clipper feeds this list within the hour.</div>'}
       ${pages > 1 ? `
       <div class="pager">
         <button class="linky" id="clipprev" ${clipPage ? '' : 'disabled'}>‹ Previous</button>
@@ -1268,10 +1281,18 @@ async function dropSource(id) {
 // don't draw it at all: rebuilding root every eight seconds resets keyboard
 // focus and swallows any click whose mousedown landed just before the repaint.
 function signature() {
+  // Everything a repaint could visibly change must be in here: paint() skips
+  // redraws when the signature matches, so a state change this list misses is
+  // a click that "does nothing" — the pager bug, once.
   return JSON.stringify([
     view, state.email, state.loading, running, state.counts,
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
+    clipPage, aiPage, sheetFilter,
+    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
+    state.ai.map((k) => k.clip_id + k.label_status + (k.preview_url ? 'v' : '')),
+    state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '')),
+    state.coverage,
   ]);
 }
 let painted = '';
@@ -1349,17 +1370,22 @@ function paint(force = false) {
     const send = document.getElementById('sendsel');
     if (send) send.disabled = !picked.size;
   }));
+  // Page flips show the loading state immediately — the fetch takes a beat,
+  // and a button that answers half a second later reads as broken.
+  const flip = (set) => { set(); state.loading = true; paint(true); refresh(); };
   document.getElementById('aiprev')?.addEventListener('click', () => {
-    aiPage = Math.max(0, aiPage - 1); refresh();
+    flip(() => { aiPage = Math.max(0, aiPage - 1); });
   });
   document.getElementById('ainext')?.addEventListener('click', () => {
-    aiPage += 1; refresh();
+    const pages = Math.max(1, Math.ceil(((state.counts?.queued ?? 0) + (state.counts?.prelabelled ?? 0)) / 40));
+    flip(() => { aiPage = Math.min(aiPage + 1, pages - 1); });
   });
   document.getElementById('clipprev')?.addEventListener('click', () => {
-    clipPage = Math.max(0, clipPage - 1); refresh();
+    flip(() => { clipPage = Math.max(0, clipPage - 1); });
   });
   document.getElementById('clipnext')?.addEventListener('click', () => {
-    clipPage += 1; refresh();
+    const pages = Math.max(1, Math.ceil((state.counts?.pending ?? 0) / 40));
+    flip(() => { clipPage = Math.min(clipPage + 1, pages - 1); });
   });
   document.getElementById('pickall')?.addEventListener('click', () => {
     document.querySelectorAll('[data-pick]').forEach((cb) => { cb.checked = true; picked.add(cb.dataset.pick); });
