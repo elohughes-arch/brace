@@ -826,8 +826,12 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None):
         into_clip = float(row["shot_ts"]) - float(row["clip_start"])
         frame_dt = step / fps          # seconds between sampled frames
         shot_i = int(round(into_clip / frame_dt))
+        # Slow motion for the judge, from footage we already have: pellets
+        # reach the clay a tenth to a quarter of a second after the bang and
+        # the break lasts a tenth more, so the picks cluster densely inside
+        # that window — four widely-spaced frames could jump clean over it.
         picks = [shot_i + int(round(off / frame_dt))
-                 for off in (-0.3, 0.3, 0.8, 1.3)]
+                 for off in (-0.3, 0.08, 0.16, 0.25, 0.36, 0.55, 0.9, 1.4)]
         picks = sorted({i for i in picks if 0 <= i < len(frames)})
         if len(picks) < 2:
             return None, None
@@ -879,13 +883,17 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None):
             model=os.environ.get("VERDICT_MODEL", "claude-sonnet-5"),
             max_tokens=200,
             system=("A clay pigeon is shot at between the 'before' and 'after' "
-                    "frames. Frames marked 'zoomed to the tracked clay' are "
-                    "crops centred on the detector's box for the clay, so the "
-                    "disc should be near the middle. Hit: the clay breaks into "
-                    "fragments or a puff of dust and is gone from later "
-                    "frames. Miss: the same clay continues its flight intact. "
-                    "If the clay cannot be followed across the frames, say "
-                    "unclear. Reply with JSON "
+                    "frames. The after-frames cluster tightly on the moment "
+                    "of impact: pellets arrive within a quarter second of the "
+                    "shot and a break lasts a tenth more, so study the early "
+                    "after-frames for the exact instant. Frames marked "
+                    "'zoomed to the tracked clay' are crops centred on the "
+                    "detector's box for the clay, so the disc should be near "
+                    "the middle. Hit: the clay breaks into fragments or a "
+                    "puff of dust and is gone from later frames. Miss: the "
+                    "same clay continues its flight intact. If the clay "
+                    "cannot be followed across the frames, say unclear. "
+                    "Reply with JSON "
                     'only: {"outcome": "hit|miss|unclear", "confidence": <0-1>}'),
             messages=[{"role": "user", "content": blocks}])
         text = "".join(b.text for b in msg.content
