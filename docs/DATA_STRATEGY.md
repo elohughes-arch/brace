@@ -54,6 +54,30 @@ first, difficulty added one axis at a time) and, later, active learning
   (never just the new slice), and the per-slice report is read every time so
   gains on hard conditions never silently cost the easy ones.
 
+## The ladder
+
+Phases 1–3 made operational: eight rungs, easiest sight first, one axis of
+difficulty added at a time. Live progress per rung is on the portal's
+**Dataset strategy** page (fed by `dataset_progress()`), each video's rung
+is on the Mastersheet (`ds_level`, stamped by criteria discovery or set by
+hand), and each rung's search phrases live in `api/run/[stage].js`.
+Targets are **distinct shots** — the strategy's currency — and sum to
+~3,000, the working estimate for ~92% mAP@50.
+
+| Level | Name | Teaches | Target shots |
+|---|---|---|---|
+| 1 | Foundation | Orange clays, clear sky, close and slow (slo-mo welcome): what a clay *is* | 600 |
+| 2 | Standard sporting | Real presentations — crossers, going-away, skeet, trap, first person | 500 |
+| 3 | Dark clays | Black, midi, blaze discs on clear sky | 350 |
+| 4 | Overcast | Grey disc on grey sky — most of British shooting | 400 |
+| 5 | Cluttered ground | Treeline, hillside, valley backgrounds | 400 |
+| 6 | Long and fast | 40-yard birds, high towers, fast crossers, motion blur | 300 |
+| 7 | Hard light | Rain, dusk, fog, low winter sun | 250 |
+| 8 | Edge cases | Sim-game flushes, rabbit clays, battue and chandelle | 200 |
+
+A rung is *done* when its slice holds target on the golden set — then stop
+buying it and fund the thinnest rung instead.
+
 ## Standing rules
 
 - No condition exceeds ~40% of the training set by the end.

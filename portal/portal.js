@@ -555,7 +555,7 @@ async function loadRejectedClips() {
 
 async function loadSheet() {
   let q = supabase.from('pipeline_videos')
-    .select('video_id,title,channel,status,triage_score,duration_s,used,weather,updated_at')
+    .select('video_id,title,channel,status,triage_score,duration_s,used,weather,ds_level,updated_at')
     .order('updated_at', { ascending: false }).limit(150);
   if (sheetFilter !== 'all') q = q.eq('status', sheetFilter);
   const { data, error } = await q;
@@ -584,6 +584,74 @@ async function loadQueue() {
     .order('triage_score', { ascending: false })
     .limit(24);
   return error ? [] : (data || []).filter((v) => !judged.has(v.video_id));
+}
+
+/* ---------- dataset strategy ---------- */
+
+// The curriculum ladder: teach the easiest sight first, then add one axis of
+// difficulty at a time, each rung measured before the next is poured in.
+// Search queries per rung live server-side in api/run/[stage].js (DS_LEVELS);
+// targets are distinct shots — the currency of the whole data strategy.
+const DS_LADDER = [
+  { n: 1, name: 'Foundation', target: 600, sub: 'Orange clays on clear sky, close and slow — slow motion welcome. The model learns what a clay is.' },
+  { n: 2, name: 'Standard sporting', target: 500, sub: 'Orange clays, real presentations: crossers, going-away, skeet and trap, first person.' },
+  { n: 3, name: 'Dark clays', target: 350, sub: 'Black, midi and blaze clays on clear sky — same flight, different disc.' },
+  { n: 4, name: 'Overcast', target: 400, sub: 'Grey disc on grey sky — the classic killer, and most of British shooting.' },
+  { n: 5, name: 'Cluttered ground', target: 400, sub: 'Treeline, hillside and valley backgrounds — the clay must be found against terrain, not sky.' },
+  { n: 6, name: 'Long and fast', target: 300, sub: 'High towers, 40-yard birds, fast crossers — the clay is a few pixels with motion blur.' },
+  { n: 7, name: 'Hard light', target: 250, sub: 'Rain, dusk, fog, low winter sun — the conditions a real shoot actually has.' },
+  { n: 8, name: 'Edge cases', target: 200, sub: 'Sim-game flushes, rabbits rolling on the ground, battue and chandelle specialty targets.' },
+];
+
+async function loadProgress() {
+  try {
+    const { data, error } = await supabase.rpc('dataset_progress');
+    return error ? [] : (data || []);
+  } catch { return []; }
+}
+
+function strategyView() {
+  const by = new Map((state.progress || []).map((r) => [Number(r.level), r]));
+  const totShots = (state.progress || []).reduce((a, r) => a + Number(r.shots || 0), 0);
+  const totTarget = DS_LADDER.reduce((a, l) => a + l.target, 0);
+  const card = (l) => {
+    const p = by.get(l.n) || {};
+    const shots = Number(p.shots || 0);
+    const pct = Math.min(100, Math.round((shots / l.target) * 100));
+    return `
+    <section class="panel level ${shots >= l.target ? 'level-done' : ''}">
+      <div class="p-head">
+        <span class="p-title">Level ${l.n} — ${l.name}</span>
+        <span class="lv-pct">${pct}%</span>
+      </div>
+      <p class="lv-sub">${l.sub}</p>
+      <div class="lv-bar"><span style="width:${pct}%"></span></div>
+      <div class="lv-nums">
+        <span><b>${fmt(shots)}</b> of ${fmt(l.target)} shots</span>
+        <span>${fmt(Number(p.videos || 0))} videos found · ${fmt(Number(p.kept || 0))} kept</span>
+        <span>${fmt(Number(p.clips || 0))} clips · ${fmt(Number(p.clays || 0))} clays boxed</span>
+        <button class="linky" data-dsfind="${l.n}" ${running ? 'disabled' : ''}>
+          ${running === 'discover' ? 'searching…' : 'Find footage for this level'}</button>
+      </div>
+    </section>`;
+  };
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Dataset strategy</h1>
+        <p>The curriculum, as a ladder: teach the easiest sight first, then add one
+           axis of difficulty at a time. Each level's numbers update live as
+           discovery finds footage, you approve it, and the machine cuts and counts
+           the shots. The currency is distinct shots — ${fmt(totShots)} banked of
+           ~${fmt(totTarget)} for the full ladder.</p>
+      </div>
+    </div>
+    <div class="stack">${DS_LADDER.map(card).join('')}</div>
+    <p class="foot-note" style="margin-top:14px">"Find footage" runs a criteria
+       discovery: it searches phrases written for that level and stamps every
+       candidate with the level it was sourced for, so these counts and the
+       Mastersheet stay honest. Videos found by ordinary source discovery carry no
+       level until you set one on the Mastersheet.</p>`;
 }
 
 /* ---------- running a stage ---------- */
@@ -631,9 +699,9 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet'].find((v) => location.hash === `#${v}`) || 'control';
+const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], loading: true };
 let sheetFilter = 'all';
 let clipPage = 0;   // 40 clips a page, grouped by video
 let aiPage = 0;
@@ -665,6 +733,7 @@ function shell(body) {
           ${item('triage', 'Triage', state.counts?.pending)}
           ${item('labelling', 'Labelling', state.counts?.queued)}
           ${item('mastersheet', 'Mastersheet')}
+          ${item('strategy', 'Dataset strategy')}
         </nav>
         <div class="side-foot">
           ${state.spend && state.spend.scored
@@ -1162,6 +1231,10 @@ function mastersheetView() {
       </div>
       <div class="end">
         ${v.clips ? `<span class="s">${fmt(v.clips)} clips · ${fmt(v.sent)} sent</span>` : ''}
+        <select class="mini" data-dslevel="${esc(v.video_id)}" title="Dataset strategy level — which rung of the ladder this footage serves">
+          <option value="">L—</option>
+          ${DS_LADDER.map((l) => `<option value="${l.n}" ${v.ds_level === l.n ? 'selected' : ''}>L${l.n}</option>`).join('')}
+        </select>
       </div>
     </div>`;
 
@@ -1367,7 +1440,8 @@ function signature() {
     state.ai.map((k) => k.clip_id + k.label_status + (k.preview_url ? 'v' : '')
       + (k.outcome || '') + (k.outcome_2 || '') + (k.outcome_3 || '')
       + (k.speed_mph ?? '') + (k.range_m ?? '')),
-    state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '')),
+    state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '') + (v.ds_level ?? '')),
+    state.progress,
     state.coverage,
   ]);
 }
@@ -1402,6 +1476,7 @@ function paint(force = false) {
     : view === 'triage' ? triageClipsView()
     : view === 'labelling' ? labellingView()
     : view === 'mastersheet' ? mastersheetView()
+    : view === 'strategy' ? strategyView()
     : controlView());
 
   document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
@@ -1425,6 +1500,19 @@ function paint(force = false) {
   document.querySelectorAll('[data-stage]').forEach((b) =>
     b.addEventListener('click', () =>
       runStage(b.dataset.stage, b.dataset.stage === 'discover' ? {} : { limit: batch })));
+  // Criteria discovery from the Dataset strategy page: search the phrases
+  // written for that ladder rung and stamp what's found with its level.
+  document.querySelectorAll('[data-dsfind]').forEach((b) =>
+    b.addEventListener('click', () => runStage('discover', { level: b.dataset.dsfind })));
+  // Placing a video on the ladder by hand, from the Mastersheet.
+  document.querySelectorAll('[data-dslevel]').forEach((sel) =>
+    sel.addEventListener('change', async () => {
+      const lvl = sel.value ? Number(sel.value) : null;
+      const { error } = await supabase.from('pipeline_videos')
+        .update({ ds_level: lvl }).eq('video_id', sel.dataset.dslevel).select('video_id');
+      note(error ? `could not set the level — ${error.message}`
+        : `${sel.dataset.dslevel} placed at ${lvl ? `level ${lvl}` : 'no level'}`, error ? 'bad' : 'good');
+    }));
   document.querySelectorAll('[data-requeue]').forEach((b) =>
     b.addEventListener('click', async () => {
       b.disabled = true;
@@ -1515,7 +1603,7 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, ai, sheet] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, ai, sheet, progress] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
@@ -1527,6 +1615,7 @@ async function refresh() {
       view === 'triage' ? loadRejectedClips() : Promise.resolve(state.rej),
       view === 'labelling' ? loadAiClips() : Promise.resolve(state.ai),
       view === 'mastersheet' ? loadSheet() : Promise.resolve(state.sheet),
+      view === 'strategy' ? loadProgress() : Promise.resolve(state.progress),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -1539,6 +1628,7 @@ async function refresh() {
     state.rej = rej;
     state.ai = ai;
     state.sheet = sheet;
+    state.progress = progress;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -1559,7 +1649,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

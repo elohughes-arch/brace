@@ -168,6 +168,21 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
   text-transform: capitalize; white-space: nowrap; }
 .metric .na { color: var(--text-3); font-size: 11px; text-transform: none; }
 
+/* ---------- Dataset strategy ladder ---------- */
+.level .lv-sub { font-size: 13px; color: var(--text-2); line-height: 1.55;
+  margin: -8px 0 14px; }
+.level .lv-pct { font-size: 13px; color: var(--text-1);
+  font-variant-numeric: tabular-nums; }
+.lv-bar { height: 6px; border-radius: var(--r-pill); background: rgba(255,255,255,.07);
+  overflow: hidden; margin-bottom: 12px; }
+.lv-bar span { display: block; height: 100%; background: var(--clay);
+  border-radius: var(--r-pill); transition: width .4s ease; }
+.level-done .lv-bar span { background: #4caf7d; }
+.lv-nums { display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 13px;
+  color: var(--text-3); align-items: baseline; }
+.lv-nums b { color: var(--text-1); font-weight: 600; }
+.lv-nums .linky { margin-left: auto; }
+
 /* ---------- Coverage matrix ---------- */
 .matrix { width: 100%; border-collapse: collapse; font-size: 13px;
   font-variant-numeric: tabular-nums; }

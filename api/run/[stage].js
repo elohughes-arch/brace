@@ -49,6 +49,25 @@ const PASSTHROUGH = ['limit', 'unreviewed'];
 //            record that you asked.
 //   video    one specific video, pasted in.
 
+// The curriculum ladder: what to source at each rung, easiest first. The
+// model earns each level before the next is poured in — the queries here are
+// what "add criteria" discovery searches when a level is chosen instead of
+// the sources list. Names and targets are mirrored in portal/portal.js.
+const DS_LEVELS = {
+  1: ['clay pigeon shooting slow motion', 'orange clay slow motion break',
+    'incoming clay pigeon shot close', 'clay shooting first person easy targets'],
+  2: ['sporting clays first person', 'clay pigeon crosser shotkam',
+    'skeet shooting pov', 'trap shooting first person'],
+  3: ['black clay pigeon shooting', 'midi clay sporting', 'blaze clay shooting'],
+  4: ['clay shooting overcast', 'clay pigeon grey sky', 'winter clay shooting'],
+  5: ['clay shooting woodland background', 'sporting clays trees',
+    'clay pigeon valley shoot', 'high pheasant style clay'],
+  6: ['long range clay shooting', 'high tower clay 40 yards', 'fast crossing clay'],
+  7: ['clay shooting rain', 'clay shooting dusk', 'clay shooting fog low light'],
+  8: ['simulated game shooting', 'clay flush shooting', 'rabbit clay shooting',
+    'battue chandelle clay'],
+};
+
 const MIN_DURATION_S = 30;
 const MAX_DURATION_S = 3600;
 const REJECT_TITLE_WORDS = [
@@ -143,7 +162,7 @@ async function channelUploads(key, ref, source, maxPages = 4) {
   return { ids, channelId };
 }
 
-async function runDiscover({ supabaseUrl, anonKey, auth }) {
+async function runDiscover({ supabaseUrl, anonKey, auth, level }) {
   const key = process.env.YOUTUBE_API_KEY;
   if (!key) {
     return {
@@ -160,6 +179,46 @@ async function runDiscover({ supabaseUrl, anonKey, auth }) {
     ...init,
     headers: { apikey: anonKey, authorization: auth, 'content-type': 'application/json', ...(init?.headers || {}) },
   });
+
+  // Criteria discovery: a chosen ladder rung searches its own query pack
+  // instead of the sources list, and every candidate found is stamped with
+  // the level it was sourced for — that stamp is what the Dataset strategy
+  // page and the Mastersheet count.
+  if (level) {
+    const queries = DS_LEVELS[level];
+    if (!queries) return { code: 400, body: { error: `no such level: ${level}` } };
+    const rows = [];
+    const seen = new Set();
+    for (const q of queries) {
+      const hits = await yt('search', {
+        key, q, part: 'snippet', type: 'video', maxResults: '50',
+      });
+      const ids = (hits.items || []).map((i) => i.id?.videoId).filter(Boolean);
+      for (const row of await detailsFor(key, ids, null)) {
+        if (seen.has(row.video_id)) continue;
+        seen.add(row.video_id);
+        rows.push({ ...row, ds_level: level });
+      }
+    }
+    if (!rows.length) {
+      return { code: 200, body: { stage: 'discover', level, found: 0, added: 0 } };
+    }
+    const write = await sb('pipeline_videos?on_conflict=video_id', {
+      method: 'POST',
+      headers: { prefer: 'resolution=ignore-duplicates,return=representation' },
+      body: JSON.stringify(rows),
+    });
+    const text = await write.text();
+    if (!write.ok) {
+      return { code: 502, body: { error: 'could not write the candidates', detail: text.slice(0, 300) } };
+    }
+    let added = null;
+    try { added = JSON.parse(text).length; } catch { /* return=minimal */ }
+    return {
+      code: 200,
+      body: { stage: 'discover', level, found: rows.length, added: added == null ? 'unknown' : added },
+    };
+  }
 
   const listed = await sb('pipeline_sources?enabled=eq.true&select=*');
   if (!listed.ok) {
@@ -314,8 +373,9 @@ module.exports = async (req, res) => {
 
   if (LOCAL_STAGES.includes(stage)) {
     try {
+      const level = Math.max(0, Math.min(8, Number(req.query.level) || 0)) || null;
       const { code, body } = await runDiscover({
-        supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY, auth,
+        supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY, auth, level,
       });
       return res.status(code).json(body);
     } catch (e) {
