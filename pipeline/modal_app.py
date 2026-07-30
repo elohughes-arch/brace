@@ -833,7 +833,11 @@ def rejudge(request: fastapi.Request):
     import cv2
     from pathlib import Path
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    # ?metrics=only computes the instrument panel and touches no AI at all —
+    # detection, range and speed are arithmetic on the stored track, so they
+    # must never be hostage to an API balance.
+    metrics_only = request.query_params.get("metrics") == "only"
+    if not metrics_only and not os.environ.get("ANTHROPIC_API_KEY"):
         return fastapi.responses.JSONResponse(
             {"error": "ANTHROPIC_API_KEY is not set in the Modal secret"},
             status_code=503)
@@ -864,37 +868,45 @@ def rejudge(request: fastapi.Request):
             t_off = float(lab[0].get("t_offset") or 0.0)
             cap = cv2.VideoCapture(row["file_path"])
             fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
             step = max(1, int(round(fps * frame_dt)))
             frames, idx = [], 0
-            while True:
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                if idx % step == 0:
-                    frames.append(frame)
-                idx += 1
+            if not metrics_only:   # the panel needs no pixels, only the track
+                while True:
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    if idx % step == 0:
+                        frames.append(frame)
+                    idx += 1
             cap.release()
-            if not frames:
-                skipped += 1
-                continue
             # The stored track is indexed against the untrimmed cut; the file
             # on disk may have been trimmed by t_off. Shift the keys so the
             # boxes line up with the frames just read.
             shift = int(round(t_off / frame_dt))
             shifted = {int(k) - shift: v for k, v in boxes.items()
                        if int(k) - shift >= 0}
-            outcome, conf = _judge_shot(row, frames, fps, step, shifted)
-            if outcome is None:
-                skipped += 1
-                continue
-            if outcome != row.get("outcome") or conf != row.get("outcome_conf"):
-                changed += 1
+            if metrics_only:
+                outcome, conf = row.get("outcome"), row.get("outcome_conf")
+            else:
+                if not frames:
+                    skipped += 1
+                    continue
+                outcome, conf = _judge_shot(row, frames, fps, step, shifted)
+                if outcome is None:
+                    skipped += 1
+                    continue
+                if outcome != row.get("outcome") or conf != row.get("outcome_conf"):
+                    changed += 1
             metrics = _shot_metrics(
                 float(row["shot_ts"]) - float(row["clip_start"]),
-                shifted, frame_dt,
-                frames[0].shape[1] if frames else 0, outcome)
+                shifted, frame_dt, frame_w, outcome)
+            if metrics_only and not metrics:
+                skipped += 1
+                continue
             sb.table("pipeline_clips").update(
-                {"outcome": outcome, "outcome_conf": conf, **metrics}
+                metrics if metrics_only
+                else {"outcome": outcome, "outcome_conf": conf, **metrics}
             ).eq("clip_id", row["clip_id"]).execute()
             done += 1
         except Exception as e:  # noqa: BLE001
