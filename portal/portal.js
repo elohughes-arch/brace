@@ -1013,8 +1013,12 @@ function labellingView() {
       metric('Verdict', k.outcome
         ? `${esc(k.outcome)}${k.outcome_conf != null ? ` · ${Math.round(k.outcome_conf * 100)}%` : ''}` : '—', vclass),
       metric('Clay detection', k.det_conf != null ? `${Math.round(k.det_conf * 100)}%` : '—'),
-      metric('Speed', k.speed_mph != null ? `~${fmt(k.speed_mph)} mph` : '—'),
-      metric('Distance', k.range_m != null ? `~${k.range_m} m` : '—'),
+      // Speed and distance come from the bang-to-break clock, which only a
+      // hit can stop — a miss flies on, so there is nothing to time yet.
+      metric('Speed', k.speed_mph != null ? `~${fmt(k.speed_mph)} mph`
+        : k.outcome === 'miss' ? '<span class="na">n/a on a miss</span>' : '—'),
+      metric('Distance', k.range_m != null ? `~${k.range_m} m`
+        : k.outcome === 'miss' ? '<span class="na">n/a on a miss</span>' : '—'),
     ].join('');
     return `
     <div class="row cliprow">

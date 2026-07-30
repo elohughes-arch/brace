@@ -166,6 +166,7 @@ main { max-width: 1160px; margin: 0 auto; padding: 40px 24px 80px; }
   color: var(--text-3); }
 .metric .v { color: var(--text-1); font-variant-numeric: tabular-nums;
   text-transform: capitalize; white-space: nowrap; }
+.metric .na { color: var(--text-3); font-size: 11px; text-transform: none; }
 
 /* ---------- Coverage matrix ---------- */
 .matrix { width: 100%; border-collapse: collapse; font-size: 13px;
