@@ -11,6 +11,7 @@ Usage:
 Env (.env): YOUTUBE_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY
 """
 
+import re
 import argparse
 import os
 
@@ -73,7 +74,8 @@ def search(api_key: str, query: str, max_results: int = 50) -> list[dict]:
         dur = iso8601_to_seconds(v["contentDetails"]["duration"])
         if not (MIN_DURATION_S <= dur <= MAX_DURATION_S):
             continue
-        if any(w in title.lower() for w in REJECT_TITLE_WORDS):
+        # word boundaries, not substrings — bare 'vs' matched Elvis and canvas
+        if any(re.search(rf"\b{re.escape(w)}\b", title.lower()) for w in REJECT_TITLE_WORDS):
             continue
         out.append({
             "video_id": v["id"],

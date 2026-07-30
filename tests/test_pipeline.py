@@ -86,6 +86,17 @@ class GroupPairs(unittest.TestCase):
         self.assertEqual(c["n_shots"], 1)
         self.assertEqual(c["shot_offsets"], [0.0])
 
+    def test_a_flush_is_capped_not_swallowed(self):
+        # A sim-game flush: a shot every two seconds, indefinitely. Without
+        # caps this chained into one multi-minute clip — a GPU bill whose
+        # fourth-and-later shots were never judged.
+        shots = [float(i * 2) for i in range(20)]
+        cs = clipper.group_bursts(shots)
+        self.assertTrue(all(c["n_shots"] <= clipper.MAX_BURST_SHOTS for c in cs))
+        self.assertTrue(all(c["shot_offsets"][-1] <= clipper.MAX_BURST_S for c in cs))
+        self.assertEqual(sum(c["n_shots"] for c in cs), 20,
+                         "every shot still lands in exactly one clip")
+
     def test_every_clip_has_positive_duration(self):
         for shots in ([0.0], [0.5, 0.6], [1.0, 4.9], [100.0, 104.0, 200.0]):
             for c in clipper.group_pairs(shots):

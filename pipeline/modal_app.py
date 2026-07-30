@@ -303,7 +303,8 @@ def triage(request: fastapi.Request):
             with tempfile.TemporaryDirectory() as td:
                 wav = Path(td) / "a.wav"
                 extract_audio(out, wav)
-                shots_heard = len(detect_shots(wav))
+                shot_times = detect_shots(wav)
+            shots_heard = len(shot_times)
             if shots_heard == 0:
                 sb.table("pipeline_videos").update({
                     "status": "rejected",
@@ -314,8 +315,14 @@ def triage(request: fastapi.Request):
                 dropped += 1
                 continue
 
+            # The ears aim the eyes: frames taken just after known bangs
+            # have clays airborne by construction, where the even spread
+            # could land on walking, talking and reloading — and fail a
+            # video full of shooting.
+            from triage import sample_frames_at
             with tempfile.TemporaryDirectory() as td:
-                frames = sample_frames(out, Path(td))
+                frames = (sample_frames_at(out, Path(td), shot_times)
+                          or sample_frames(out, Path(td)))
                 r = score_frames(frames)
             # A passing score without a clay in sight keeps nothing: the
             # judge is asked both questions, and the whole dataset is clays.
@@ -538,133 +545,141 @@ def screen(request: fastapi.Request):
 
     done = kept = 0
     for row in rows:
-        path = row["file_path"]
-        if not Path(path).exists():
-            sb.table("pipeline_clips").update(
-                {"label_status": "rejected"}).eq("clip_id", row["clip_id"]).execute()
-            continue
-        cap = cv2.VideoCapture(path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        # Detection rate. 30 makes the tracked flight boundaries tight to a
-        # frame; PRELABEL_FPS in the secret turns the dial (GPU time scales
-        # with it — a 10s clip is ~300 frames at 30).
-        detect_fps = float(os.environ.get("PRELABEL_FPS", 30))
-        step = max(1, int(round(fps / detect_fps)))
-        frames, idx = [], 0
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            if idx % step == 0:
-                frames.append(frame)
-            idx += 1
-        cap.release()
+      try:
+          path = row["file_path"]
+          if not Path(path).exists():
+              sb.table("pipeline_clips").update(
+                  {"label_status": "rejected"}).eq("clip_id", row["clip_id"]).execute()
+              continue
+          cap = cv2.VideoCapture(path)
+          fps = cap.get(cv2.CAP_PROP_FPS) or 30
+          # Detection rate. 30 makes the tracked flight boundaries tight to a
+          # frame; PRELABEL_FPS in the secret turns the dial (GPU time scales
+          # with it — a 10s clip is ~300 frames at 30).
+          detect_fps = float(os.environ.get("PRELABEL_FPS", 30))
+          step = max(1, int(round(fps / detect_fps)))
+          frames, idx = [], 0
+          while True:
+              ok, frame = cap.read()
+              if not ok:
+                  break
+              if idx % step == 0:
+                  frames.append(frame)
+              idx += 1
+          cap.release()
 
-        # 0.25 boxed birds, wad and smoke — barrel-cam clips with one clay in
-        # shot were claiming ten. Raised, and a dial (SCREEN_THRESHOLD in the
-        # secret) because the right number is found by looking at Roboflow,
-        # not by guessing here.
-        thresh = float(os.environ.get("SCREEN_THRESHOLD", 0.32))
-        boxes_per_frame = {}
-        for i, frame in enumerate(frames):
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            inputs = proc(images=rgb, text=DETECT_PROMPT,
-                          return_tensors="pt").to(device)
-            with torch.no_grad():
-                out = gdino(**inputs)
-            res = proc.post_process_grounded_object_detection(
-                out, inputs.input_ids, threshold=thresh,
-                target_sizes=[rgb.shape[:2]])[0]
-            if len(res["boxes"]):
-                boxes_per_frame[i] = [
-                    {"xyxy": b.tolist(), "conf": float(s)}
-                    for b, s in zip(res["boxes"].cpu(), res["scores"].cpu())
-                ]
+          # 0.25 boxed birds, wad and smoke — barrel-cam clips with one clay in
+          # shot were claiming ten. Raised, and a dial (SCREEN_THRESHOLD in the
+          # secret) because the right number is found by looking at Roboflow,
+          # not by guessing here.
+          thresh = float(os.environ.get("SCREEN_THRESHOLD", 0.32))
+          boxes_per_frame = {}
+          for i, frame in enumerate(frames):
+              rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+              inputs = proc(images=rgb, text=DETECT_PROMPT,
+                            return_tensors="pt").to(device)
+              with torch.no_grad():
+                  out = gdino(**inputs)
+              res = proc.post_process_grounded_object_detection(
+                  out, inputs.input_ids, threshold=thresh,
+                  target_sizes=[rgb.shape[:2]])[0]
+              if len(res["boxes"]):
+                  boxes_per_frame[i] = [
+                      {"xyxy": b.tolist(), "conf": float(s)}
+                      for b, s in zip(res["boxes"].cpu(), res["scores"].cpu())
+                  ]
 
-        # The clipper cuts by sound, which cannot know whether a clay is in
-        # view. This is the first stage that can see — a clip with no clay
-        # in any frame is rejected here rather than sent on as empty work.
-        if not boxes_per_frame:
-            sb.table("pipeline_clips").update(
-                {"label_status": "rejected"}).eq("clip_id", row["clip_id"]).execute()
-            done += 1
-            continue
+          # The clipper cuts by sound, which cannot know whether a clay is in
+          # view. This is the first stage that can see — a clip with no clay
+          # in any frame is rejected here rather than sent on as empty work.
+          if not boxes_per_frame:
+              sb.table("pipeline_clips").update(
+                  {"label_status": "rejected"}).eq("clip_id", row["clip_id"]).execute()
+              done += 1
+              continue
 
-        # Trim to the tracked flight. The audio found the shot; the
-        # detections across the clip are the track; the file shrinks to
-        # [first box seen, last box seen] — hit and gone, or flown from
-        # view. boxes_json keeps the whole trajectory.
-        import subprocess as sp
-        first_i, last_i = min(boxes_per_frame), max(boxes_per_frame)
-        clip_len = len(frames) * step / fps
-        # Generous padding, especially after: the track's end is not the
-        # story's end — fragments fall, the bird sails on — and a cut that
-        # feels two seconds premature reads as broken to the owner.
-        pad_pre = float(os.environ.get("TRIM_PRE", 0.5))
-        pad_post = float(os.environ.get("TRIM_POST", 2.0))
-        t0 = max(0.0, first_i * step / fps - pad_pre)
-        t1 = min(clip_len, last_i * step / fps + pad_post)
-        new_start = float(row["clip_start"]) + t0
-        new_end = float(row["clip_start"]) + t1
-        pv = row.get("preview_path") or f"previews/{row['clip_id']}.mp4"
-        po = row.get("poster_path") or f"previews/{row['clip_id']}.jpg"
-        trimmed_now = t0 > 0.6 or t1 < clip_len - 0.6
-        if trimmed_now:
-            trimmed = Path("/tmp") / f"trim_{row['clip_id']}.mp4"
-            sp.run(["ffmpeg", "-y", "-ss", f"{t0:.2f}", "-to", f"{t1:.2f}",
-                    "-i", path, "-c:v", "libx264", "-preset", "veryfast",
-                    "-crf", "23", "-c:a", "aac", str(trimmed)],
-                   check=True, capture_output=True)
-            Path(path).write_bytes(trimmed.read_bytes())
-            trimmed.unlink()
-            small = Path("/tmp") / f"pv_{row['clip_id']}.mp4"
-            sp.run(["ffmpeg", "-y", "-i", path, "-vf", "scale=-2:480",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
-                    "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart",
-                    str(small)], check=True, capture_output=True)
-            sb.storage.from_("clips").upload(pv, small.read_bytes(),
-                {"content-type": "video/mp4", "upsert": "true"})
-            small.unlink(missing_ok=True)
-            still = Path("/tmp") / f"po_{row['clip_id']}.jpg"
-            sp.run(["ffmpeg", "-y", "-ss", "0.5", "-i", path, "-frames:v", "1",
-                    "-vf", "scale=-2:480", "-q:v", "5", str(still)],
-                   check=True, capture_output=True)
-            sb.storage.from_("clips").upload(po, still.read_bytes(),
-                {"content-type": "image/jpeg", "upsert": "true"})
-            still.unlink(missing_ok=True)
+          # Trim to the tracked flight. The audio found the shot; the
+          # detections across the clip are the track; the file shrinks to
+          # [first box seen, last box seen] — hit and gone, or flown from
+          # view. boxes_json keeps the whole trajectory.
+          import subprocess as sp
+          first_i, last_i = min(boxes_per_frame), max(boxes_per_frame)
+          clip_len = len(frames) * step / fps
+          # Generous padding, especially after: the track's end is not the
+          # story's end — fragments fall, the bird sails on — and a cut that
+          # feels two seconds premature reads as broken to the owner.
+          pad_pre = float(os.environ.get("TRIM_PRE", 0.5))
+          pad_post = float(os.environ.get("TRIM_POST", 2.0))
+          t0 = max(0.0, first_i * step / fps - pad_pre)
+          t1 = min(clip_len, last_i * step / fps + pad_post)
+          new_start = float(row["clip_start"]) + t0
+          new_end = float(row["clip_start"]) + t1
+          pv = row.get("preview_path") or f"previews/{row['clip_id']}.mp4"
+          po = row.get("poster_path") or f"previews/{row['clip_id']}.jpg"
+          trimmed_now = t0 > 0.6 or t1 < clip_len - 0.6
+          if trimmed_now:
+              trimmed = Path("/tmp") / f"trim_{row['clip_id']}.mp4"
+              sp.run(["ffmpeg", "-y", "-ss", f"{t0:.2f}", "-to", f"{t1:.2f}",
+                      "-i", path, "-c:v", "libx264", "-preset", "veryfast",
+                      "-crf", "23", "-c:a", "aac", str(trimmed)],
+                     check=True, capture_output=True)
+              Path(path).write_bytes(trimmed.read_bytes())
+              trimmed.unlink()
+              small = Path("/tmp") / f"pv_{row['clip_id']}.mp4"
+              sp.run(["ffmpeg", "-y", "-i", path, "-vf", "scale=-2:480",
+                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+                      "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart",
+                      str(small)], check=True, capture_output=True)
+              sb.storage.from_("clips").upload(pv, small.read_bytes(),
+                  {"content-type": "video/mp4", "upsert": "true"})
+              small.unlink(missing_ok=True)
+              still = Path("/tmp") / f"po_{row['clip_id']}.jpg"
+              sp.run(["ffmpeg", "-y", "-ss", "0.5", "-i", path, "-frames:v", "1",
+                      "-vf", "scale=-2:480", "-q:v", "5", str(still)],
+                     check=True, capture_output=True)
+              sb.storage.from_("clips").upload(po, still.read_bytes(),
+                  {"content-type": "image/jpeg", "upsert": "true"})
+              still.unlink(missing_ok=True)
 
-        sb.table("pipeline_labels").upsert({
-            "clip_id": row["clip_id"],
-            "n_clays": max((len(v) for v in boxes_per_frame.values()), default=0),
-            "boxes_json": boxes_per_frame,
-            "frame_dt": step / fps,
-            "t_offset": t0 if trimmed_now else 0.0,
-        }).execute()
+          sb.table("pipeline_labels").upsert({
+              "clip_id": row["clip_id"],
+              "n_clays": max((len(v) for v in boxes_per_frame.values()), default=0),
+              "boxes_json": boxes_per_frame,
+              "frame_dt": step / fps,
+              "t_offset": t0 if trimmed_now else 0.0,
+          }).execute()
 
-        # The verdict: did the clay break? Four frames straddling the shot —
-        # a hit fragments and vanishes in a puff, a miss keeps flying. The
-        # boxes say where the clay is, and now they aim the judge's eye:
-        # each frame is cropped around the tracked clay before Sonnet sees it.
-        verdicts = _judge_burst(row, frames, fps, step, boxes_per_frame)
+          # The verdict: did the clay break? Four frames straddling the shot —
+          # a hit fragments and vanishes in a puff, a miss keeps flying. The
+          # boxes say where the clay is, and now they aim the judge's eye:
+          # each frame is cropped around the tracked clay before Sonnet sees it.
+          verdicts = _judge_burst(row, frames, fps, step, boxes_per_frame)
 
-        metrics = _shot_metrics(
-            float(row["shot_ts"]) - float(row["clip_start"]),
-            boxes_per_frame, step / fps,
-            frames[0].shape[1] if frames else 0, verdicts.get("outcome"))
+          metrics = _shot_metrics(
+              float(row["shot_ts"]) - float(row["clip_start"]),
+              boxes_per_frame, step / fps,
+              frames[0].shape[1] if frames else 0, verdicts.get("outcome"))
 
-        update = {"label_status": "pending",
-                  "clip_start": new_start, "clip_end": new_end,
-                  **verdicts, **metrics}
-        # Only claim a preview that was actually rendered. Stamping the path
-        # without the file behind it is how 143 clips once became unwatchable:
-        # the backfill saw a non-null path and skipped them forever.
-        if trimmed_now:
-            update["preview_path"] = pv
-            update["poster_path"] = po
-        sb.table("pipeline_clips").update(update).eq(
-            "clip_id", row["clip_id"]).execute()
-        done += 1
-        kept += 1
+          update = {"label_status": "pending",
+                    "clip_start": new_start, "clip_end": new_end,
+                    **verdicts, **metrics}
+          # Only claim a preview that was actually rendered. Stamping the path
+          # without the file behind it is how 143 clips once became unwatchable:
+          # the backfill saw a non-null path and skipped them forever.
+          if trimmed_now:
+              update["preview_path"] = pv
+              update["poster_path"] = po
+          sb.table("pipeline_clips").update(update).eq(
+              "clip_id", row["clip_id"]).execute()
+          done += 1
+          kept += 1
+      except Exception as e:  # noqa: BLE001
+        # One unreadable cut must never wedge the whole stage: park it in
+        # the discard pile — visible, auditable, send-back-able — and move
+        # on. Before this, a single corrupt file stopped screening for good.
+        print(f"[screen] {row.get('clip_id')} failed: {e}")
+        sb.table("pipeline_clips").update(
+            {"label_status": "rejected"}).eq("clip_id", row["clip_id"]).execute()
 
     volume.commit()   # the trims rewrote clip files on the volume
     return {"stage": "screen", "processed": done, "kept": kept}

@@ -25,6 +25,8 @@ from scipy.io import wavfile
 PRE_S = 5.0          # generous raw window: pre-label trims to the tracked flight
 POST_S = 6.0         # a missed clay flies on; the trim reclaims the slack
 PAIR_WINDOW_S = 4.0  # shots chained within this of each other = one burst, one clip
+MAX_BURST_SHOTS = 6  # a flush chains forever otherwise: cap the shots per clip
+MAX_BURST_S = 20.0   # and the span — a 3-minute 'burst' is a GPU bill, not a clip
 MIN_GAP_S = 0.25     # spikes closer than this are one shot (echo/report)
 FRAME_MS = 20        # energy analysis frame size
 K_MAD = 12.0         # spike threshold: median + K * MAD of frame energy
@@ -118,7 +120,10 @@ def group_bursts(shots: list[float]) -> list[dict]:
     i = 0
     while i < len(shots):
         burst = [shots[i]]
-        while i + 1 < len(shots) and shots[i + 1] - burst[-1] <= PAIR_WINDOW_S:
+        while (i + 1 < len(shots)
+               and shots[i + 1] - burst[-1] <= PAIR_WINDOW_S
+               and len(burst) < MAX_BURST_SHOTS
+               and shots[i + 1] - burst[0] <= MAX_BURST_S):
             i += 1
             burst.append(shots[i])
         first, last = burst[0], burst[-1]

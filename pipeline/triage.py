@@ -109,6 +109,32 @@ def sample_frames(video: Path, outdir: Path, n: int = N_FRAMES) -> list[Path]:
     return frames
 
 
+def sample_frames_at(video: Path, outdir: Path, times: list[float],
+                     n: int = N_FRAMES, after_s: float = 0.5) -> list[Path]:
+    """Frames taken just after known gunshots, spread across the video.
+
+    The audio gate has already found the bangs, and half a second after a
+    bang a clay is airborne by construction — the even spread can land on
+    walking, talking and reloading, and fail a video full of shooting.
+    """
+    outdir.mkdir(parents=True, exist_ok=True)
+    if not times:
+        return []
+    picks = times[:: max(1, len(times) // n)][:n]
+    frames: list[Path] = []
+    for i, ts in enumerate(picks):
+        fp = outdir / f"shotframe{i:02d}.jpg"
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-ss", f"{ts + after_s:.2f}", "-i", str(video),
+             "-frames:v", "1", "-vf", f"scale={FRAME_WIDTH}:-2",
+             "-q:v", str(JPEG_QUALITY), str(fp)],
+            capture_output=True,
+        )
+        if r.returncode == 0 and fp.exists() and fp.stat().st_size > 0:
+            frames.append(fp)
+    return frames
+
+
 def _parse_json(text: str) -> dict:
     """Pull the JSON object out of a reply, fence or stray prose notwithstanding."""
     m = re.search(r"\{.*\}", text, re.S)

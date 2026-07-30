@@ -100,7 +100,9 @@ function rowsFrom(items, sourceId) {
     const title = v.snippet?.title || '';
     const seconds = iso8601Seconds(v.contentDetails?.duration);
     if (seconds < MIN_DURATION_S || seconds > MAX_DURATION_S) continue;
-    if (REJECT_TITLE_WORDS.some((w) => title.toLowerCase().includes(w))) continue;
+    // Word boundaries, not substrings: bare includes('vs') rejected every
+    // Elvis and canvas in the catalogue.
+    if (REJECT_TITLE_WORDS.some((w) => new RegExp(`\\b${w}\\b`).test(title.toLowerCase()))) continue;
     out.push({
       video_id: v.id,
       source: 'youtube',
