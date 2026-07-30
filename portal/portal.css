@@ -431,6 +431,7 @@ label.row, .pickside { cursor: pointer; }
 .chip-on { color: var(--clay) !important; }
 .v-hit { color: var(--hit); font-weight: 600; }
 .v-miss { color: var(--champagne); font-weight: 600; }
+.v-chip { color: var(--clay); font-weight: 600; }
 .grouphead { font-size: 13px; font-weight: 600; color: var(--text-1);
   padding: 18px 0 4px; border-top: 1px solid var(--line-strong); margin-top: 8px; }
 .grouphead:first-child { border-top: none; margin-top: 0; padding-top: 4px; }

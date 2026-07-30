@@ -781,13 +781,17 @@ def _judge_burst(row, frames, fps, step, boxes_per_frame):
         if row.get("is_pair") and row.get("pair_gap_s") else [0.0])
     cols = {"outcome": None, "outcome_conf": None,
             "outcome_2": None, "outcome_2_conf": None,
-            "outcome_3": None, "outcome_3_conf": None}
+            "outcome_3": None, "outcome_3_conf": None,
+            "clay_colour": None}
     names = [("outcome", "outcome_conf"), ("outcome_2", "outcome_2_conf"),
              ("outcome_3", "outcome_3_conf")]
     for (oc, cc), off in zip(names, offsets[:3]):
-        o, c = _judge_shot(row, frames, fps, step, boxes_per_frame,
-                           extra_offset=float(off))
+        o, c, colour = _judge_shot(row, frames, fps, step, boxes_per_frame,
+                                   extra_offset=float(off))
         cols[oc], cols[cc] = o, c
+        # the first confident read of the disc's colour names the clip
+        if colour and colour != "unknown" and not cols["clay_colour"]:
+            cols["clay_colour"] = colour
     return cols
 
 
@@ -1023,7 +1027,7 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
                  for off in (-0.3, 0.08, 0.16, 0.25, 0.36, 0.55, 0.9, 1.4)]
         picks = sorted({i for i in picks if 0 <= i < len(frames)})
         if len(picks) < 2:
-            return None, None
+            return None, None, None
 
         def eye(i):
             """The frame at i, cropped to the clay the detector tracked."""
@@ -1056,7 +1060,7 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
             ok, jpg = cv2.imencode(".jpg", img,
                                    [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ok:
-                return None, None
+                return None, None, None
             when = "before" if i < shot_i else "after"
             blocks.append({"type": "text",
                            "text": f"Frame {n} ({when} the shot"
@@ -1073,11 +1077,14 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
                   "'zoomed to the tracked clay' are crops centred on the "
                   "detector's box for the clay, so the disc should be near "
                   "the middle. Hit: the clay breaks into fragments or a "
-                  "puff of dust and is gone from later frames. Miss: the "
-                  "same clay continues its flight intact. If the clay "
-                  "cannot be followed across the frames, say unclear. "
-                  "Reply with JSON "
-                  'only: {"outcome": "hit|miss|unclear", "confidence": <0-1>}')
+                  "puff of dust and is gone from later frames. Chipped: a "
+                  "visible piece breaks off but the clay continues flying. "
+                  "Miss: the same clay continues its flight intact. If the "
+                  "clay cannot be followed across the frames, say unclear. "
+                  "Also name the clay's colour from the frames. Reply with "
+                  'JSON only: {"outcome": "hit|chipped|miss|unclear", '
+                  '"clay_colour": "orange|black|blaze|white|unknown", '
+                  '"confidence": <0-1>}')
         # Its own dial, and a sharper default than triage's: the verdict is
         # fine-grained perception on a small volume, so the model is worth
         # choosing on measured accuracy. VERDICT_MODEL switches provider by
@@ -1094,9 +1101,12 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
                            if getattr(b, "type", "") == "text")
         data = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
         outcome = str(data.get("outcome", "unclear"))
-        if outcome not in ("hit", "miss", "unclear"):
+        if outcome not in ("hit", "chipped", "miss", "unclear"):
             outcome = "unclear"
-        return outcome, max(0.0, min(1.0, float(data.get("confidence", 0))))
+        colour = str(data.get("clay_colour", "unknown"))
+        if colour not in ("orange", "black", "blaze", "white", "unknown"):
+            colour = "unknown"
+        return outcome, max(0.0, min(1.0, float(data.get("confidence", 0)))), colour
     except Exception as e:  # noqa: BLE001 — a verdict is never worth a crash
         print(f"[prelabel] verdict failed for {row.get('clip_id')}: {e}")
-        return None, None
+        return None, None, None

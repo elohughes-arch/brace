@@ -509,7 +509,7 @@ async function titleClips(rows) {
 async function loadAiClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,det_conf,range_m,speed_mph,created_at')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,clay_colour,det_conf,range_m,speed_mph,created_at')
     .in('label_status', ['queued', 'prelabelled'])
     .order('created_at', { ascending: false })
     .range(aiPage * PAGE, aiPage * PAGE + PAGE - 1);
@@ -610,6 +610,62 @@ async function loadProgress() {
   } catch { return []; }
 }
 
+// The shot inventory: every observed category, as specific as the data can
+// say — clay colour × weather × outcome, counted at the shot level. The
+// categories aren't hand-defined; they emerge as the machine banks shots,
+// so "black clay chipped in overcast" appears the moment one exists.
+async function loadCategories() {
+  try {
+    const { data, error } = await supabase.rpc('shot_categories');
+    return error ? [] : (data || []);
+  } catch { return []; }
+}
+
+const OUTCOME_COLS = ['hit', 'chipped', 'miss', 'unclear'];
+
+function inventoryPanel() {
+  const cats = state.cats || [];
+  if (!cats.length) {
+    return `
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Shot inventory — colour × conditions × outcome</span></div>
+      <div class="empty">Empty until the machine banks judged shots — colour is read
+        by the verdict model, so the inventory fills as screening runs.</div>
+    </section>`;
+  }
+  // rows: colour × weather; columns: what happened to the clay
+  const by = new Map();
+  cats.forEach((r) => {
+    const key = `${r.colour}|${r.weather}`;
+    const row = by.get(key) || { colour: r.colour, weather: r.weather, hit: 0, chipped: 0, miss: 0, unclear: 0, total: 0 };
+    if (OUTCOME_COLS.includes(r.outcome)) row[r.outcome] += Number(r.shots);
+    row.total += Number(r.shots);
+    by.set(key, row);
+  });
+  const rows = [...by.values()].sort((a, b) => b.total - a.total);
+  return `
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Shot inventory — colour × conditions × outcome, shots counted</span></div>
+      <table class="matrix">
+        <thead><tr><th>Clay</th><th>Conditions</th>
+          <th>Hit</th><th>Chipped</th><th>Miss</th><th>Unclear</th><th>Total</th></tr></thead>
+        <tbody>
+          ${rows.map((r) => `
+          <tr><td>${esc(r.colour)}</td><td>${esc(r.weather)}</td>
+            <td>${fmt(r.hit)}</td><td>${fmt(r.chipped)}</td>
+            <td>${fmt(r.miss)}</td><td class="dim">${fmt(r.unclear)}</td>
+            <td><b>${fmt(r.total)}</b></td></tr>`).join('')}
+        </tbody>
+      </table>
+      <p class="foot-note">As specific as the data can currently say: the clay's
+         colour is read by the verdict model from the zoomed crops, conditions come
+         from triage's weather call on the video, and each row splits by what
+         happened to the clay — pulverised, chipped, missed, or unresolved. Every
+         shot the machine judges lands in exactly one cell, live. A thin cell is a
+         category to go and source.</p>
+    </section>`;
+}
+
 function strategyView() {
   const by = new Map((state.progress || []).map((r) => [Number(r.level), r]));
   const totShots = (state.progress || []).reduce((a, r) => a + Number(r.shots || 0), 0);
@@ -651,7 +707,8 @@ function strategyView() {
        discovery: it searches phrases written for that level and stamps every
        candidate with the level it was sourced for, so these counts and the
        Mastersheet stay honest. Videos found by ordinary source discovery carry no
-       level until you set one on the Mastersheet.</p>`;
+       level until you set one on the Mastersheet.</p>
+    ${inventoryPanel()}`;
 }
 
 /* ---------- running a stage ---------- */
@@ -701,7 +758,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], loading: true };
 let sheetFilter = 'all';
 let clipPage = 0;   // 40 clips a page, grouped by video
 let aiPage = 0;
@@ -1119,7 +1176,7 @@ function labellingView() {
     <div class="metric"><span class="k">${label}</span>
       <span class="v ${cls}">${value}</span></div>`;
   const row = (k) => {
-    const vc = (o) => (o === 'hit' ? 'v-hit' : o === 'miss' ? 'v-miss' : '');
+    const vc = (o) => (o === 'hit' ? 'v-hit' : o === 'miss' ? 'v-miss' : o === 'chipped' ? 'v-chip' : '');
     const show = (o, c) => `${esc(o)}${c != null ? ` · ${Math.round(c * 100)}%` : ''}`;
     const panel = [
       // A burst is several shots, so it wears a verdict per clay.
@@ -1127,6 +1184,7 @@ function labellingView() {
         k.outcome ? show(k.outcome, k.outcome_conf) : '—', vc(k.outcome)),
       k.outcome_2 ? metric('Second clay', show(k.outcome_2, k.outcome_2_conf), vc(k.outcome_2)) : '',
       k.outcome_3 ? metric('Third clay', show(k.outcome_3, k.outcome_3_conf), vc(k.outcome_3)) : '',
+      k.clay_colour && k.clay_colour !== 'unknown' ? metric('Clay', esc(k.clay_colour)) : '',
       metric('Clay detection', k.det_conf != null ? `${Math.round(k.det_conf * 100)}%` : '—'),
       // Speed and distance come from the bang-to-break clock, which only a
       // hit can stop — a miss flies on, so there is nothing to time. A hit
@@ -1442,6 +1500,7 @@ function signature() {
       + (k.speed_mph ?? '') + (k.range_m ?? '')),
     state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '') + (v.ds_level ?? '')),
     state.progress,
+    state.cats,
     state.coverage,
   ]);
 }
@@ -1603,7 +1662,7 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, ai, sheet, progress] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, ai, sheet, progress, cats] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
@@ -1616,6 +1675,7 @@ async function refresh() {
       view === 'labelling' ? loadAiClips() : Promise.resolve(state.ai),
       view === 'mastersheet' ? loadSheet() : Promise.resolve(state.sheet),
       view === 'strategy' ? loadProgress() : Promise.resolve(state.progress),
+      view === 'strategy' ? loadCategories() : Promise.resolve(state.cats),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -1629,6 +1689,7 @@ async function refresh() {
     state.ai = ai;
     state.sheet = sheet;
     state.progress = progress;
+    state.cats = cats;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -1649,7 +1710,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
