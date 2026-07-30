@@ -729,6 +729,38 @@ def prelabel(request: fastapi.Request):
             "frames_uploaded": uploaded, "errors": failed}
 
 
+def _ask_gemini(model, system, blocks):
+    """The same verdict conversation, spoken to Google's API.
+
+    Translates the Anthropic-shaped blocks (text + base64 images) into
+    Gemini's parts. Needs GEMINI_API_KEY in the brace-pipeline secret.
+    """
+    import os
+    import requests
+
+    parts = []
+    for b in blocks:
+        if b["type"] == "text":
+            parts.append({"text": b["text"]})
+        else:
+            parts.append({"inline_data": {
+                "mime_type": b["source"]["media_type"],
+                "data": b["source"]["data"]}})
+    r = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"],
+                 "content-type": "application/json"},
+        json={"system_instruction": {"parts": [{"text": system}]},
+              "contents": [{"role": "user", "parts": parts}],
+              "generationConfig": {"maxOutputTokens": 300}},
+        timeout=120)
+    r.raise_for_status()
+    data = r.json()
+    return "".join(p.get("text", "")
+                   for c in data.get("candidates", [])[:1]
+                   for p in c.get("content", {}).get("parts", []))
+
+
 def _shot_metrics(into_clip, boxes_per_frame, frame_dt, frame_w, outcome):
     """The instrument panel: what the track and the clock can tell a shooter.
 
@@ -808,6 +840,11 @@ def rejudge(request: fastapi.Request):
 
     volume.reload()
     limit = min(int(request.query_params.get("limit", 60)), 200)
+    # ?model= judges this run with a specific model — the A/B lever. A
+    # gemini-* name needs GEMINI_API_KEY in the secret alongside the rest.
+    override = request.query_params.get("model")
+    if override:
+        os.environ["VERDICT_MODEL"] = override
     sb = _sb()
     rows = (sb.table("pipeline_clips").select("*")
             .in_("label_status", ["pending", "queued", "prelabelled"])
@@ -940,28 +977,33 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None):
                 "type": "base64", "media_type": "image/jpeg",
                 "data": base64.standard_b64encode(jpg.tobytes()).decode()}})
         blocks.append({"type": "text", "text": "Verdict. JSON only."})
+        system = ("A clay pigeon is shot at between the 'before' and 'after' "
+                  "frames. The after-frames cluster tightly on the moment "
+                  "of impact: pellets arrive within a quarter second of the "
+                  "shot and a break lasts a tenth more, so study the early "
+                  "after-frames for the exact instant. Frames marked "
+                  "'zoomed to the tracked clay' are crops centred on the "
+                  "detector's box for the clay, so the disc should be near "
+                  "the middle. Hit: the clay breaks into fragments or a "
+                  "puff of dust and is gone from later frames. Miss: the "
+                  "same clay continues its flight intact. If the clay "
+                  "cannot be followed across the frames, say unclear. "
+                  "Reply with JSON "
+                  'only: {"outcome": "hit|miss|unclear", "confidence": <0-1>}')
         # Its own dial, and a sharper default than triage's: the verdict is
-        # fine-grained perception on a small volume, so the upgrade costs
-        # half a cent a clip and buys real accuracy. VERDICT_MODEL overrides.
-        msg = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"]).messages.create(
-            model=os.environ.get("VERDICT_MODEL", "claude-sonnet-5"),
-            max_tokens=200,
-            system=("A clay pigeon is shot at between the 'before' and 'after' "
-                    "frames. The after-frames cluster tightly on the moment "
-                    "of impact: pellets arrive within a quarter second of the "
-                    "shot and a break lasts a tenth more, so study the early "
-                    "after-frames for the exact instant. Frames marked "
-                    "'zoomed to the tracked clay' are crops centred on the "
-                    "detector's box for the clay, so the disc should be near "
-                    "the middle. Hit: the clay breaks into fragments or a "
-                    "puff of dust and is gone from later frames. Miss: the "
-                    "same clay continues its flight intact. If the clay "
-                    "cannot be followed across the frames, say unclear. "
-                    "Reply with JSON "
-                    'only: {"outcome": "hit|miss|unclear", "confidence": <0-1>}'),
-            messages=[{"role": "user", "content": blocks}])
-        text = "".join(b.text for b in msg.content
-                       if getattr(b, "type", "") == "text")
+        # fine-grained perception on a small volume, so the model is worth
+        # choosing on measured accuracy. VERDICT_MODEL switches provider by
+        # name — a gemini-* value calls Google, anything else Anthropic —
+        # so the A/B is a secrets change, never a code change.
+        model = os.environ.get("VERDICT_MODEL", "claude-sonnet-5")
+        if model.startswith("gemini"):
+            text = _ask_gemini(model, system, blocks)
+        else:
+            msg = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"]).messages.create(
+                model=model, max_tokens=200, system=system,
+                messages=[{"role": "user", "content": blocks}])
+            text = "".join(b.text for b in msg.content
+                           if getattr(b, "type", "") == "text")
         data = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
         outcome = str(data.get("outcome", "unclear"))
         if outcome not in ("hit", "miss", "unclear"):
