@@ -509,7 +509,7 @@ async function titleClips(rows) {
 async function loadAiClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,created_at')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,det_conf,range_m,speed_mph,created_at')
     .in('label_status', ['queued', 'prelabelled'])
     .order('created_at', { ascending: false })
     .range(aiPage * PAGE, aiPage * PAGE + PAGE - 1);
@@ -1000,20 +1000,38 @@ function labellingView() {
   const total = (c.queued ?? 0) + (c.prelabelled ?? 0);
   const pages = Math.max(1, Math.ceil(total / PAGE));
 
-  const row = (k) => `
+  // Clip on the left, the shooter's instrument panel on the right: the
+  // verdict with its confidence, how sure the detector was of the clay it
+  // tracked, and — for hits, where the bang-to-break clock can tick — the
+  // estimated crossing speed and distance at impact.
+  const metric = (label, value, cls = '') => `
+    <div class="metric"><span class="k">${label}</span>
+      <span class="v ${cls}">${value}</span></div>`;
+  const row = (k) => {
+    const vclass = k.outcome === 'hit' ? 'v-hit' : k.outcome === 'miss' ? 'v-miss' : '';
+    const panel = [
+      metric('Verdict', k.outcome
+        ? `${esc(k.outcome)}${k.outcome_conf != null ? ` · ${Math.round(k.outcome_conf * 100)}%` : ''}` : '—', vclass),
+      metric('Clay detection', k.det_conf != null ? `${Math.round(k.det_conf * 100)}%` : '—'),
+      metric('Speed', k.speed_mph != null ? `~${fmt(k.speed_mph)} mph` : '—'),
+      metric('Distance', k.range_m != null ? `~${k.range_m} m` : '—'),
+    ].join('');
+    return `
     <div class="row cliprow">
       <span class="dot ${k.label_status === 'prelabelled' ? 'on' : ''}" style="margin-top:8px"></span>
-      <div class="main">
-        ${k.preview_url
+      <div class="aiwrap">
+        <div class="aileft">
+          ${k.preview_url
     ? `<video class="clipvid" controls preload="none" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>` : ''}
-        <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ''}</div>
-        <div class="s">${k.label_status === 'queued'
+          <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ''}</div>
+          <div class="s">${k.label_status === 'queued'
     ? 'queued — the AI boxes it within the hour'
-    : `pre-labelled${k.n_clays != null ? ` · ${fmt(k.n_clays)} clay${k.n_clays === 1 ? '' : 's'} boxed` : ''}${k.outcome
-      ? ` · <b class="${k.outcome === 'hit' ? 'v-hit' : k.outcome === 'miss' ? 'v-miss' : ''}">${esc(k.outcome)}</b>${k.outcome_conf != null ? ` ${Math.round(k.outcome_conf * 100)}%` : ''}`
-      : ''} · frames in Roboflow`}</div>
+    : `pre-labelled${k.n_clays != null ? ` · ${fmt(k.n_clays)} clay${k.n_clays === 1 ? '' : 's'} boxed` : ''} · frames in Roboflow`}</div>
+        </div>
+        <div class="aimetrics">${panel}</div>
       </div>
     </div>`;
+  };
 
   return `
     <div class="crm-head">
@@ -1290,7 +1308,8 @@ function signature() {
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
     clipPage, aiPage, sheetFilter,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
-    state.ai.map((k) => k.clip_id + k.label_status + (k.preview_url ? 'v' : '')),
+    state.ai.map((k) => k.clip_id + k.label_status + (k.preview_url ? 'v' : '')
+      + (k.outcome || '') + (k.speed_mph ?? '') + (k.range_m ?? '')),
     state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '')),
     state.coverage,
   ]);

@@ -602,11 +602,16 @@ def screen(request: fastapi.Request):
         # each frame is cropped around the tracked clay before Sonnet sees it.
         outcome, conf = _judge_shot(row, frames, fps, step, boxes_per_frame)
 
+        metrics = _shot_metrics(
+            float(row["shot_ts"]) - float(row["clip_start"]),
+            boxes_per_frame, step / fps,
+            frames[0].shape[1] if frames else 0, outcome)
+
         sb.table("pipeline_clips").update(
             {"label_status": "pending",
              "clip_start": new_start, "clip_end": new_end,
              "preview_path": pv, "poster_path": po,
-             "outcome": outcome, "outcome_conf": conf}
+             "outcome": outcome, "outcome_conf": conf, **metrics}
         ).eq("clip_id", row["clip_id"]).execute()
         done += 1
         kept += 1
@@ -724,6 +729,61 @@ def prelabel(request: fastapi.Request):
             "frames_uploaded": uploaded, "errors": failed}
 
 
+def _shot_metrics(into_clip, boxes_per_frame, frame_dt, frame_w, outcome):
+    """The instrument panel: what the track and the clock can tell a shooter.
+
+    det_conf is the mean confidence of the best box per frame — how sure the
+    detector was of the clay it followed. Range and speed exist only for
+    hits: the audio bang is time zero, the track's end is the break, and the
+    gap is the pellets' flight time, converted through a ballistics table
+    (24g No 7.5 leaving at ~400 m/s and slowing hard). Crossing speed is the
+    clay's angular speed just before the break times the range — the camera
+    only sees the crossing component, which suits crossers and loopers, and
+    the field of view is a nominal dial (CAMERA_HFOV_DEG) until footage
+    comes from known hardware. Estimates, and shown as such.
+    """
+    import math
+    import os
+
+    if not boxes_per_frame:
+        return {}
+    best = {i: max(bs, key=lambda b: b["conf"])
+            for i, bs in boxes_per_frame.items() if bs}
+    if not best:
+        return {}
+    out = {"det_conf": round(sum(b["conf"] for b in best.values()) / len(best), 3)}
+    if outcome != "hit":
+        return out
+
+    # Bang to break: the track ends when the clay stops being a clay.
+    tof = max(best) * frame_dt - into_clip
+    if not (0.03 <= tof <= 0.35):
+        return out          # implausible clock — no estimate beats a wrong one
+    table = [(0.00, 0.0), (0.06, 18.3), (0.10, 27.4),
+             (0.145, 36.6), (0.19, 45.7), (0.30, 64.0)]
+    rng = table[-1][1]
+    for (t0, d0), (t1, d1) in zip(table, table[1:]):
+        if tof <= t1:
+            rng = d0 + (d1 - d0) * (tof - t0) / (t1 - t0)
+            break
+    out["range_m"] = round(rng, 1)
+
+    # Crossing speed over the last few tracked frames before the break.
+    idxs = sorted(best)[-6:]
+    if len(idxs) >= 2 and frame_w:
+        (ax1, ay1, ax2, ay2) = best[idxs[0]]["xyxy"]
+        (bx1, by1, bx2, by2) = best[idxs[-1]]["xyxy"]
+        px = math.hypot((bx1 + bx2 - ax1 - ax2) / 2.0,
+                        (by1 + by2 - ay1 - ay2) / 2.0)
+        secs = (idxs[-1] - idxs[0]) * frame_dt
+        if secs > 0:
+            hfov = math.radians(float(os.environ.get("CAMERA_HFOV_DEG", 70)))
+            mph = (px / secs) * (hfov / frame_w) * rng * 2.23694
+            if 5 <= mph <= 130:   # outside this is track noise, not a clay
+                out["speed_mph"] = round(mph)
+    return out
+
+
 # ---------------------------------------------------------------- rejudge
 
 # Second opinions with better eyes. Clips screened before the verdict
@@ -792,8 +852,12 @@ def rejudge(request: fastapi.Request):
                 continue
             if outcome != row.get("outcome") or conf != row.get("outcome_conf"):
                 changed += 1
+            metrics = _shot_metrics(
+                float(row["shot_ts"]) - float(row["clip_start"]),
+                shifted, frame_dt,
+                frames[0].shape[1] if frames else 0, outcome)
             sb.table("pipeline_clips").update(
-                {"outcome": outcome, "outcome_conf": conf}
+                {"outcome": outcome, "outcome_conf": conf, **metrics}
             ).eq("clip_id", row["clip_id"]).execute()
             done += 1
         except Exception as e:  # noqa: BLE001
