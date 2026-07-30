@@ -719,6 +719,111 @@ function strategyView() {
     ${inventoryPanel()}`;
 }
 
+/* ---------- export ---------- */
+
+// The bulk handover. Everything screening has passed goes to Roboflow in
+// one press, dealt by the split judge — whole channels to one set, so the
+// export can never leak between train, valid and test.
+async function loadExport() {
+  const count = (statuses, split) => supabase.from('pipeline_clips')
+    .select('clip_id', { count: 'exact', head: true })
+    .in('label_status', statuses).eq('rf_split', split);
+  const splits = ['train', 'valid', 'test'];
+  const res = await Promise.all([
+    ...splits.map((s) => count(['pending'], s)),
+    ...splits.map((s) => count(['queued', 'prelabelled'], s)),
+  ]);
+  const out = {};
+  splits.forEach((s, i) => {
+    out[s] = {
+      ready: res[i].error ? 0 : (res[i].count ?? 0),
+      sent: res[i + 3].error ? 0 : (res[i + 3].count ?? 0),
+    };
+  });
+  return out;
+}
+
+function exportView() {
+  if (state.loading) return '<div class="empty">Counting the deal…</div>';
+  const e = state.exp || {};
+  const ready = ['train', 'valid', 'test'].reduce((a, s) => a + (e[s]?.ready || 0), 0);
+  const box = (s, label, sub) => `
+    <div class="stat"><span class="clay ${e[s]?.ready ? 'on' : 'off'}"></span>
+      <div class="num">${fmt(e[s]?.ready || 0)}</div>
+      <div class="cap">${label}</div>
+      <div class="sub">${sub} · ${fmt(e[s]?.sent || 0)} already with Roboflow</div></div>`;
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Export</h1>
+        <p>The bulk handover to Roboflow. Every clip screening has passed goes over
+           in one press, dealt by the split judge — whole channels to one set,
+           so the export cannot leak between train, valid and test.</p>
+      </div>
+    </div>
+
+    <div class="stats">
+      ${box('train', 'Train', 'the model learns from these')}
+      ${box('valid', 'Valid', 'steers training runs — human-checked')}
+      ${box('test', 'Test', 'the golden ruler — never trained on')}
+    </div>
+
+    <section class="panel">
+      <div class="p-head"><span class="p-title">One press, the whole queue</span></div>
+      <div class="runs">
+        <div class="run">
+          <button class="btn" id="exportall" ${ready && !running ? '' : 'disabled'}>
+            ${running === 'prelabel' ? 'Exporting…' : `Export ${fmt(ready)} to Roboflow`}</button>
+          <p>Queues every pending clip and fires the labeller immediately — 50 clips a
+             run, the hourly heartbeat sweeps the rest. Frames land in Roboflow already
+             boxed, split-assigned, and batched for review: golden test frames under
+             <b>golden-holdout</b>, valid under <b>valid-check</b>, train under
+             <b>auto-accepted</b> or <b>needs-review</b> by confidence.</p>
+        </div>
+        <div class="run">
+          <button class="btn btn-ghost" id="exportcsv">Download manifest (CSV)</button>
+          <p>Your own copy of the ledger: every clip with its video, channel, split,
+             ladder level, criteria, verdicts and status. The record of what went
+             where, independent of any platform.</p>
+        </div>
+      </div>
+      <p class="foot-note">The deal is deterministic — a channel always lands in the
+         same set, this press and every press after it. Test and valid demand
+         human-verified boxes in Roboflow before they count; that verification is the
+         golden work only an owner can do.</p>
+    </section>`;
+}
+
+async function exportCsv() {
+  const [{ data: clips }, { data: vids }] = await Promise.all([
+    supabase.from('pipeline_clips')
+      .select('clip_id,video_id,shot_ts,rf_split,label_status,n_shots,outcome,outcome_2,outcome_3,clay_colour,det_conf,range_m,speed_mph,holdout,slo_mo')
+      .in('label_status', ['pending', 'queued', 'prelabelled']).limit(5000),
+    supabase.from('pipeline_videos')
+      .select('video_id,title,channel,weather,ds_level,criteria').limit(5000),
+  ]);
+  const byVid = new Map((vids || []).map((v) => [v.video_id, v]));
+  const cols = ['clip_id', 'video_id', 'title', 'channel', 'split', 'level', 'criteria',
+    'weather', 'status', 'shots', 'outcome_1', 'outcome_2', 'outcome_3',
+    'clay_colour', 'det_conf', 'range_m', 'speed_mph', 'golden', 'slo_mo'];
+  const q = (x) => `"${String(x ?? '').replace(/"/g, '""')}"`;
+  const lines = [cols.join(',')];
+  (clips || []).forEach((k) => {
+    const v = byVid.get(k.video_id) || {};
+    lines.push([k.clip_id, k.video_id, v.title, v.channel, k.rf_split, v.ds_level,
+      v.criteria, v.weather, k.label_status, k.n_shots ?? 1, k.outcome, k.outcome_2,
+      k.outcome_3, k.clay_colour, k.det_conf, k.range_m, k.speed_mph,
+      k.holdout ? 'yes' : '', k.slo_mo ? 'yes' : ''].map(q).join(','));
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `brace-dataset-manifest-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  note(`manifest downloaded — ${lines.length - 1} clips`, 'good');
+}
+
 /* ---------- running a stage ---------- */
 
 let running = null;
@@ -764,9 +869,9 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy'].find((v) => location.hash === `#${v}`) || 'control';
+const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -800,6 +905,7 @@ function shell(body) {
           ${item('labelling', 'Labelling', state.counts?.queued)}
           ${item('mastersheet', 'Mastersheet')}
           ${item('strategy', 'Dataset strategy')}
+          ${item('export', 'Export')}
         </nav>
         <div class="side-foot">
           ${state.spend && state.spend.scored
@@ -1540,6 +1646,7 @@ function signature() {
     state.progress,
     state.cats,
     state.split,
+    state.exp,
     state.coverage,
   ]);
 }
@@ -1575,6 +1682,7 @@ function paint(force = false) {
     : view === 'labelling' ? labellingView()
     : view === 'mastersheet' ? mastersheetView()
     : view === 'strategy' ? strategyView()
+    : view === 'export' ? exportView()
     : controlView());
 
   document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
@@ -1602,6 +1710,15 @@ function paint(force = false) {
   // written for that ladder rung and stamp what's found with its level.
   document.querySelectorAll('[data-dsfind]').forEach((b) =>
     b.addEventListener('click', () => runStage('discover', { level: b.dataset.dsfind })));
+  // The bulk handover and the ledger download, from the Export page.
+  document.getElementById('exportall')?.addEventListener('click', async () => {
+    const { data, error } = await supabase.from('pipeline_clips')
+      .select('clip_id').eq('label_status', 'pending').limit(2000);
+    if (error) { note(`could not read the queue — ${error.message}`, 'bad'); return; }
+    await queueClips((data || []).map((r) => r.clip_id));
+  });
+  document.getElementById('exportcsv')?.addEventListener('click', () =>
+    exportCsv().catch((e) => note(`manifest failed — ${e.message || e}`, 'bad')));
   // The rejected-video audit: watch triage's discards in place, and
   // overrule a wrong call by sending the video back for a fresh score.
   document.querySelectorAll('[data-watch]').forEach((b) =>
@@ -1718,7 +1835,7 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, sheet, progress, cats] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, sheet, progress, cats, exp] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
@@ -1733,6 +1850,7 @@ async function refresh() {
       view === 'mastersheet' ? loadSheet() : Promise.resolve(state.sheet),
       view === 'strategy' ? loadProgress() : Promise.resolve(state.progress),
       view === 'strategy' ? loadCategories() : Promise.resolve(state.cats),
+      view === 'export' ? loadExport() : Promise.resolve(state.exp),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -1748,6 +1866,7 @@ async function refresh() {
     state.sheet = sheet;
     state.progress = progress;
     state.cats = cats;
+    state.exp = exp;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -1768,7 +1887,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
