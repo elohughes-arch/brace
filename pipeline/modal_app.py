@@ -487,8 +487,11 @@ def screen(request: fastapi.Request):
 
     DETECT_PROMPT = "flying clay pigeon. small orange disc. small black disc in sky."
     sb = _sb()
+    # ?limit= for manual pushes through a big backlog; the heartbeat's
+    # default of 10 stays comfortably inside the GPU timeout.
+    limit = min(int(request.query_params.get("limit", 10)), 20)
     rows = (sb.table("pipeline_clips").select("*")
-            .eq("label_status", "raw").limit(10).execute().data)
+            .eq("label_status", "raw").limit(limit).execute().data)
     if not rows:
         return {"stage": "screen", "processed": 0}
 
@@ -558,13 +561,19 @@ def screen(request: fastapi.Request):
         import subprocess as sp
         first_i, last_i = min(boxes_per_frame), max(boxes_per_frame)
         clip_len = len(frames) * step / fps
-        t0 = max(0.0, first_i * step / fps - 0.3)
-        t1 = min(clip_len, last_i * step / fps + 0.5)
+        # Generous padding, especially after: the track's end is not the
+        # story's end — fragments fall, the bird sails on — and a cut that
+        # feels two seconds premature reads as broken to the owner.
+        pad_pre = float(os.environ.get("TRIM_PRE", 0.5))
+        pad_post = float(os.environ.get("TRIM_POST", 2.0))
+        t0 = max(0.0, first_i * step / fps - pad_pre)
+        t1 = min(clip_len, last_i * step / fps + pad_post)
         new_start = float(row["clip_start"]) + t0
         new_end = float(row["clip_start"]) + t1
         pv = row.get("preview_path") or f"previews/{row['clip_id']}.mp4"
         po = row.get("poster_path") or f"previews/{row['clip_id']}.jpg"
-        if t0 > 0.6 or t1 < clip_len - 0.6:
+        trimmed_now = t0 > 0.6 or t1 < clip_len - 0.6
+        if trimmed_now:
             trimmed = Path("/tmp") / f"trim_{row['clip_id']}.mp4"
             sp.run(["ffmpeg", "-y", "-ss", f"{t0:.2f}", "-to", f"{t1:.2f}",
                     "-i", path, "-c:v", "libx264", "-preset", "veryfast",
@@ -593,7 +602,7 @@ def screen(request: fastapi.Request):
             "n_clays": max((len(v) for v in boxes_per_frame.values()), default=0),
             "boxes_json": boxes_per_frame,
             "frame_dt": step / fps,
-            "t_offset": t0 if (t0 > 0.6 or t1 < clip_len - 0.6) else 0.0,
+            "t_offset": t0 if trimmed_now else 0.0,
         }).execute()
 
         # The verdict: did the clay break? Four frames straddling the shot —
@@ -613,13 +622,18 @@ def screen(request: fastapi.Request):
             boxes_per_frame, step / fps,
             frames[0].shape[1] if frames else 0, outcome)
 
-        sb.table("pipeline_clips").update(
-            {"label_status": "pending",
-             "clip_start": new_start, "clip_end": new_end,
-             "preview_path": pv, "poster_path": po,
-             "outcome": outcome, "outcome_conf": conf,
-             "outcome_2": outcome2, "outcome_2_conf": conf2, **metrics}
-        ).eq("clip_id", row["clip_id"]).execute()
+        update = {"label_status": "pending",
+                  "clip_start": new_start, "clip_end": new_end,
+                  "outcome": outcome, "outcome_conf": conf,
+                  "outcome_2": outcome2, "outcome_2_conf": conf2, **metrics}
+        # Only claim a preview that was actually rendered. Stamping the path
+        # without the file behind it is how 143 clips once became unwatchable:
+        # the backfill saw a non-null path and skipped them forever.
+        if trimmed_now:
+            update["preview_path"] = pv
+            update["poster_path"] = po
+        sb.table("pipeline_clips").update(update).eq(
+            "clip_id", row["clip_id"]).execute()
         done += 1
         kept += 1
 
