@@ -786,13 +786,20 @@ def _shot_metrics(into_clip, boxes_per_frame, frame_dt, frame_w, outcome):
 
     if not boxes_per_frame:
         return {}
-    best = {i: max(bs, key=lambda b: b["conf"])
-            for i, bs in boxes_per_frame.items() if bs}
-    if not best:
+    all_best = {i: max(bs, key=lambda b: b["conf"])
+                for i, bs in boxes_per_frame.items() if bs}
+    if not all_best:
         return {}
-    out = {"det_conf": round(sum(b["conf"] for b in best.values()) / len(best), 3)}
+    out = {"det_conf": round(sum(b["conf"] for b in all_best.values()) / len(all_best), 3)}
     if outcome != "hit":
         return out
+
+    # Tracks stored by the early 0.25-threshold screenings are salted with
+    # phantom boxes — birds, wad, smoke — which keep a track alive long
+    # after the real clay died, so 'the break is where the track ends'
+    # needs the noise filtered out of the clock first.
+    floor = float(os.environ.get("METRICS_CONF", 0.35))
+    best = {i: b for i, b in all_best.items() if b["conf"] >= floor} or all_best
 
     # Bang to break: the track ends when the clay stops being a clay.
     tof = max(best) * frame_dt - into_clip

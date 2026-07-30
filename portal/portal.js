@@ -1017,11 +1017,15 @@ function labellingView() {
       k.outcome_2 ? metric('Second clay', show(k.outcome_2, k.outcome_2_conf), vc(k.outcome_2)) : '',
       metric('Clay detection', k.det_conf != null ? `${Math.round(k.det_conf * 100)}%` : '—'),
       // Speed and distance come from the bang-to-break clock, which only a
-      // hit can stop — a miss flies on, so there is nothing to time yet.
+      // hit can stop — a miss flies on, so there is nothing to time. A hit
+      // without numbers means the clock itself was untrustworthy: the
+      // stored track was too noisy to pin the moment of the break.
       metric('Speed', k.speed_mph != null ? `~${fmt(k.speed_mph)} mph`
-        : k.outcome === 'miss' ? '<span class="na">n/a on a miss</span>' : '—'),
+        : k.outcome === 'miss' ? '<span class="na">n/a on a miss</span>'
+        : k.outcome === 'hit' ? '<span class="na">track too noisy</span>' : '—'),
       metric('Distance', k.range_m != null ? `~${k.range_m} m`
-        : k.outcome === 'miss' ? '<span class="na">n/a on a miss</span>' : '—'),
+        : k.outcome === 'miss' ? '<span class="na">n/a on a miss</span>'
+        : k.outcome === 'hit' ? '<span class="na">track too noisy</span>' : '—'),
     ].join('');
     return `
     <div class="row cliprow">
