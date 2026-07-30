@@ -587,7 +587,7 @@ const judged = new Set();   // survives a queue read that overtakes a decision
 
 async function loadQueue() {
   const { data, error } = await supabase.from('pipeline_videos')
-    .select('video_id,title,channel,url,duration_s,view_count,triage_score,triage_notes,updated_at')
+    .select('video_id,title,channel,url,duration_s,view_count,triage_score,triage_notes,criteria,ds_level,updated_at')
     .eq('status', 'downloaded')
     .order('triage_score', { ascending: false })
     .limit(24);
@@ -1003,10 +1003,19 @@ function card(v) {
         <div class="score"><b>${score}</b><span>/10</span></div>
         <h2>${esc(v.title || v.video_id)}</h2>
         <div class="meta">${esc(v.channel || 'Unknown channel')}${v.view_count ? ` · ${fmt(v.view_count)} views` : ''}</div>
+        ${v.criteria || v.ds_level ? `
+        <div class="crit">
+          ${v.criteria ? `<span class="crit-tag">${esc(v.criteria)}</span>` : ''}
+          ${v.ds_level ? `<span class="crit-tag lv" title="${esc((DS_LADDER[v.ds_level - 1] || {}).sub || '')}">L${v.ds_level} · ${esc((DS_LADDER[v.ds_level - 1] || {}).name || '')}</span>` : ''}
+        </div>` : ''}
         ${v.triage_notes ? `<p class="notes">${esc(v.triage_notes)}</p>` : ''}
         <div class="judge">
           <button class="btn" data-act="approved">Approve</button>
           <button class="btn btn-ghost" data-act="rejected">Reject</button>
+          <select class="mini" data-dslevel="${esc(v.video_id)}" title="Place this footage on the dataset ladder as you approve it">
+            <option value="">L—</option>
+            ${DS_LADDER.map((l) => `<option value="${l.n}" ${v.ds_level === l.n ? 'selected' : ''}>L${l.n}</option>`).join('')}
+          </select>
         </div>
       </div>
     </article>`;

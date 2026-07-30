@@ -329,6 +329,7 @@ def triage(request: fastapi.Request):
                 "triage_in_tokens": r.get("in_tokens"),
                 "triage_out_tokens": r.get("out_tokens"),
                 "weather": r.get("weather"),
+                "criteria": r.get("criteria") or None,
                 "local_path": str(out) if keep else None,
             }).eq("video_id", vid).execute()
             if not keep:

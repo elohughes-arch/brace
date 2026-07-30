@@ -63,6 +63,7 @@ Score 0-10 for training value:
 Reply with JSON only, no prose and no code fence:
 {"score": <number 0-10>, "camera": "<pov_glasses|barrel|gopro|third_person|broadcast|unknown>", \
 "clays_visible": <true|false>, "weather": "<clear|overcast|rain|fog|dusk|indoor|unknown>", \
+"criteria": "<3-6 words naming the clays and conditions, e.g. 'slow orange clays, clear sky'>", \
 "notes": "<one short British-English sentence>"}"""
 
 WEATHER_VALUES = ("clear", "overcast", "rain", "fog", "dusk", "indoor", "unknown")
@@ -164,6 +165,9 @@ def score_frames(frames: list[Path]) -> dict:
         "clays_visible": bool(data.get("clays_visible", False)),
         "weather": (str(data.get("weather", "unknown"))
                     if str(data.get("weather", "unknown")) in WEATHER_VALUES else "unknown"),
+        # The criteria label the Review card wears: what the footage holds,
+        # in the judge's own few words — clay colour, pace, sky.
+        "criteria": str(data.get("criteria", ""))[:80],
         "notes": str(data.get("notes", ""))[:400],
         # What this verdict actually cost, so the run can be priced from
         # recorded fact rather than a rate card and a guess.

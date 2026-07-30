@@ -484,3 +484,14 @@ label.row, .pickside { cursor: pointer; }
 .embedrow { padding: 6px 0 14px 28px; }
 .embedrow iframe { width: 100%; max-width: 560px; aspect-ratio: 16 / 9;
   border: 1px solid var(--line); border-radius: var(--r-md); background: #000; }
+
+/* Criteria labels on the review card: what the footage holds, judged
+   against the dataset strategy rather than a bare score. */
+.crit { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+.crit-tag { font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  color: var(--text-1); background: rgba(240,90,40,.14);
+  border: 1px solid rgba(240,90,40,.35); border-radius: var(--r-pill);
+  padding: 3px 10px; text-transform: lowercase; }
+.crit-tag.lv { background: rgba(255,255,255,.06); border-color: var(--line-strong);
+  color: var(--text-2); text-transform: none; }
+.judge .mini { flex: 0 0 auto; }
