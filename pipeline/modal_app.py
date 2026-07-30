@@ -521,6 +521,11 @@ def screen(request: fastapi.Request):
             idx += 1
         cap.release()
 
+        # 0.25 boxed birds, wad and smoke — barrel-cam clips with one clay in
+        # shot were claiming ten. Raised, and a dial (SCREEN_THRESHOLD in the
+        # secret) because the right number is found by looking at Roboflow,
+        # not by guessing here.
+        thresh = float(os.environ.get("SCREEN_THRESHOLD", 0.32))
         boxes_per_frame = {}
         for i, frame in enumerate(frames):
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -529,7 +534,7 @@ def screen(request: fastapi.Request):
             with torch.no_grad():
                 out = gdino(**inputs)
             res = proc.post_process_grounded_object_detection(
-                out, inputs.input_ids, threshold=0.25,
+                out, inputs.input_ids, threshold=thresh,
                 target_sizes=[rgb.shape[:2]])[0]
             if len(res["boxes"]):
                 boxes_per_frame[i] = [
@@ -717,6 +722,86 @@ def prelabel(request: fastapi.Request):
 
     return {"stage": "prelabel", "processed": done,
             "frames_uploaded": uploaded, "errors": failed}
+
+
+# ---------------------------------------------------------------- rejudge
+
+# Second opinions with better eyes. Clips screened before the verdict
+# learned to zoom carry judgements made on full-width frames; this re-runs
+# only the verdict — no GPU, no re-detection — using the stored track to
+# aim the crops. A one-off tool after a verdict upgrade, not a beat stage.
+@app.function(image=base_image, secrets=[secret], timeout=1800,
+              volumes={MEDIA: volume})
+@web_endpoint(method="POST")
+def rejudge(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+
+    import os
+    import cv2
+    from pathlib import Path
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return fastapi.responses.JSONResponse(
+            {"error": "ANTHROPIC_API_KEY is not set in the Modal secret"},
+            status_code=503)
+
+    volume.reload()
+    limit = min(int(request.query_params.get("limit", 60)), 200)
+    sb = _sb()
+    rows = (sb.table("pipeline_clips").select("*")
+            .in_("label_status", ["pending", "queued", "prelabelled"])
+            .limit(limit).execute().data)
+
+    done = changed = skipped = 0
+    for row in rows:
+        try:
+            lab = (sb.table("pipeline_labels")
+                   .select("boxes_json,frame_dt,t_offset")
+                   .eq("clip_id", row["clip_id"]).execute().data)
+            boxes = lab[0].get("boxes_json") if lab else None
+            if not boxes or not Path(row["file_path"]).exists():
+                skipped += 1
+                continue
+            frame_dt = float(lab[0].get("frame_dt") or 0.2)
+            t_off = float(lab[0].get("t_offset") or 0.0)
+            cap = cv2.VideoCapture(row["file_path"])
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            step = max(1, int(round(fps * frame_dt)))
+            frames, idx = [], 0
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                if idx % step == 0:
+                    frames.append(frame)
+                idx += 1
+            cap.release()
+            if not frames:
+                skipped += 1
+                continue
+            # The stored track is indexed against the untrimmed cut; the file
+            # on disk may have been trimmed by t_off. Shift the keys so the
+            # boxes line up with the frames just read.
+            shift = int(round(t_off / frame_dt))
+            shifted = {int(k) - shift: v for k, v in boxes.items()
+                       if int(k) - shift >= 0}
+            outcome, conf = _judge_shot(row, frames, fps, step, shifted)
+            if outcome is None:
+                skipped += 1
+                continue
+            if outcome != row.get("outcome") or conf != row.get("outcome_conf"):
+                changed += 1
+            sb.table("pipeline_clips").update(
+                {"outcome": outcome, "outcome_conf": conf}
+            ).eq("clip_id", row["clip_id"]).execute()
+            done += 1
+        except Exception as e:  # noqa: BLE001
+            print(f"[rejudge] {row.get('clip_id')} failed: {e}")
+            skipped += 1
+
+    return {"stage": "rejudge", "rejudged": done,
+            "verdicts_changed": changed, "skipped": skipped}
 
 
 def _judge_shot(row, frames, fps, step, boxes_per_frame=None):
