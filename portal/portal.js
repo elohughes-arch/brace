@@ -538,6 +538,21 @@ async function loadSentClips() {
   return rows;
 }
 
+// The machine's discards, for auditing: clips screening threw out as
+// clayless. A wrong rejection is a training example lost silently, so the
+// owner can watch each one and send any mistake back for re-screening.
+async function loadRejectedClips() {
+  const { data, error, count } = await supabase.from('pipeline_clips')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,preview_path,poster_path,file_path,created_at', { count: 'exact' })
+    .eq('label_status', 'rejected')
+    .order('created_at', { ascending: false })
+    .limit(12);
+  if (error) return { rows: [], total: 0 };
+  const rows = data || [];
+  await Promise.all([signClipMedia(rows), titleClips(rows)]);
+  return { rows, total: count ?? rows.length };
+}
+
 async function loadSheet() {
   let q = supabase.from('pipeline_videos')
     .select('video_id,title,channel,status,triage_score,duration_s,used,weather,updated_at')
@@ -618,7 +633,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], ai: [], sheet: [], sheetErr: '', loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', loading: true };
 let sheetFilter = 'all';
 let clipPage = 0;   // 40 clips a page, grouped by video
 let aiPage = 0;
@@ -990,6 +1005,33 @@ function triageClipsView() {
     <section class="panel" style="margin-top:18px">
       <div class="p-head"><span class="p-title">Recently sent</span></div>
       ${state.sent.map(doneRow).join('')}
+    </section>` : ''}
+
+    ${state.rej && state.rej.total ? `
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Rejected by screening — ${fmt(state.rej.total)} discard${state.rej.total === 1 ? '' : 's'}, newest first</span></div>
+      <div class="clipgrid">
+        ${state.rej.rows.map((k) => `
+        <div class="clipcard">
+          <div class="clipmedia">
+            ${k.preview_url
+    ? `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    : k.poster_url
+      ? `<img src="${esc(k.poster_url)}" alt="" />`
+      : '<span class="rendering">Preview rendering — plays here within the hour</span>'}
+          </div>
+          <div class="clipcap">
+            <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ''}</div>
+            <div class="s">screening saw no clay ·
+              <a href="#" class="linky" data-unreject="${esc(k.clip_id)}">not junk — send back</a></div>
+          </div>
+        </div>`).join('')}
+      </div>
+      <p class="foot-note">The machine's discards, for your audit. Screening rejects a
+         cut when the detector finds no clay in any frame — watch a few: if a real
+         clay is in there, "send back" returns it for re-screening, and tell the
+         machine's keeper, because a silent wrong rejection is a training example
+         lost. Only the newest twelve show; the count above is the full pile.</p>
     </section>` : ''}`;
 }
 
@@ -1320,6 +1362,8 @@ function signature() {
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
     clipPage, aiPage, sheetFilter,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
+    (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
+    state.rej?.total,
     state.ai.map((k) => k.clip_id + k.label_status + (k.preview_url ? 'v' : '')
       + (k.outcome || '') + (k.outcome_2 || '') + (k.outcome_3 || '')
       + (k.speed_mph ?? '') + (k.range_m ?? '')),
@@ -1419,6 +1463,15 @@ function paint(force = false) {
     const pages = Math.max(1, Math.ceil((state.counts?.pending ?? 0) / 40));
     flip(() => { clipPage = Math.min(clipPage + 1, pages - 1); });
   });
+  document.querySelectorAll('[data-unreject]').forEach((b) =>
+    b.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const { error } = await supabase.from('pipeline_clips')
+        .update({ label_status: 'raw' }).eq('clip_id', b.dataset.unreject).select('clip_id');
+      note(error ? `could not send the clip back — ${error.message}`
+        : 'sent back — the next screening beat re-examines it', error ? 'bad' : 'good');
+      refresh();
+    }));
   document.getElementById('pickall')?.addEventListener('click', () => {
     document.querySelectorAll('[data-pick]').forEach((cb) => { cb.checked = true; picked.add(cb.dataset.pick); });
     paint(true);
@@ -1462,7 +1515,7 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, ai, sheet] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, ai, sheet] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
@@ -1471,6 +1524,7 @@ async function refresh() {
       view === 'control' ? loadCoverage() : Promise.resolve(state.coverage),
       view === 'triage' ? loadClips() : Promise.resolve(state.clips),
       view === 'triage' ? loadSentClips() : Promise.resolve(state.sent),
+      view === 'triage' ? loadRejectedClips() : Promise.resolve(state.rej),
       view === 'labelling' ? loadAiClips() : Promise.resolve(state.ai),
       view === 'mastersheet' ? loadSheet() : Promise.resolve(state.sheet),
     ]);
@@ -1482,6 +1536,7 @@ async function refresh() {
     state.coverage = coverage;
     state.clips = clips;
     state.sent = sent;
+    state.rej = rej;
     state.ai = ai;
     state.sheet = sheet;
   } catch (e) {
@@ -1504,7 +1559,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], ai: [], sheet: [], sheetErr: '', loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

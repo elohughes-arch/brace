@@ -146,7 +146,7 @@ def _advance():
         hit("triage", "?limit=25")
     def clips_unpreviewed():
         return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
-                .in_("label_status", ["pending", "queued"])
+                .in_("label_status", ["pending", "queued", "rejected"])
                 .or_("preview_path.is.null,poster_path.is.null").execute().count or 0)
 
     def clips_in(status):
@@ -440,8 +440,11 @@ def clip(request: fastapi.Request):
     previewed = 0
     # Newest first, matching the order the portal lists them — the first
     # batch previewed must be the batch the owner is looking at.
+    # Rejected clips get previews too: the owner audits the machine's
+    # discards on the Triage page, and a discard you cannot watch is a
+    # verdict you cannot check.
     todo = (sb.table("pipeline_clips").select("clip_id,file_path,preview_path,poster_path")
-            .in_("label_status", ["pending", "queued"])
+            .in_("label_status", ["pending", "queued", "rejected"])
             .or_("preview_path.is.null,poster_path.is.null")
             .order("created_at", desc=True).limit(100).execute().data)
     for k in todo:
