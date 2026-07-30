@@ -593,8 +593,9 @@ def screen(request: fastapi.Request):
 
         # The verdict: did the clay break? Four frames straddling the shot —
         # a hit fragments and vanishes in a puff, a miss keeps flying. The
-        # boxes say where the clay is; this says what happened to it.
-        outcome, conf = _judge_shot(row, frames, fps, step)
+        # boxes say where the clay is, and now they aim the judge's eye:
+        # each frame is cropped around the tracked clay before Sonnet sees it.
+        outcome, conf = _judge_shot(row, frames, fps, step, boxes_per_frame)
 
         sb.table("pipeline_clips").update(
             {"label_status": "pending",
@@ -637,8 +638,9 @@ def prelabel(request: fastapi.Request):
     project = rf.workspace().project(os.environ["ROBOFLOW_PROJECT"])
 
     sure = float(os.environ.get("AUTO_ACCEPT", 0.55))
-    done = uploaded = 0
+    done = uploaded = failed = 0
     for row in rows:
+      try:
         lab = (sb.table("pipeline_labels").select("boxes_json,frame_dt,t_offset")
                .eq("clip_id", row["clip_id"]).execute().data)
         boxes = lab[0].get("boxes_json") if lab else None
@@ -653,6 +655,13 @@ def prelabel(request: fastapi.Request):
         tmp.mkdir(parents=True, exist_ok=True)
         idxs = sorted(int(k) for k in boxes)
         stride = max(1, int(round((1.0 / frame_dt) / 1.7)))
+        # Golden-holdout clips are the ruler the model is measured with:
+        # their frames land in Roboflow's *test* split so no training run
+        # can ever see them, and they are never auto-accepted — ground
+        # truth is only ground truth once a human has verified every box.
+        golden = bool(row.get("holdout"))
+        all_confident = True
+        sent = 0
         for i in idxs[::stride]:
             t = i * frame_dt - t_off
             if t < 0:
@@ -672,13 +681,9 @@ def prelabel(request: fastapi.Request):
                              f"{(x2-x1)/w:.6f} {(y2-y1)/h:.6f}")
             ann = fp.with_suffix(".txt")
             ann.write_text("\n".join(lines))
-            # Golden-holdout frames are the ruler the model is measured with:
-            # they land in Roboflow's *test* split so no training run can
-            # ever see them, and they are never auto-accepted — ground truth
-            # is only ground truth once a human has verified every box.
-            golden = bool(row.get("holdout"))
             confident = (not golden) and (
                 all(b["conf"] >= sure for b in bxs) if bxs else False)
+            all_confident = all_confident and confident
             tags = ["prelabel", "confident" if confident else "doubtful"]
             if golden:
                 tags.append("golden")
@@ -689,18 +694,40 @@ def prelabel(request: fastapi.Request):
                            batch_name=("golden-holdout" if golden
                                        else "auto-accepted" if confident
                                        else "needs-review"),
-                           tag_names=tags)
+                           tag_names=tags,
+                           num_retry_uploads=2)
             uploaded += 1
+            sent += 1
+            fp.unlink(missing_ok=True)
+            ann.unlink(missing_ok=True)
         cap.release()
+        # Where this clip's frames went, worn on the Labelling page.
+        batch = ("golden-holdout" if golden
+                 else "auto-accepted" if (sent and all_confident)
+                 else "needs-review")
         sb.table("pipeline_clips").update(
-            {"label_status": "prelabelled"}).eq("clip_id", row["clip_id"]).execute()
+            {"label_status": "prelabelled", "roboflow_id": batch}
+        ).eq("clip_id", row["clip_id"]).execute()
         done += 1
+      except Exception as e:  # noqa: BLE001
+        # One bad upload must not sink the batch. The clip stays queued, so
+        # the next beat simply tries it again.
+        print(f"[prelabel] {row.get('clip_id')} failed, left queued: {e}")
+        failed += 1
 
-    return {"stage": "prelabel", "processed": done, "frames_uploaded": uploaded}
+    return {"stage": "prelabel", "processed": done,
+            "frames_uploaded": uploaded, "errors": failed}
 
 
-def _judge_shot(row, frames, fps, step):
-    """hit / miss / unclear for one clip, from frames around the gunshot."""
+def _judge_shot(row, frames, fps, step, boxes_per_frame=None):
+    """hit / miss / unclear for one clip, from frames around the gunshot.
+
+    The detector's boxes aim the judge's eye. At full width a distant clay
+    is a handful of grey pixels and the only honest verdict is 'unclear' —
+    so each frame sent to the model is cropped around the tracked clay and
+    enlarged. A frame with no detection near it falls back to the full
+    picture rather than guessing where to look.
+    """
     import base64
     import json
     import os
@@ -719,15 +746,43 @@ def _judge_shot(row, frames, fps, step):
         picks = sorted({i for i in picks if 0 <= i < len(frames)})
         if len(picks) < 2:
             return None, None
+
+        def eye(i):
+            """The frame at i, cropped to the clay the detector tracked."""
+            frame = frames[i]
+            if not boxes_per_frame:
+                return frame, False
+            near = min(boxes_per_frame, key=lambda j: abs(j - i), default=None)
+            if near is None or abs(near - i) * frame_dt > 0.7:
+                return frame, False   # track lost around this moment
+            best = max(boxes_per_frame[near], key=lambda b: b["conf"])
+            x1, y1, x2, y2 = best["xyxy"]
+            h, w = frame.shape[:2]
+            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            # Enough sky around the disc to show fragments flying or the
+            # clay sailing on — a tight crop would hide the very evidence.
+            half = max(x2 - x1, y2 - y1, 110.0) * 2.2
+            a, b = int(max(0, cx - half)), int(max(0, cy - half))
+            c, d = int(min(w, cx + half)), int(min(h, cy + half))
+            crop = frame[b:d, a:c]
+            if crop.size == 0:
+                return frame, False
+            if crop.shape[0] < 384:   # a distant clay enlarges to legible
+                s = 384.0 / crop.shape[0]
+                crop = cv2.resize(crop, (max(1, int(crop.shape[1] * s)), 384))
+            return crop, True
+
         blocks = []
         for n, i in enumerate(picks, 1):
-            ok, jpg = cv2.imencode(".jpg", frames[i],
+            img, zoomed = eye(i)
+            ok, jpg = cv2.imencode(".jpg", img,
                                    [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ok:
                 return None, None
             when = "before" if i < shot_i else "after"
             blocks.append({"type": "text",
-                           "text": f"Frame {n} ({when} the shot):"})
+                           "text": f"Frame {n} ({when} the shot"
+                                   f"{', zoomed to the tracked clay' if zoomed else ', full view'}):"})
             blocks.append({"type": "image", "source": {
                 "type": "base64", "media_type": "image/jpeg",
                 "data": base64.standard_b64encode(jpg.tobytes()).decode()}})
@@ -739,10 +794,13 @@ def _judge_shot(row, frames, fps, step):
             model=os.environ.get("VERDICT_MODEL", "claude-sonnet-5"),
             max_tokens=200,
             system=("A clay pigeon is shot at between the 'before' and 'after' "
-                    "frames. Hit: the clay breaks into fragments or a puff of "
-                    "dust and is gone from later frames. Miss: the same clay "
-                    "continues its flight intact. If the clay cannot be "
-                    "followed across the frames, say unclear. Reply with JSON "
+                    "frames. Frames marked 'zoomed to the tracked clay' are "
+                    "crops centred on the detector's box for the clay, so the "
+                    "disc should be near the middle. Hit: the clay breaks into "
+                    "fragments or a puff of dust and is gone from later "
+                    "frames. Miss: the same clay continues its flight intact. "
+                    "If the clay cannot be followed across the frames, say "
+                    "unclear. Reply with JSON "
                     'only: {"outcome": "hit|miss|unclear", "confidence": <0-1>}'),
             messages=[{"role": "user", "content": blocks}])
         text = "".join(b.text for b in msg.content
