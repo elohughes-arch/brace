@@ -1283,13 +1283,17 @@ function coveragePanel() {
 function reviewView() {
   if (state.loading) return '<div class="empty">Loading the queue…</div>';
   const q = state.queue;
+  // The headline is the true backlog — the sidebar's number — not merely
+  // how many cards this page happened to load.
+  const total = Math.max(state.counts?.downloaded ?? 0, q.length);
   return `
     <div class="page-head">
       <div class="over">Review queue</div>
-      <h1>${q.length ? `${fmt(q.length)} ${q.length === 1 ? 'video' : 'videos'} waiting on you.` : 'Nothing waiting on you.'}</h1>
+      <h1>${total ? `${fmt(total)} ${total === 1 ? 'video' : 'videos'} waiting on you.` : 'Nothing waiting on you.'}</h1>
       <p>Triage has already thrown out the obvious misses. What is left is footage the
          model thinks is worth the GPU time. Approve it and the clipper cuts it into
-         shots; reject it and it goes no further.</p>
+         shots; reject it and it goes no further.${total > q.length
+    ? ` Showing the ${fmt(q.length)} highest-scored — judging these pulls the rest through.` : ''}</p>
     </div>
     ${q.length ? `<div class="queue">${q.map(card).join('')}</div>`
       : `<div class="panel"><div class="empty">The queue is clear. Run triage to bring
