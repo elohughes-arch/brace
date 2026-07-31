@@ -66,6 +66,12 @@ const DS_LEVELS = {
   7: ['clay shooting rain', 'clay shooting dusk', 'clay shooting fog low light'],
   8: ['simulated game shooting', 'clay flush shooting', 'rabbit clay shooting',
     'battue chandelle clay'],
+  // Not a rung — a lens. Deployment is POV hardware, so training should be
+  // too: the pack hunts footage from the exact cameras customers will wear.
+  pov: ['shotkam clay shooting', 'shotkam sporting clays', 'barrel cam shotgun',
+    'gopro head mount clay shooting', 'gopro chest mount skeet',
+    'meta glasses shooting', 'smart glasses clay shooting pov',
+    'point of view clay pigeon shooting'],
 };
 
 const MIN_DURATION_S = 30;
@@ -199,7 +205,9 @@ async function runDiscover({ supabaseUrl, anonKey, auth, level }) {
       for (const row of await detailsFor(key, ids, null)) {
         if (seen.has(row.video_id)) continue;
         seen.add(row.video_id);
-        rows.push({ ...row, ds_level: level });
+        // The POV pack is a lens, not a rung: triage will confirm the
+        // camera from the frames, so it carries no ladder stamp.
+        rows.push(Number.isInteger(level) ? { ...row, ds_level: level } : row);
       }
     }
     if (!rows.length) {
@@ -375,7 +383,8 @@ module.exports = async (req, res) => {
 
   if (LOCAL_STAGES.includes(stage)) {
     try {
-      const level = Math.max(0, Math.min(8, Number(req.query.level) || 0)) || null;
+      const level = req.query.level === 'pov' ? 'pov'
+        : Math.max(0, Math.min(8, Number(req.query.level) || 0)) || null;
       const { code, body } = await runDiscover({
         supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY, auth, level,
       });

@@ -711,6 +711,18 @@ function strategyView() {
            ~${fmt(totTarget)} for the full ladder.</p>
       </div>
     </div>
+    <section class="panel" style="margin-bottom:18px">
+      <div class="p-head"><span class="p-title">POV hunt — ShotKam · GoPro · Meta glasses</span>
+        <button class="linky" data-dsfind="pov" ${running ? 'disabled' : ''}>
+          ${running === 'discover' ? 'searching…' : 'Find POV footage'}</button>
+      </div>
+      <p class="lv-sub" style="margin:0">Not a rung of the ladder — a lens across all of
+         it. The app will run on footage from the cameras shooters actually wear, so
+         training should look through the same glass: this hunts barrel cams, head
+         mounts and smart glasses specifically. Triage confirms the camera from the
+         frames, so the Mastersheet's camera tags stay honest.</p>
+    </section>
+
     <div class="stack">${DS_LADDER.map(card).join('')}</div>
     <p class="foot-note" style="margin-top:14px">"Find footage" runs a criteria
        discovery: it searches phrases written for that level and stamps every
