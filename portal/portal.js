@@ -874,6 +874,9 @@ function rejectedView() {
   // are only auditable if the eye can sweep them.
   const vcard = (v) => `
     <article class="cardv rej">
+      <label class="clippick pilebox" title="Select for deletion">
+        <input type="checkbox" class="tick" data-pilepick="${esc(v.video_id)}" ${pilePicked.has(v.video_id) ? 'checked' : ''} />
+      </label>
       ${watching === v.video_id
     ? `<div class="thumb playing"><iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(v.video_id)}?autoplay=1"
          title="Rejected video" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe></div>`
@@ -921,11 +924,17 @@ function rejectedView() {
 
     <section class="panel">
       <div class="p-head"><span class="p-title">Videos triage refused — ${fmt(vtotal)}</span>
-        <select id="rejsort" class="mini" title="Sort the pile">
+        <span>
+          <button class="linky" id="pileall">Select all shown</button>
+          <button class="linky" id="pilenone" style="margin-left:10px">Clear</button>
+          <button class="btn mini-btn" id="piledel" style="margin-left:14px"
+            ${pilePicked.size ? '' : 'disabled'}>Delete <span id="pilen">${pilePicked.size}</span> from pile</button>
+          <select id="rejsort" class="mini" style="margin-left:14px" title="Sort the pile">
           <option value="new" ${rejSort === 'new' ? 'selected' : ''}>Newest first</option>
           <option value="hi" ${rejSort === 'hi' ? 'selected' : ''}>Highest score — near misses</option>
           <option value="lo" ${rejSort === 'lo' ? 'selected' : ''}>Lowest score — clear junk</option>
-        </select></div>
+          </select>
+        </span></div>
       ${vids.length ? `<div class="queue">${vids.map(vcard).join('')}</div>`
     : '<div class="empty">Nothing here — triage has refused no videos yet.</div>'}
       ${pages > 1 ? `
@@ -934,7 +943,9 @@ function rejectedView() {
         <span>page ${rejPage + 1} of ${pages}</span>
         <button class="linky" id="rejnext" ${rejPage + 1 < pages ? '' : 'disabled'}>Next ›</button>
       </div>` : ''}
-      <p class="foot-note">The reason is triage's own words — a low score, no clays
+      <p class="foot-note">Delete removes videos from this pile for good — the row
+         stays quietly on the Mastersheet so discovery can never collect them again.
+         The reason is triage's own words — a low score, no clays
          in the sampled frames, or the audio gate's 'no gunshots heard'. Watch plays
          the video here; Re-triage sends it back for a fresh score with the current,
          sharper eyes.</p>
@@ -1089,6 +1100,7 @@ let clipPage = 0;   // 40 clips a page, grouped by video
 let rejPage = 0;    // the rejected pile pages the same way
 let rejSort = 'new';   // new | hi | lo — the pile's sort order
 let aiSort = 'new';    // new | hi | lo — labelling, by verdict confidence
+const pilePicked = new Set();   // rejected videos ticked for binning
 let aiPage = 0;
 let batch = 10;   // videos per press — survives repaints, resets with the tab
 let poll = null;
@@ -1860,7 +1872,7 @@ function signature() {
     view, state.email, state.loading, running, state.counts,
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
-    clipPage, aiPage, sheetFilter, watching, rejSort, aiSort,
+    clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     state.rej?.total,
@@ -2009,6 +2021,34 @@ function paint(force = false) {
   });
   document.getElementById('clipprev')?.addEventListener('click', () => {
     flip(() => { clipPage = Math.max(0, clipPage - 1); });
+  });
+  document.querySelectorAll('[data-pilepick]').forEach((cb) => cb.addEventListener('change', () => {
+    cb.checked ? pilePicked.add(cb.dataset.pilepick) : pilePicked.delete(cb.dataset.pilepick);
+    const n = document.getElementById('pilen');
+    if (n) n.textContent = pilePicked.size;
+    const del = document.getElementById('piledel');
+    if (del) del.disabled = !pilePicked.size;
+  }));
+  document.getElementById('pileall')?.addEventListener('click', () => {
+    document.querySelectorAll('[data-pilepick]').forEach((cb) => { cb.checked = true; pilePicked.add(cb.dataset.pilepick); });
+    paint(true);
+  });
+  document.getElementById('pilenone')?.addEventListener('click', () => {
+    pilePicked.clear();
+    paint(true);
+  });
+  document.getElementById('piledel')?.addEventListener('click', async (e) => {
+    const ids = [...pilePicked];
+    if (!ids.length) return;
+    busy(e.target, true, 'Deleting…');
+    // 'binned', not deleted: the row must survive so discovery's dedupe
+    // still knows this video and can never re-collect it.
+    const { error } = await supabase.from('pipeline_videos')
+      .update({ status: 'binned' }).in('video_id', ids).select('video_id');
+    note(error ? `could not delete — ${error.message}`
+      : `${ids.length} removed from the pile — the sheet still remembers them`, error ? 'bad' : 'good');
+    if (!error) pilePicked.clear();
+    state.loading = true; paint(true); refresh();
   });
   document.getElementById('rejsort')?.addEventListener('change', (e) => {
     flip(() => { rejSort = e.target.value; rejPage = 0; });

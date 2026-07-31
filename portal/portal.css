@@ -514,3 +514,7 @@ label.row, .pickside { cursor: pointer; }
   cursor: pointer; }
 .cardv.rej .thumb.playing { cursor: default; }
 .cardv.rej .thumb iframe { width: 100%; height: 100%; border: 0; display: block; }
+
+/* Pile selection: the tick floats on the card's corner */
+.cardv.rej { position: relative; }
+.cardv.rej .pilebox { position: absolute; top: 10px; left: 10px; z-index: 3; }
