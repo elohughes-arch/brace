@@ -511,7 +511,8 @@ async function loadAiClips() {
   const { data, error } = await supabase.from('pipeline_clips')
     .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,clay_colour,det_conf,range_m,speed_mph,created_at')
     .in('label_status', ['queued', 'prelabelled'])
-    .order('created_at', { ascending: false })
+    .order(aiSort === 'new' ? 'created_at' : 'outcome_conf',
+      { ascending: aiSort === 'lo', nullsFirst: false })
     .range(aiPage * PAGE, aiPage * PAGE + PAGE - 1);
   if (error) return [];
   const rows = data || [];
@@ -835,7 +836,8 @@ async function loadRejectedPile() {
     supabase.from('pipeline_videos')
       .select('video_id,title,channel,triage_score,triage_notes,duration_s,updated_at', { count: 'exact' })
       .eq('status', 'rejected')
-      .order('updated_at', { ascending: false })
+      .order(rejSort === 'new' ? 'updated_at' : 'triage_score',
+        { ascending: rejSort === 'lo', nullsFirst: false })
       .range(rejPage * PAGE, rejPage * PAGE + PAGE - 1),
     supabase.from('pipeline_clips')
       .select('clip_id,video_id,shot_ts,preview_path,poster_path,file_path,created_at', { count: 'exact' })
@@ -902,7 +904,12 @@ function rejectedView() {
     </div>
 
     <section class="panel">
-      <div class="p-head"><span class="p-title">Videos triage refused — ${fmt(vtotal)}</span></div>
+      <div class="p-head"><span class="p-title">Videos triage refused — ${fmt(vtotal)}</span>
+        <select id="rejsort" class="mini" title="Sort the pile">
+          <option value="new" ${rejSort === 'new' ? 'selected' : ''}>Newest first</option>
+          <option value="hi" ${rejSort === 'hi' ? 'selected' : ''}>Highest score — near misses</option>
+          <option value="lo" ${rejSort === 'lo' ? 'selected' : ''}>Lowest score — clear junk</option>
+        </select></div>
       ${vids.length ? vids.map(vrow).join('')
     : '<div class="empty">Nothing here — triage has refused no videos yet.</div>'}
       ${pages > 1 ? `
@@ -1064,6 +1071,8 @@ let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
 let rejPage = 0;    // the rejected pile pages the same way
+let rejSort = 'new';   // new | hi | lo — the pile's sort order
+let aiSort = 'new';    // new | hi | lo — labelling, by verdict confidence
 let aiPage = 0;
 let batch = 10;   // videos per press — survives repaints, resets with the tab
 let poll = null;
@@ -1558,7 +1567,12 @@ function labellingView() {
     </div>
 
     <section class="panel">
-      <div class="p-head"><span class="p-title">${fmt(total)} clips with the AI</span></div>
+      <div class="p-head"><span class="p-title">${fmt(total)} clips with the AI</span>
+        <select id="aisort" class="mini" title="Sort by verdict confidence">
+          <option value="new" ${aiSort === 'new' ? 'selected' : ''}>Newest first</option>
+          <option value="hi" ${aiSort === 'hi' ? 'selected' : ''}>Highest confidence</option>
+          <option value="lo" ${aiSort === 'lo' ? 'selected' : ''}>Lowest confidence</option>
+        </select></div>
       ${state.ai.length ? state.ai.map(row).join('')
     : '<div class="empty">Nothing here yet — send clips from the Triage page and they appear the moment they are queued.</div>'}
       ${pages > 1 ? `
@@ -1826,7 +1840,7 @@ function signature() {
     view, state.email, state.loading, running, state.counts,
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
-    clipPage, aiPage, sheetFilter, watching,
+    clipPage, aiPage, sheetFilter, watching, rejSort, aiSort,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     state.rej?.total,
@@ -1975,6 +1989,12 @@ function paint(force = false) {
   });
   document.getElementById('clipprev')?.addEventListener('click', () => {
     flip(() => { clipPage = Math.max(0, clipPage - 1); });
+  });
+  document.getElementById('rejsort')?.addEventListener('change', (e) => {
+    flip(() => { rejSort = e.target.value; rejPage = 0; });
+  });
+  document.getElementById('aisort')?.addEventListener('change', (e) => {
+    flip(() => { aiSort = e.target.value; aiPage = 0; });
   });
   document.getElementById('rejprev')?.addEventListener('click', () => {
     flip(() => { rejPage = Math.max(0, rejPage - 1); });
