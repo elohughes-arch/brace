@@ -409,7 +409,7 @@ async function tally(table, idCol, stateCol, values) {
 async function loadCounts() {
   const [videos, clips] = await Promise.all([
     tally('pipeline_videos', 'video_id', 'status',
-      ['discovered', 'downloaded', 'approved', 'clipped', 'rejected', 'error']),
+      ['discovered', 'downloaded', 'approved', 'clipped', 'rejected', 'binned', 'error']),
     tally('pipeline_clips', 'clip_id', 'label_status', ['raw', 'pending', 'queued', 'prelabelled']),
   ]);
   return { ...videos, ...clips };
@@ -1637,7 +1637,8 @@ async function queueClips(ids, btn) {
 // nothing on it is ever fetched, scored or clipped twice.
 const SHEET_FILTERS = [
   ['all', 'All'], ['downloaded', 'Triaged'], ['approved', 'Approved'],
-  ['clipped', 'Clipped'], ['rejected', 'Rejected'], ['discovered', 'Discovered'],
+  ['clipped', 'Clipped'], ['rejected', 'Rejected'], ['binned', 'Binned'],
+  ['discovered', 'Discovered'],
 ];
 const SHEET_TONE = { clipped: 'on', approved: 'on', downloaded: 'on' };
 
@@ -1665,6 +1666,8 @@ function mastersheetView() {
         ${auditing ? `
           <button class="linky" data-watch="${esc(v.video_id)}">${watching === v.video_id ? 'Close' : 'Watch'}</button>
           <button class="linky" data-retriage="${esc(v.video_id)}">Re-triage</button>` : ''}
+        ${sheetFilter === 'binned' ? `
+          <button class="linky" data-unbin="${esc(v.video_id)}">Back to pile</button>` : ''}
         <select class="mini" data-dslevel="${esc(v.video_id)}" title="Dataset strategy level — which rung of the ladder this footage serves">
           <option value="">L—</option>
           ${DS_LADDER.map((l) => `<option value="${l.n}" ${v.ds_level === l.n ? 'selected' : ''}>L${l.n}</option>`).join('')}
@@ -1962,6 +1965,15 @@ function paint(force = false) {
   });
   document.getElementById('exportcsv')?.addEventListener('click', () =>
     exportCsv().catch((e) => note(`manifest failed — ${e.message || e}`, 'bad')));
+  document.querySelectorAll('[data-unbin]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      const { error } = await supabase.from('pipeline_videos')
+        .update({ status: 'rejected' }).eq('video_id', b.dataset.unbin).select('video_id');
+      note(error ? `could not restore — ${error.message}`
+        : `${b.dataset.unbin} back in the rejected pile`, error ? 'bad' : 'good');
+      refresh();
+    }));
   // The rejected-video audit: watch triage's discards in place, and
   // overrule a wrong call by sending the video back for a fresh score.
   document.querySelectorAll('[data-watch]').forEach((b) =>
