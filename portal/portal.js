@@ -858,25 +858,29 @@ function rejectedView() {
   if (state.loading) return '<div class="empty">Loading the pile…</div>';
   const { vids = [], vtotal = 0, rows = [], total = 0 } = state.pile || {};
   const pages = Math.max(1, Math.ceil(vtotal / 40));
-  const vrow = (v) => `
-    <div class="row">
-      <span class="dot off"></span>
-      <div class="main">
-        <div class="t"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}"
-          target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a></div>
-        <div class="s">${esc(v.channel || '')}${v.triage_score != null ? ` · scored ${Number(v.triage_score).toFixed(1)}` : ''} · ${mmss(v.duration_s)} · ${dateFmt(v.updated_at)}</div>
-        ${v.triage_notes ? `<div class="s why" title="${esc(v.triage_notes)}">${esc(v.triage_notes)}</div>` : ''}
+  // A thumbnail per refusal, playing in place when pressed — 460 discards
+  // are only auditable if the eye can sweep them.
+  const vcard = (v) => `
+    <article class="cardv rej">
+      ${watching === v.video_id
+    ? `<div class="thumb playing"><iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(v.video_id)}?autoplay=1"
+         title="Rejected video" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe></div>`
+    : `<button class="thumb" data-watch="${esc(v.video_id)}" title="Play here">
+         <img src="https://i.ytimg.com/vi/${esc(v.video_id)}/mqdefault.jpg" alt="" loading="lazy"
+              onerror="this.remove()" />
+         <span class="dur">${mmss(v.duration_s)}</span>
+       </button>`}
+      <div class="body">
+        <div class="score"><b>${v.triage_score == null ? '—' : Number(v.triage_score).toFixed(1)}</b><span>/10</span></div>
+        <h2>${esc(v.title || v.video_id)}</h2>
+        <div class="meta">${esc(v.channel || 'Unknown channel')} · ${dateFmt(v.updated_at)}</div>
+        ${v.triage_notes ? `<p class="notes">${esc(v.triage_notes)}</p>` : ''}
+        <div class="judge">
+          <button class="btn btn-ghost" data-watch="${esc(v.video_id)}">${watching === v.video_id ? 'Close' : 'Watch here'}</button>
+          <button class="btn btn-ghost" data-retriage="${esc(v.video_id)}">Re-triage</button>
+        </div>
       </div>
-      <div class="end">
-        <button class="linky" data-watch="${esc(v.video_id)}">${watching === v.video_id ? 'Close' : 'Watch'}</button>
-        <button class="linky" data-retriage="${esc(v.video_id)}">Re-triage</button>
-      </div>
-    </div>
-    ${watching === v.video_id ? `
-    <div class="embedrow">
-      <iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(v.video_id)}"
-        title="Rejected video" allow="fullscreen" allowfullscreen loading="lazy"></iframe>
-    </div>` : ''}`;
+    </article>`;
   const card = (k) => `
     <div class="clipcard">
       <div class="clipmedia">
@@ -910,7 +914,7 @@ function rejectedView() {
           <option value="hi" ${rejSort === 'hi' ? 'selected' : ''}>Highest score — near misses</option>
           <option value="lo" ${rejSort === 'lo' ? 'selected' : ''}>Lowest score — clear junk</option>
         </select></div>
-      ${vids.length ? vids.map(vrow).join('')
+      ${vids.length ? `<div class="queue">${vids.map(vcard).join('')}</div>`
     : '<div class="empty">Nothing here — triage has refused no videos yet.</div>'}
       ${pages > 1 ? `
       <div class="pager">
