@@ -824,6 +824,69 @@ async function exportCsv() {
   note(`manifest downloaded — ${lines.length - 1} clips`, 'good');
 }
 
+/* ---------- rejected pile ---------- */
+
+// The whole discard pile, paginated — the audit of whether screening's
+// no-gate is calling it right. Every card here is a cut the machine swore
+// had no clay in it; the owner's job is to catch it lying.
+async function loadRejectedPile() {
+  const PAGE = 40;
+  const { data, error, count } = await supabase.from('pipeline_clips')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,preview_path,poster_path,file_path,created_at', { count: 'exact' })
+    .eq('label_status', 'rejected')
+    .order('created_at', { ascending: false })
+    .range(rejPage * PAGE, rejPage * PAGE + PAGE - 1);
+  if (error) return { rows: [], total: 0 };
+  const rows = data || [];
+  await Promise.all([signClipMedia(rows), titleClips(rows)]);
+  return { rows, total: count ?? rows.length };
+}
+
+function rejectedView() {
+  if (state.loading) return '<div class="empty">Loading the pile…</div>';
+  const { rows, total } = state.pile || { rows: [], total: 0 };
+  const pages = Math.max(1, Math.ceil(total / 40));
+  const card = (k) => `
+    <div class="clipcard">
+      <div class="clipmedia">
+        ${k.preview_url
+    ? `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    : k.poster_url
+      ? `<img src="${esc(k.poster_url)}" alt="" />`
+      : '<span class="rendering">Preview rendering — plays here within the hour</span>'}
+      </div>
+      <div class="clipcap">
+        <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ''}</div>
+        <div class="s">screening saw no clay ·
+          <a href="#" class="linky" data-unreject="${esc(k.clip_id)}">not junk — send back</a></div>
+      </div>
+    </div>`;
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Rejected pile</h1>
+        <p>Every cut screening threw out as clayless, newest first. This page is the
+           measure of the no-gate: watch a handful — if they are all empty sky, the
+           filter is earning its keep; if you find clays, send them back and say so,
+           because a silent wrong rejection is a training example lost.</p>
+      </div>
+    </div>
+    <section class="panel">
+      <div class="p-head"><span class="p-title">${fmt(total)} discard${total === 1 ? '' : 's'}</span></div>
+      ${rows.length ? `<div class="clipgrid">${rows.map(card).join('')}</div>`
+    : `<div class="empty">The pile is empty — screening has rejected nothing.
+         That reads as good news but audit it from the other side: if junk cuts are
+         reaching the Triage queue, the detection threshold is too generous, and the
+         dial is SCREEN_THRESHOLD in the Modal secret.</div>`}
+      ${pages > 1 ? `
+      <div class="pager">
+        <button class="linky" id="rejprev" ${rejPage ? '' : 'disabled'}>‹ Previous</button>
+        <span>page ${rejPage + 1} of ${pages}</span>
+        <button class="linky" id="rejnext" ${rejPage + 1 < pages ? '' : 'disabled'}>Next ›</button>
+      </div>` : ''}
+    </section>`;
+}
+
 /* ---------- health ---------- */
 
 // The machine's physical, read from pipeline_health. Probes are written
@@ -955,12 +1018,13 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health'].find((v) => location.hash === `#${v}`) || 'control';
+const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
+let rejPage = 0;    // the rejected pile pages the same way
 let aiPage = 0;
 let batch = 10;   // videos per press — survives repaints, resets with the tab
 let poll = null;
@@ -988,6 +1052,7 @@ function shell(body) {
           ${item('review', 'Review', state.counts?.downloaded)}
           ${item('sources', 'Sources')}
           ${item('triage', 'Triage', state.counts?.pending)}
+          <a href="#rejected" class="sub ${view === 'rejected' ? 'on' : ''}">Rejected pile${state.pile?.total ? ` <b>${fmt(state.pile.total)}</b>` : ''}</a>
           ${item('labelling', 'Labelling', state.counts?.queued)}
           ${item('mastersheet', 'Mastersheet')}
           ${item('strategy', 'Dataset strategy')}
@@ -1735,6 +1800,7 @@ function signature() {
     state.split,
     state.exp,
     state.health,
+    rejPage, (state.pile?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')), state.pile?.total,
     state.coverage,
   ]);
 }
@@ -1772,6 +1838,7 @@ function paint(force = false) {
     : view === 'strategy' ? strategyView()
     : view === 'export' ? exportView()
     : view === 'health' ? healthView()
+    : view === 'rejected' ? rejectedView()
     : controlView());
 
   document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
@@ -1869,6 +1936,13 @@ function paint(force = false) {
   document.getElementById('clipprev')?.addEventListener('click', () => {
     flip(() => { clipPage = Math.max(0, clipPage - 1); });
   });
+  document.getElementById('rejprev')?.addEventListener('click', () => {
+    flip(() => { rejPage = Math.max(0, rejPage - 1); });
+  });
+  document.getElementById('rejnext')?.addEventListener('click', () => {
+    const pages = Math.max(1, Math.ceil((state.pile?.total ?? 0) / 40));
+    flip(() => { rejPage = Math.min(rejPage + 1, pages - 1); });
+  });
   document.getElementById('clipnext')?.addEventListener('click', () => {
     const pages = Math.max(1, Math.ceil((state.counts?.pending ?? 0) / 40));
     flip(() => { clipPage = Math.min(clipPage + 1, pages - 1); });
@@ -1925,7 +1999,7 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, sheet, progress, cats, exp, health] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, sheet, progress, cats, exp, health, pile] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
@@ -1942,6 +2016,7 @@ async function refresh() {
       view === 'strategy' ? loadCategories() : Promise.resolve(state.cats),
       view === 'export' ? loadExport() : Promise.resolve(state.exp),
       loadHealth(),
+      view === 'rejected' ? loadRejectedPile() : Promise.resolve(state.pile),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -1959,6 +2034,7 @@ async function refresh() {
     state.cats = cats;
     state.exp = exp;
     state.health = health;
+    state.pile = pile;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -1979,7 +2055,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
