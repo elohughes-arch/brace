@@ -831,21 +831,50 @@ async function exportCsv() {
 // had no clay in it; the owner's job is to catch it lying.
 async function loadRejectedPile() {
   const PAGE = 40;
-  const { data, error, count } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,preview_path,poster_path,file_path,created_at', { count: 'exact' })
-    .eq('label_status', 'rejected')
-    .order('created_at', { ascending: false })
-    .range(rejPage * PAGE, rejPage * PAGE + PAGE - 1);
-  if (error) return { rows: [], total: 0 };
-  const rows = data || [];
+  const [vids, clips] = await Promise.all([
+    supabase.from('pipeline_videos')
+      .select('video_id,title,channel,triage_score,triage_notes,duration_s,updated_at', { count: 'exact' })
+      .eq('status', 'rejected')
+      .order('updated_at', { ascending: false })
+      .range(rejPage * PAGE, rejPage * PAGE + PAGE - 1),
+    supabase.from('pipeline_clips')
+      .select('clip_id,video_id,shot_ts,preview_path,poster_path,file_path,created_at', { count: 'exact' })
+      .eq('label_status', 'rejected')
+      .order('created_at', { ascending: false })
+      .limit(24),
+  ]);
+  const rows = clips.error ? [] : (clips.data || []);
   await Promise.all([signClipMedia(rows), titleClips(rows)]);
-  return { rows, total: count ?? rows.length };
+  return {
+    vids: vids.error ? [] : (vids.data || []),
+    vtotal: vids.error ? 0 : (vids.count ?? 0),
+    rows, total: clips.error ? 0 : (clips.count ?? 0),
+  };
 }
 
 function rejectedView() {
   if (state.loading) return '<div class="empty">Loading the pile…</div>';
-  const { rows, total } = state.pile || { rows: [], total: 0 };
-  const pages = Math.max(1, Math.ceil(total / 40));
+  const { vids = [], vtotal = 0, rows = [], total = 0 } = state.pile || {};
+  const pages = Math.max(1, Math.ceil(vtotal / 40));
+  const vrow = (v) => `
+    <div class="row">
+      <span class="dot off"></span>
+      <div class="main">
+        <div class="t"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}"
+          target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a></div>
+        <div class="s">${esc(v.channel || '')}${v.triage_score != null ? ` · scored ${Number(v.triage_score).toFixed(1)}` : ''} · ${mmss(v.duration_s)} · ${dateFmt(v.updated_at)}</div>
+        ${v.triage_notes ? `<div class="s why" title="${esc(v.triage_notes)}">${esc(v.triage_notes)}</div>` : ''}
+      </div>
+      <div class="end">
+        <button class="linky" data-watch="${esc(v.video_id)}">${watching === v.video_id ? 'Close' : 'Watch'}</button>
+        <button class="linky" data-retriage="${esc(v.video_id)}">Re-triage</button>
+      </div>
+    </div>
+    ${watching === v.video_id ? `
+    <div class="embedrow">
+      <iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(v.video_id)}"
+        title="Rejected video" allow="fullscreen" allowfullscreen loading="lazy"></iframe>
+    </div>` : ''}`;
   const card = (k) => `
     <div class="clipcard">
       <div class="clipmedia">
@@ -865,25 +894,35 @@ function rejectedView() {
     <div class="crm-head">
       <div>
         <h1>Rejected pile</h1>
-        <p>Every cut screening threw out as clayless, newest first. This page is the
-           measure of the no-gate: watch a handful — if they are all empty sky, the
-           filter is earning its keep; if you find clays, send them back and say so,
-           because a silent wrong rejection is a training example lost.</p>
+        <p>Everything the machine said no to, and why. This page is the measure of
+           the filters: spot-check the pile — if it is all talking heads, silent
+           edits and empty sky, the gates are earning their keep. Find a good one
+           and overrule it; a silent wrong rejection is training data lost.</p>
       </div>
     </div>
+
     <section class="panel">
-      <div class="p-head"><span class="p-title">${fmt(total)} discard${total === 1 ? '' : 's'}</span></div>
-      ${rows.length ? `<div class="clipgrid">${rows.map(card).join('')}</div>`
-    : `<div class="empty">The pile is empty — screening has rejected nothing.
-         That reads as good news but audit it from the other side: if junk cuts are
-         reaching the Triage queue, the detection threshold is too generous, and the
-         dial is SCREEN_THRESHOLD in the Modal secret.</div>`}
+      <div class="p-head"><span class="p-title">Videos triage refused — ${fmt(vtotal)}</span></div>
+      ${vids.length ? vids.map(vrow).join('')
+    : '<div class="empty">Nothing here — triage has refused no videos yet.</div>'}
       ${pages > 1 ? `
       <div class="pager">
         <button class="linky" id="rejprev" ${rejPage ? '' : 'disabled'}>‹ Previous</button>
         <span>page ${rejPage + 1} of ${pages}</span>
         <button class="linky" id="rejnext" ${rejPage + 1 < pages ? '' : 'disabled'}>Next ›</button>
       </div>` : ''}
+      <p class="foot-note">The reason is triage's own words — a low score, no clays
+         in the sampled frames, or the audio gate's 'no gunshots heard'. Watch plays
+         the video here; Re-triage sends it back for a fresh score with the current,
+         sharper eyes.</p>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Cuts screening refused — ${fmt(total)}</span></div>
+      ${rows.length ? `<div class="clipgrid">${rows.map(card).join('')}</div>`
+    : `<div class="empty">None — screening has rejected no cuts. Audit that from the
+         other side: if junk is reaching the Triage queue, the detection threshold
+         is too generous (SCREEN_THRESHOLD in the Modal secret).</div>`}
     </section>`;
 }
 
@@ -1052,7 +1091,7 @@ function shell(body) {
           ${item('review', 'Review', state.counts?.downloaded)}
           ${item('sources', 'Sources')}
           ${item('triage', 'Triage', state.counts?.pending)}
-          <a href="#rejected" class="sub ${view === 'rejected' ? 'on' : ''}">Rejected pile${state.pile?.total ? ` <b>${fmt(state.pile.total)}</b>` : ''}</a>
+          <a href="#rejected" class="sub ${view === 'rejected' ? 'on' : ''}">Rejected pile${(state.pile?.vtotal || 0) + (state.pile?.total || 0) ? ` <b>${fmt((state.pile?.vtotal || 0) + (state.pile?.total || 0))}</b>` : ''}</a>
           ${item('labelling', 'Labelling', state.counts?.queued)}
           ${item('mastersheet', 'Mastersheet')}
           ${item('strategy', 'Dataset strategy')}
@@ -1801,6 +1840,7 @@ function signature() {
     state.exp,
     state.health,
     rejPage, (state.pile?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')), state.pile?.total,
+    (state.pile?.vids || []).map((v) => v.video_id), state.pile?.vtotal,
     state.coverage,
   ]);
 }
@@ -1940,7 +1980,7 @@ function paint(force = false) {
     flip(() => { rejPage = Math.max(0, rejPage - 1); });
   });
   document.getElementById('rejnext')?.addEventListener('click', () => {
-    const pages = Math.max(1, Math.ceil((state.pile?.total ?? 0) / 40));
+    const pages = Math.max(1, Math.ceil((state.pile?.vtotal ?? 0) / 40));
     flip(() => { rejPage = Math.min(rejPage + 1, pages - 1); });
   });
   document.getElementById('clipnext')?.addEventListener('click', () => {
