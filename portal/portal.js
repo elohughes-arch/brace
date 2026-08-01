@@ -732,6 +732,104 @@ function strategyView() {
     ${inventoryPanel()}`;
 }
 
+/* ---------- model trials ---------- */
+
+// The bench: the same clips judged by several models, side by side. The
+// live verdict is untouched by a trial, so this compares opinions without
+// disturbing the production line.
+async function loadTrials() {
+  const { data, error } = await supabase.from('verdict_trials')
+    .select('clip_id,model,outcome,outcome_conf').limit(2000);
+  if (error || !data || !data.length) return { trials: [], clips: [] };
+  const ids = [...new Set(data.map((t) => t.clip_id))];
+  const { data: cl } = await supabase.from('pipeline_clips')
+    .select('clip_id,video_id,shot_ts,outcome,outcome_conf,preview_path,poster_path,file_path')
+    .in('clip_id', ids);
+  const clips = cl || [];
+  await Promise.all([signClipMedia(clips), titleClips(clips)]);
+  return { trials: data, clips };
+}
+
+const TRIAL_OUTCOMES = ['hit', 'chipped', 'miss', 'unclear'];
+
+function trialsPanel() {
+  const { trials = [], clips = [] } = state.trials || {};
+  if (!trials.length) {
+    return `
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Model trials — the bench</span></div>
+      <div class="empty">No trial has been run. Judge the same clips with two or
+        more models and their verdicts land here side by side, with every
+        disagreement listed for you to referee.</div>
+    </section>`;
+  }
+  const models = [...new Set(trials.map((t) => t.model))].sort();
+  const byClip = new Map();
+  trials.forEach((t) => {
+    const m = byClip.get(t.clip_id) || {};
+    m[t.model] = t;
+    byClip.set(t.clip_id, m);
+  });
+  const clipById = new Map(clips.map((k) => [k.clip_id, k]));
+
+  // Judged by every model in the trial — the only fair comparison set.
+  const complete = [...byClip.entries()].filter(([, m]) => models.every((x) => m[x]));
+  const split = complete.filter(([, m]) => new Set(models.map((x) => m[x].outcome)).size > 1);
+
+  const summary = models.map((mo) => {
+    const mine = trials.filter((t) => t.model === mo);
+    const conf = mine.filter((t) => t.outcome_conf != null);
+    return {
+      model: mo,
+      n: mine.length,
+      counts: Object.fromEntries(TRIAL_OUTCOMES.map((o) =>
+        [o, mine.filter((t) => t.outcome === o).length])),
+      avg: conf.length ? conf.reduce((a, t) => a + Number(t.outcome_conf), 0) / conf.length : null,
+    };
+  });
+
+  const dis = split.slice(0, 20).map(([id, m]) => {
+    const k = clipById.get(id) || {};
+    return `
+    <div class="clipcard">
+      <div class="clipmedia">
+        ${k.preview_url
+    ? `<video controls preload="none" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    : '<span class="rendering">no preview</span>'}
+      </div>
+      <div class="clipcap">
+        <div class="t">${esc(k.title || id)}${k.shot_no ? ` — shot ${k.shot_no}` : ''}</div>
+        ${models.map((mo) => `<div class="s"><span class="tm">${esc(mo.replace('claude-', ''))}</span>
+          <b class="${m[mo].outcome === 'hit' ? 'v-hit' : m[mo].outcome === 'miss' ? 'v-miss' : m[mo].outcome === 'chipped' ? 'v-chip' : ''}">${esc(m[mo].outcome)}</b>
+          ${m[mo].outcome_conf != null ? `${Math.round(m[mo].outcome_conf * 100)}%` : ''}</div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+
+  return `
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Model trials — ${fmt(complete.length)} clips judged by all ${models.length}</span></div>
+      <table class="matrix">
+        <thead><tr><th>Model</th><th>Judged</th>
+          ${TRIAL_OUTCOMES.map((o) => `<th>${o}</th>`).join('')}
+          <th>Avg confidence</th></tr></thead>
+        <tbody>
+          ${summary.map((r) => `
+          <tr><td>${esc(r.model)}</td><td>${fmt(r.n)}</td>
+            ${TRIAL_OUTCOMES.map((o) => `<td class="${o === 'unclear' ? 'dim' : ''}">${fmt(r.counts[o])}</td>`).join('')}
+            <td>${r.avg == null ? '—' : `${Math.round(r.avg * 100)}%`}</td></tr>`).join('')}
+        </tbody>
+      </table>
+      <p class="foot-note" style="margin-bottom:14px">
+        ${fmt(complete.length - split.length)} clips where every model agrees ·
+        <b>${fmt(split.length)} where they split</b>. Agreement proves consistency, not
+        correctness — the split ones are the evidence: watch them and decide who was
+        right. A model that is confidently wrong is worse than one that says unclear,
+        and the unclear column is where a cheap model usually hides.</p>
+      ${split.length ? `<div class="clipgrid">${dis}</div>` : ''}
+    </section>`;
+}
+
 /* ---------- export ---------- */
 
 // The bulk handover. Everything screening has passed goes to Roboflow in
@@ -1093,7 +1191,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -1655,7 +1753,9 @@ function labellingView() {
         <span>page ${aiPage + 1} of ${pages}</span>
         <button class="linky" id="ainext" ${aiPage + 1 < pages ? '' : 'disabled'}>Next ›</button>
       </div>` : ''}
-    </section>`;
+    </section>
+
+    ${trialsPanel()}`;
 }
 
 async function queueClips(ids, btn) {
@@ -1930,6 +2030,7 @@ function signature() {
     state.split,
     state.exp,
     state.health,
+    (state.trials?.trials || []).length,
     rejPage, (state.pile?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')), state.pile?.total,
     (state.pile?.vids || []).map((v) => v.video_id), state.pile?.vtotal,
     state.coverage,
@@ -2173,7 +2274,7 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, sheet, progress, cats, exp, health, pile] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile] = await Promise.all([
       loadCounts(),
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
@@ -2185,6 +2286,7 @@ async function refresh() {
       view === 'triage' ? loadRejectedClips() : Promise.resolve(state.rej),
       view === 'triage' ? loadSplitPreview() : Promise.resolve(state.split),
       view === 'labelling' ? loadAiClips() : Promise.resolve(state.ai),
+      view === 'labelling' ? loadTrials() : Promise.resolve(state.trials),
       view === 'mastersheet' ? loadSheet() : Promise.resolve(state.sheet),
       view === 'strategy' ? loadProgress() : Promise.resolve(state.progress),
       view === 'strategy' ? loadCategories() : Promise.resolve(state.cats),
@@ -2203,6 +2305,7 @@ async function refresh() {
     state.rej = rej;
     state.split = splitPrev;
     state.ai = ai;
+    state.trials = trials;
     state.sheet = sheet;
     state.progress = progress;
     state.cats = cats;
@@ -2229,7 +2332,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

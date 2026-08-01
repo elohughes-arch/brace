@@ -564,3 +564,7 @@ label.row, .pickside { cursor: pointer; }
 
 .runrow { display: flex; flex-wrap: wrap; gap: 8px; }
 .runrow .btn { width: auto; flex: 0 0 auto; }
+
+/* Model trials: each model's call under the clip it judged */
+.clipcap .tm { display: inline-block; min-width: 94px; color: var(--text-3);
+  font-size: 11px; }

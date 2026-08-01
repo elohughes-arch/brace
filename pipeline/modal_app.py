@@ -1066,10 +1066,20 @@ def rejudge(request: fastapi.Request):
     override = request.query_params.get("model")
     if override:
         os.environ["VERDICT_MODEL"] = override
+    # ?trial=1 puts the run on the bench: verdicts are written to
+    # verdict_trials under the model's own name and the live verdict is left
+    # alone, so several models can judge the same clips and be compared
+    # rather than overwrite one another.
+    trial = request.query_params.get("trial") in ("1", "true", "yes")
+    model_name = os.environ.get("VERDICT_MODEL", "claude-sonnet-5")
+
     sb = _sb()
-    rows = (sb.table("pipeline_clips").select("*")
-            .in_("label_status", ["pending", "queued", "prelabelled"])
-            .limit(limit).execute().data)
+    q = (sb.table("pipeline_clips").select("*")
+         .in_("label_status", ["pending", "queued", "prelabelled"]))
+    # A trial must judge the *same* clips for every model, so it takes them
+    # in a stable order rather than whatever the table hands back.
+    rows = (q.order("clip_id").limit(limit).execute().data if trial
+            else q.limit(limit).execute().data)
 
     done = changed = skipped = 0
     for row in rows:
@@ -1103,6 +1113,22 @@ def rejudge(request: fastapi.Request):
             shift = int(round(t_off / frame_dt))
             shifted = {int(k) - shift: v for k, v in boxes.items()
                        if int(k) - shift >= 0}
+            if trial:
+                # One verdict per clip on the bench: the first bang is the
+                # comparable unit, and a burst's later shots would only add
+                # noise to a like-for-like test.
+                o, cf, colour = _judge_shot(row, frames, fps, step, shifted)
+                if o is None:
+                    skipped += 1
+                    continue
+                sb.table("verdict_trials").upsert({
+                    "clip_id": row["clip_id"], "model": model_name,
+                    "outcome": o, "outcome_conf": cf, "clay_colour": colour,
+                }).execute()
+                if o != row.get("outcome"):
+                    changed += 1
+                done += 1
+                continue
             if metrics_only:
                 outcome = row.get("outcome")
                 verdicts = {}
@@ -1132,8 +1158,9 @@ def rejudge(request: fastapi.Request):
             print(f"[rejudge] {row.get('clip_id')} failed: {e}")
             skipped += 1
 
-    return {"stage": "rejudge", "rejudged": done,
-            "verdicts_changed": changed, "skipped": skipped}
+    return {"stage": "rejudge", "model": model_name,
+            "trial": trial, "rejudged": done,
+            "differs_from_live": changed, "skipped": skipped}
 
 
 def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
