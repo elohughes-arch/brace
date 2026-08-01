@@ -1163,73 +1163,115 @@ function shell(body) {
 /* ---------- control ---------- */
 
 function controlView() {
-  const c = state.counts;
-  const n = (k) => (c && c[k] != null ? fmt(c[k]) : '—');
-  const live = (k) => (c && c[k] > 0 ? 'on' : 'off');
+  const c = state.counts || {};
+  const n = (k) => (c[k] != null ? fmt(c[k]) : '—');
 
-  const cardDefs = [
-    ...STAGES.map((s) => ({ key: s.key, label: s.label, sub: s.note })),
-    { key: 'rejected', label: 'Rejected', sub: 'triage said no' },
-    { key: 'error', label: 'Errored', sub: 'needs a retry', warn: true },
+  // The three gates only a human can open. Everything else on this page is
+  // the machine reporting; this is the page's actual job.
+  const gates = [
+    { href: '#review', num: c.downloaded ?? 0, label: 'videos to review',
+      sub: 'approve what is worth cutting' },
+    { href: '#triage', num: c.pending ?? 0, label: 'clips to check',
+      sub: 'clay-verified, trimmed to the flight' },
+    { href: ROBOFLOW_ANNOTATE, num: c.prelabelled ?? 0, label: 'in Roboflow to verify',
+      sub: 'the golden work — boxes checked by hand', out: true },
   ];
+
+  // Where work is sitting, read left to right. A step with nothing in it is
+  // a hairline; a step holding work lights up, so the shape of the backlog
+  // arrives in one glance instead of six equal cards.
+  const flow = (steps) => `
+    <div class="flow">
+      ${steps.map((s, i) => `
+        ${i ? '<span class="flow-arrow">›</span>' : ''}
+        <div class="flow-step ${s.v ? 'on' : ''} ${s.warn && s.v ? 'bad' : ''}">
+          <div class="fnum">${fmt(s.v)}</div>
+          <div class="flab">${s.label}</div>
+        </div>`).join('')}
+    </div>`;
+
+  // The machine's own line: is it beating, is it well, what has it spent.
+  const hb = (state.health || []).find((h) => h.probe === 'heartbeat');
+  const unwell = (state.health || []).filter((h) => healthStatus(h)[0] !== 'ok').length;
 
   return `
     <div class="crm-head">
       <div>
-        <h1>Pipeline</h1>
-        <p>Third-party footage in, labelled clays out. Triage and everything after it run on Modal.</p>
+        <h1>Home</h1>
+        <p>Third-party footage in, labelled clays out. The machine runs itself every
+           hour; what is below is what it needs from you, and where the work sits.</p>
       </div>
-      ${c && c.error ? `<a href="#" id="retry" class="p-act warn">Send ${n('error')} errored back</a>` : ''}
+      ${c.error ? `<a href="#" id="retry" class="p-act warn">Send ${n('error')} errored back</a>` : ''}
     </div>
 
-    <div class="stats">
-      ${cardDefs.map((s) => `
-        <div class="stat ${s.warn && c && c[s.key] ? 'stat-warn' : ''}">
-          <span class="clay ${live(s.key)}"></span>
-          <div class="num">${n(s.key)}</div>
-          <div class="cap">${s.label}</div>
-          <div class="sub">${s.sub}</div>
-        </div>`).join('')}
+    <div class="gates">
+      ${gates.map((g) => `
+        <a class="gatecard ${g.num ? 'live' : ''}" href="${esc(g.href)}"
+           ${g.out ? 'target="_blank" rel="noopener"' : ''}>
+          <div class="g-num">${fmt(g.num)}</div>
+          <div class="g-lab">${g.label}${g.out ? ' ↗' : ''}</div>
+          <div class="g-sub">${g.sub}</div>
+        </a>`).join('')}
     </div>
 
-    <div class="tally">
-      <span>${n('raw')} clips being screened for clays</span>
-      <span>${n('pending')} clips awaiting your check</span>
-      <span>${n('queued')} queued for AI labelling</span>
-      <span>${n('prelabelled')} pre-labelled</span>
+    <div class="machine">
+      <span class="m-dot ${hb && healthStatus(hb)[0] === 'ok' ? 'on' : hb ? 'bad' : ''}"></span>
+      <span>${hb ? `Last beat ${ago(hb.checked_at)}` : 'No beat recorded yet'}</span>
+      <span class="m-sep">·</span>
+      <a href="#health">${unwell ? `${unwell} probe${unwell === 1 ? '' : 's'} need attention`
+    : 'all systems healthy'}</a>
+      ${state.spend && state.spend.scored ? `<span class="m-sep">·</span>
+        <span>${fmt(state.spend.scored)} videos scored for ~$${state.spend.usd.toFixed(2)}</span>` : ''}
     </div>
 
-    <div class="grid">
+    <section class="panel">
+      <div class="p-head"><span class="p-title">Where the work is sitting</span>
+        <a class="p-act" href="#" id="refresh">Refresh</a></div>
+      <div class="flow-label">Videos</div>
+      ${flow([
+    { v: c.discovered ?? 0, label: 'found' },
+    { v: c.downloaded ?? 0, label: 'triaged' },
+    { v: c.approved ?? 0, label: 'approved' },
+    { v: c.clipped ?? 0, label: 'clipped' },
+    { v: c.error ?? 0, label: 'errored', warn: true },
+  ])}
+      <div class="flow-label">Clips</div>
+      ${flow([
+    { v: c.raw ?? 0, label: 'screening' },
+    { v: c.pending ?? 0, label: 'to check' },
+    { v: c.queued ?? 0, label: 'queued' },
+    { v: c.prelabelled ?? 0, label: 'in Roboflow' },
+  ])}
+      <p class="foot-note">The hourly beat moves work rightwards on its own: triage
+         what discovery found, clip what you approved, screen what was cut, upload
+         what you sent. A step that stays lit for hours is where to look, and the
+         Health page says whether the beat is still running.</p>
+    </section>
+
+    <div class="grid" style="margin-top:18px">
       <section class="panel">
-        <div class="p-head"><span class="p-title">Run a stage</span>
-          <span>
-            <select id="batch" class="mini" title="How many videos one press works through — the cost dial">
-              ${[3, 10, 25, 50].map((v) => `<option value="${v}" ${v === batch ? 'selected' : ''}>${v} at a time</option>`).join('')}
-            </select>
-            <a class="p-act" href="#" id="refresh" style="margin-left:10px">Refresh</a>
-          </span></div>
-        <div class="runs">
+        <div class="p-head"><span class="p-title">Run a stage by hand</span>
+          <select id="batch" class="mini" title="How many videos one press works through — the cost dial">
+            ${[3, 10, 25, 50].map((v) => `<option value="${v}" ${v === batch ? 'selected' : ''}>${v} at a time</option>`).join('')}
+          </select></div>
+        <div class="runrow">
           ${RUNS.map((r) => `
-            <div class="run">
-              <button class="btn ${r.primary ? '' : 'btn-ghost'}" data-stage="${r.stage}"
-                ${running ? 'disabled' : ''}>${running === r.stage ? `${r.busy}…` : r.label}</button>
-              <p>${r.desc}</p>
-            </div>`).join('')}
+            <button class="btn ${r.primary ? '' : 'btn-ghost'} mini-btn" data-stage="${r.stage}"
+              title="${esc(r.desc)}" ${running ? 'disabled' : ''}>
+              ${running === r.stage ? `${r.busy}…` : r.label}</button>`).join('')}
         </div>
-        <p class="foot-note">Discover runs here and answers straight away. The other
-           three need yt-dlp, ffmpeg and a GPU, so they run on Modal and can outlive
-           the request: a button that comes back saying it is still running is Modal
-           working, not a failure, and the counts above move as it goes. The batch
-           size is the cost dial — small while trying things out, larger once a run
-           is trusted.</p>
+        <p class="foot-note">Only needed to push something through early — the beat
+           does all of this hourly. Discover answers here and now; the rest run on
+           Modal and can outlive the request, so "still running" is Modal working,
+           not a failure. The batch size is the cost dial.</p>
       </section>
 
       <section class="panel">
         <div class="p-head"><span class="p-title">Activity</span></div>
-        ${log.length ? log.slice(0, 14).map((l, i) => `
+        ${log.length ? log.slice(0, 12).map((l, i) => `
           <div class="line ${l.tone} ${i === 0 ? 'fresh' : ''}">
             <span class="t">${l.t}</span><span class="m">${esc(l.line)}</span>
-          </div>`).join('') : '<div class="empty">Nothing run this session yet.</div>'}
+          </div>`).join('') : '<div class="empty">Nothing run this session yet — the machine does not need you to press anything.</div>'}
       </section>
     </div>
 

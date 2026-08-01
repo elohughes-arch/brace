@@ -518,3 +518,49 @@ label.row, .pickside { cursor: pointer; }
 /* Pile selection: the tick floats on the card's corner */
 .cardv.rej { position: relative; }
 .cardv.rej .pilebox { position: absolute; top: 10px; left: 10px; z-index: 3; }
+
+/* ---------- Home: the gates, the machine line, the flow ----------
+   The page's job is to say what needs a human, not to list state. The three
+   gates lead; the funnel shows where work is sitting; the run buttons — which
+   the hourly beat presses anyway — shrink to a row. */
+.gates { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px; margin-bottom: 16px; }
+.gatecard { display: block; padding: 20px 22px; border-radius: var(--r-lg);
+  border: 1px solid var(--line); background: var(--bg-raised);
+  transition: border-color 160ms var(--ease-out), background 160ms var(--ease-out); }
+.gatecard:hover { border-color: var(--line-strong); background: var(--bg-raised2); }
+.gatecard.live { border-color: rgba(240,90,40,.45); background: rgba(240,90,40,.07); }
+.gatecard.live:hover { border-color: var(--clay); }
+.gatecard .g-num { font-size: 34px; font-weight: 600; line-height: 1;
+  color: var(--text-3); font-variant-numeric: tabular-nums; }
+.gatecard.live .g-num { color: var(--clay); }
+.gatecard .g-lab { font-size: 14px; color: var(--text-1); margin-top: 8px; }
+.gatecard .g-sub { font-size: 12px; color: var(--text-3); margin-top: 3px; }
+
+.machine { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-3); margin-bottom: 20px; }
+.machine a { border-bottom: 1px solid var(--line-strong); }
+.machine a:hover { color: var(--text-1); }
+.machine .m-sep { opacity: .5; }
+.m-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3);
+  opacity: .5; flex: 0 0 auto; }
+.m-dot.on { background: var(--hit); opacity: 1; }
+.m-dot.bad { background: var(--destructive); opacity: 1; }
+
+.flow-label { font-size: 11px; font-weight: 600; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--text-3); margin: 4px 0 8px; }
+.flow { display: flex; align-items: stretch; flex-wrap: wrap; gap: 4px;
+  margin-bottom: 18px; }
+.flow-arrow { align-self: center; color: var(--text-3); opacity: .45; font-size: 15px; }
+.flow-step { flex: 1 1 84px; padding: 10px 12px; border-radius: var(--r-md);
+  border: 1px solid var(--line); }
+.flow-step.on { border-color: rgba(240,90,40,.4); background: rgba(240,90,40,.06); }
+.flow-step.bad { border-color: rgba(224,112,95,.45); background: rgba(224,112,95,.08); }
+.flow-step .fnum { font-size: 19px; font-weight: 600; color: var(--text-3);
+  font-variant-numeric: tabular-nums; line-height: 1.2; }
+.flow-step.on .fnum { color: var(--text-1); }
+.flow-step.bad .fnum { color: var(--destructive); }
+.flow-step .flab { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+
+.runrow { display: flex; flex-wrap: wrap; gap: 8px; }
+.runrow .btn { width: auto; flex: 0 0 auto; }
