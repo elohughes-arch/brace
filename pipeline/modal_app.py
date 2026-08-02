@@ -829,6 +829,20 @@ def prelabel(request: fastapi.Request):
     project = rf.workspace().project(os.environ["ROBOFLOW_PROJECT"])
 
     sure = float(os.environ.get("AUTO_ACCEPT", 0.55))
+    # The mastersheet's conditions ride along as Roboflow tags. They are not
+    # training signal — a detector learns from pixels and boxes alone — but
+    # they are what makes accuracy measurable per condition rather than as
+    # one meaningless average: 94% on clear sky and 71% on overcast is a
+    # sourcing instruction; 89% overall is not.
+    vids = {}
+    try:
+        ids = list({r["video_id"] for r in rows})
+        vids = {v["video_id"]: v for v in
+                (sb.table("pipeline_videos").select("video_id,weather,ds_level")
+                 .in_("video_id", ids).execute().data or [])}
+    except Exception as e:  # noqa: BLE001 — tags are a nicety, never a blocker
+        print(f"[prelabel] could not read video conditions: {e}")
+
     done = uploaded = failed = 0
     for row in rows:
       try:
@@ -881,6 +895,13 @@ def prelabel(request: fastapi.Request):
                 tags.append("golden")
             if row.get("slo_mo"):
                 tags.append("slo-mo")
+            vid = vids.get(row["video_id"]) or {}
+            if vid.get("weather") and vid["weather"] != "unknown":
+                tags.append(f"weather-{vid['weather']}")
+            if vid.get("ds_level"):
+                tags.append(f"level-{vid['ds_level']}")
+            if row.get("clay_colour") and row["clay_colour"] != "unknown":
+                tags.append(f"clay-{row['clay_colour']}")
             project.upload(str(fp), annotation_path=str(ann),
                            split=split,
                            batch_name=("golden-holdout" if golden
