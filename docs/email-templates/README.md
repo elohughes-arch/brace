@@ -122,8 +122,13 @@ Brace; Resend's records are added beside these, and only the SPF row is
 edited rather than added.
 
 `braceshooting.co.uk` is the spare. It has no mail at all, and its apex
-carries three A records where it should carry one: `216.198.79.1` is Vercel,
-while `3.33.130.190` and `15.197.148.33` are GoDaddy's own forwarding — which
-is precisely the Invalid Configuration Vercel reports. Delete the two GoDaddy
-addresses, keep Vercel's, then point the domain at the .com as a redirect in
-Vercel so there is one address and one set of links in the world.
+carries two A records where it should carry one. In GoDaddy's table the
+second reads simply **Parked** — the registrar's own holding page, which
+answers on two addresses of its own (`3.33.130.190`, `15.197.148.33`) and is
+why Vercel calls the apex an Invalid Configuration: it expects to find only
+`216.198.79.1` there. Delete the Parked row, keep Vercel's, then point the
+domain at the .com as a redirect in Vercel so there is one address and one
+set of links in the world.
+
+The www side of the .co.uk is already right — a CNAME to a
+`vercel-dns-017.com` hostname — so only the apex needs attention.
