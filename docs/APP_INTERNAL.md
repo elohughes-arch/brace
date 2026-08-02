@@ -63,9 +63,9 @@ this reason.
 | AI spend | RPC `total_spend()` |
 | Dataset ladder | RPC `dataset_progress()`; splits via `split_preview()` |
 | Model trials | `verdict_trials` + RPC `trial_accuracy()` |
-| Tasks | `todos` — insert `{title, added_by}`, cross off by updating `done`/`done_at`; any owner may update |
+| Tasks | `todos` — a kanban: `status` is `not_started` / `in_progress` / `complete`. Insert `{title, added_by}` (status defaults to not started); move a task by updating `status` (also set `done` and `done_at` when it reaches complete, the web portal keeps them in step); any owner may update or delete |
 | Hours | `work_log` — insert `{email, hours, task, worked_on}`; owners read all, delete own |
-| Costs | `expenses` — `{email, item, amount, category, bought_on}`; categories: Software subscription, Hardware, Data & AI, Shooting, Other |
+| Costs | `expenses` — `{email, item, amount, category, bought_on, recurrence}`; categories: Software subscription, Hardware, Data & AI, Shooting, Other; `recurrence` is `one-time` / `weekly` / `monthly` / `yearly`. The forecast stat is derived, not stored: sum recurring rows normalised to a month (weekly ×52/12, monthly ×1, yearly ÷12) |
 
 Names for the two owners: `elohughes@icloud.com` → Eddie,
 `rupertokelly98@gmail.com` → Rupert.
@@ -79,6 +79,12 @@ Private bucket `documents` (owners-only via storage RLS):
   or QuickLook
 - Upload: `upload("\(timestamp)-\(filename)", data)` — the web portal prefixes
   a millisecond timestamp to dodge name collisions; do the same
+- Create: the web portal also *writes* documents — a title plus markdown body
+  uploaded as `\(timestamp)-\(title).md`. Mirror it with a simple editor if
+  you like; they are ordinary files in the same bucket
+- The dataset strategy is not a file: it is a live page (`#strategy` on the
+  web portal, fed by RPC `dataset_progress()`). In the app, render it from the
+  RPC rather than looking for a document
 
 The plan holds 100 GB; decks and PDFs are nothing.
 
@@ -88,7 +94,8 @@ Settings → **Internal** (owners only) →
 
 - **Agentic** — counts at the top, run buttons per stage, health dots,
   AI spend line
-- **Productivity** — to-do list with a done pile, log-hours form, hours split
+- **Productivity** — the kanban (not started / in progress / complete),
+  log-hours form, hours split
 - **Costs** — purchase form, totals, category split
 - **Documents** — the shelf
 

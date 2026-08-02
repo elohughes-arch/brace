@@ -1219,7 +1219,7 @@ async function loadProd() {
     supabase.from('work_log').select('*')
       .order('worked_on', { ascending: false }).order('id', { ascending: false }).limit(200),
     supabase.from('todos').select('*')
-      .order('done').order('created_at', { ascending: false }).limit(200),
+      .order('created_at', { ascending: false }).limit(200),
   ]);
   return {
     logs: logs.data || [], tasks: tasks.data || [],
@@ -1242,11 +1242,15 @@ async function loadDocs() {
   } catch (e) { return { rows: [], err: String(e && e.message || e) }; }
 }
 
+const KANBAN = [
+  ['not_started', 'Not started'],
+  ['in_progress', 'In progress'],
+  ['complete', 'Complete'],
+];
+
 function productivityView() {
   if (state.loading) return '<div class="empty">Loading…</div>';
   const { logs = [], tasks = [], err = '' } = state.prod || {};
-  const open = tasks.filter((t) => !t.done);
-  const done = tasks.filter((t) => t.done).slice(0, 20);
 
   const byPerson = new Map();
   logs.forEach((l) => byPerson.set(l.email, (byPerson.get(l.email) || 0) + Number(l.hours)));
@@ -1289,25 +1293,26 @@ function productivityView() {
     ${err ? `<div class="err" style="margin-bottom:14px">${esc(err)}</div>` : ''}
 
     <section class="panel" style="margin-bottom:18px">
-      <div class="p-head"><span class="p-title">To do — ${fmt(open.length)}</span></div>
-      <form id="addtask" class="formrow">
+      <div class="p-head"><span class="p-title">The board — drag a task between lanes</span></div>
+      <form id="addtask" class="formrow" style="margin-bottom:14px">
         <input class="inp grow" type="text" id="task-title" placeholder="What needs doing?" required />
         <button class="btn mini-btn" type="submit">Add</button>
       </form>
-      ${open.length ? open.map((t) => `
-        <div class="row">
-          <label class="pickside"><input type="checkbox" class="tick" data-taskdone="${t.id}" /></label>
-          <div class="main"><div class="t">${esc(t.title)}</div>
-            <div class="s">added by ${esc(who(t.added_by))} · ${dateFmt(t.created_at)}</div></div>
-        </div>`).join('') : '<div class="empty">Nothing on the list — add the next thing.</div>'}
-      ${done.length ? `
-      <div class="donehead">Done pile</div>
-      ${done.map((t) => `
-        <div class="row done">
-          <label class="pickside"><input type="checkbox" class="tick" checked data-taskdone="${t.id}" /></label>
-          <div class="main"><div class="t struck">${esc(t.title)}</div>
-            <div class="s">${t.done_at ? dateFmt(t.done_at) : ''}</div></div>
-        </div>`).join('')}` : ''}
+      <div class="kanban">
+        ${KANBAN.map(([key, label]) => {
+    const lane = tasks.filter((t) => (t.status || 'not_started') === key);
+    return `
+        <div class="kcol" data-col="${key}">
+          <div class="khead">${label} <b>${fmt(lane.length)}</b></div>
+          ${lane.map((t) => `
+          <div class="kcard ${key === 'complete' ? 'kdone' : ''}" draggable="true" data-task="${t.id}">
+            <div class="t ${key === 'complete' ? 'struck' : ''}">${esc(t.title)}</div>
+            <div class="s">${esc(who(t.added_by))} · ${dateFmt(key === 'complete' && t.done_at ? t.done_at : t.created_at)}</div>
+            <button class="kdel" data-taskdel="${t.id}" title="Delete">×</button>
+          </div>`).join('') || '<div class="kempty">Drop here</div>'}
+        </div>`;
+  }).join('')}
+      </div>
     </section>
 
     <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
@@ -1342,16 +1347,26 @@ function productivityView() {
 
 const COST_CATS = ['Software subscription', 'Hardware', 'Data & AI', 'Shooting', 'Other'];
 
+// A recurring purchase's weight on one month's bill.
+const MONTHLY = { weekly: 52 / 12, monthly: 1, yearly: 1 / 12 };
+
 function costsView() {
   if (state.loading) return '<div class="empty">Loading…</div>';
   const { rows = [], err = '' } = state.costs || {};
   const total = rows.reduce((a, r) => a + Number(r.amount), 0);
+  const month = today().slice(0, 7);
+  const thisMonth = rows.filter((r) => (r.bought_on || '').startsWith(month))
+    .reduce((a, r) => a + Number(r.amount), 0);
+  const forecast = rows.filter((r) => MONTHLY[r.recurrence])
+    .reduce((a, r) => a + Number(r.amount) * MONTHLY[r.recurrence], 0);
   const byCat = new Map();
   const byPerson = new Map();
   rows.forEach((r) => {
     byCat.set(r.category, (byCat.get(r.category) || 0) + Number(r.amount));
     byPerson.set(r.email, (byPerson.get(r.email) || 0) + Number(r.amount));
   });
+  const spent = (e) => rows.filter((r) => r.email === e)
+    .reduce((a, r) => a + Number(r.amount), 0);
   const catSlices = [...byCat.entries()].sort((a, b) => b[1] - a[1])
     .map(([c, v]) => ({ label: c, v, text: gbp(v) }));
   const perSlices = [...byPerson.entries()]
@@ -1362,7 +1377,7 @@ function costsView() {
       <span class="dot on"></span>
       <div class="main">
         <div class="t">${esc(r.item)}</div>
-        <div class="s">${esc(r.category)} · ${esc(who(r.email))} · ${dateFmt(r.bought_on)}</div>
+        <div class="s">${esc(r.category)} · ${esc(who(r.email))} · ${dateFmt(r.bought_on)}${r.recurrence && r.recurrence !== 'one-time' ? ` · <span class="rec-tag">${esc(r.recurrence)}</span>` : ''}</div>
       </div>
       <div class="end"><span class="s"><b>${gbp(r.amount)}</b></span>
         ${r.email === state.email ? `<button class="linky bad" data-costdel="${r.id}">Remove</button>` : ''}</div>
@@ -1378,15 +1393,17 @@ function costsView() {
     </div>
     ${err ? `<div class="err" style="margin-bottom:14px">${esc(err)}</div>` : ''}
 
-    <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+    <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
       <div class="stat"><div class="num">${gbp(total)}</div>
-        <div class="cap">Total spend</div><div class="sub">${fmt(rows.length)} purchases on the record</div></div>
-      ${[...byPerson.entries()].map(([e, v]) => `
-      <div class="stat"><div class="num">${gbp(v)}</div>
-        <div class="cap">${esc(who(e))}</div>
-        <div class="sub">${fmt(rows.filter((r) => r.email === e).length)} purchases</div></div>`).join('')}
-      <div class="stat"><div class="num">${rows.length ? gbp(total / rows.length) : '—'}</div>
-        <div class="cap">Average purchase</div><div class="sub">total over count</div></div>
+        <div class="cap">Total expenses</div><div class="sub">${fmt(rows.length)} purchases, all time</div></div>
+      <div class="stat"><div class="num">${gbp(thisMonth)}</div>
+        <div class="cap">This month</div><div class="sub">logged since the 1st</div></div>
+      <div class="stat"><div class="num">${gbp(forecast)}</div>
+        <div class="cap">Next month, forecast</div><div class="sub">what the subscriptions will take</div></div>
+      <div class="stat"><div class="num">${gbp(spent('elohughes@icloud.com'))}</div>
+        <div class="cap">Eddie</div><div class="sub">all time</div></div>
+      <div class="stat"><div class="num">${gbp(spent('rupertokelly98@gmail.com'))}</div>
+        <div class="cap">Rupert</div><div class="sub">all time</div></div>
     </div>
 
     <div class="grid">
@@ -1398,7 +1415,16 @@ function costsView() {
           <select class="inp" id="ac-cat">
             ${COST_CATS.map((c) => `<option>${c}</option>`).join('')}
           </select>
-          <input class="inp" type="date" id="ac-date" value="${today()}" required />
+          <input type="hidden" id="ac-rec" value="one-time" />
+          <div class="pillrow">
+            <button type="button" class="callbtn on" data-costkind="one-time">One time</button>
+            <button type="button" class="callbtn" data-costkind="rec">Recurring</button>
+            <span id="ac-freqs" style="display:none">
+              <button type="button" class="callbtn" data-costfreq="weekly">Weekly</button>
+              <button type="button" class="callbtn on" data-costfreq="monthly">Monthly</button>
+              <button type="button" class="callbtn" data-costfreq="yearly">Yearly</button>
+            </span>
+          </div>
           <button class="btn" type="submit">Log as ${esc(who(state.email))}</button>
         </form>
       </section>
@@ -1442,14 +1468,36 @@ function documentsView() {
         <p>The company's shelf: decks, market research, agreements — anything worth
            both of you being able to reach. Private to owners, like everything here.</p>
       </div>
+      <button class="btn mini-btn" id="doccompose">New document</button>
       <button class="btn mini-btn" id="docpick">Upload</button>
       <input type="file" id="docupload" multiple style="display:none" />
     </div>
     ${err ? `<div class="err" style="margin-bottom:14px">${esc(err)}</div>` : ''}
+    <section class="panel" id="composer" style="display:none;margin-bottom:18px">
+      <div class="p-head"><span class="p-title">A new document, written here</span></div>
+      <div class="formcol">
+        <input class="inp" type="text" id="doc-title" placeholder="Title" />
+        <textarea class="inp doc-body" id="doc-body" placeholder="Write. Markdown works: # headings, **bold**, - lists."></textarea>
+        <div class="formrow">
+          <button class="btn mini-btn" id="docsave" type="button">Save to the shelf</button>
+        </div>
+      </div>
+    </section>
+    <section class="panel" style="margin-bottom:18px">
+      <div class="p-head"><span class="p-title">Living documents</span></div>
+      <div class="row">
+        <span class="dot on"></span>
+        <div class="main">
+          <div class="t">Dataset strategy</div>
+          <div class="s">The complexity ladder and its live counts — a page, not a file, so it is never stale.</div>
+        </div>
+        <div class="end"><a class="linky" href="#strategy">Open</a></div>
+      </div>
+    </section>
     <section class="panel">
       <div class="p-head"><span class="p-title">${fmt(rows.length)} document${rows.length === 1 ? '' : 's'} · ${size(used)} of 100 GB on the plan</span></div>
       ${rows.length ? rows.map(row).join('')
-    : '<div class="empty">Empty shelf. Upload the deck, the market research, the plan.</div>'}
+    : '<div class="empty">Empty shelf. Write one here, or upload the deck.</div>'}
       <p class="foot-note">Files live in the same private storage as the clip previews,
          behind the same owners-only rule; Open mints a one-hour signed link. The plan
          holds a hundred gigabytes across everything — room for every deck this
@@ -1526,7 +1574,7 @@ let dashEpoch = -1;
 const dashboardIsCurrent = () => dashEpoch === epoch;
 
 const AGENTIC_VIEWS = ['control', 'review', 'sources', 'triage', 'rejected',
-  'labelling', 'mastersheet', 'strategy', 'export', 'health'];
+  'labelling', 'mastersheet', 'export', 'health'];
 
 /* The portal's front door: four rooms, pick one. The wordmark up top
    always leads back here. */
@@ -1563,7 +1611,6 @@ function shell(body) {
           <a href="#control" class="navhead on">Agentic</a>
           <div class="groupnav">
           ${item('control', 'Home')}
-          ${item('strategy', 'Dataset strategy')}
           ${item('sources', 'Sources')}
           ${item('triage', 'Triage', state.counts?.pending)}
           <a href="#rejected" class="sub ${view === 'rejected' ? 'on' : ''}">Rejected pile${(state.pile?.vtotal || 0) + (state.pile?.total || 0) ? ` <b>${fmt((state.pile?.vtotal || 0) + (state.pile?.total || 0))}</b>` : ''}</a>
@@ -1576,7 +1623,7 @@ function shell(body) {
           <a href="#control" class="navhead">Agentic</a>
           <a href="#productivity" class="navhead ${view === 'productivity' ? 'on' : ''}">Productivity${state.counts?.todo ? ` <b>${fmt(state.counts.todo)}</b>` : ''}</a>
           <a href="#costs" class="navhead ${view === 'costs' ? 'on' : ''}">Costs</a>
-          <a href="#documents" class="navhead ${view === 'documents' ? 'on' : ''}">Documents</a>`}
+          <a href="#documents" class="navhead ${view === 'documents' || view === 'strategy' ? 'on' : ''}">Documents</a>`}
         </nav>
         <div class="side-foot">
           ${state.spend && state.spend.usd
@@ -2416,7 +2463,7 @@ function signature() {
     state.health,
     (state.trials?.trials || []).length,
     rejPage, (state.pile?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')), state.pile?.total,
-    (state.prod?.logs || []).length, (state.prod?.tasks || []).map((t) => t.id + (t.done ? 'd' : '')),
+    (state.prod?.logs || []).length, (state.prod?.tasks || []).map((t) => t.id + (t.status || '')),
     (state.costs?.rows || []).length, (state.docs?.rows || []).map((f) => f.name),
     (state.pile?.vids || []).map((v) => v.video_id), state.pile?.vtotal,
     state.coverage,
@@ -2517,12 +2564,38 @@ function paint(force = false) {
     document.getElementById('task-title').value = '';
     refresh();
   });
-  document.querySelectorAll('[data-taskdone]').forEach((cb) =>
-    cb.addEventListener('change', async () => {
+  document.querySelectorAll('.kcard').forEach((card) => {
+    card.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', card.dataset.task);
+      e.dataTransfer.effectAllowed = 'move';
+      card.classList.add('dragging');
+    });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+  });
+  document.querySelectorAll('.kcol').forEach((col) => {
+    col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('over'); });
+    col.addEventListener('dragleave', () => col.classList.remove('over'));
+    col.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      col.classList.remove('over');
+      const id = Number(e.dataTransfer.getData('text/plain'));
+      if (!id) return;
+      const to = col.dataset.col;
       const { error } = await supabase.from('todos')
-        .update({ done: cb.checked, done_at: cb.checked ? new Date().toISOString() : null })
-        .eq('id', Number(cb.dataset.taskdone)).select('id');
-      if (error) note(`could not update the task — ${error.message}`, 'bad');
+        .update({
+          status: to,
+          done: to === 'complete',
+          done_at: to === 'complete' ? new Date().toISOString() : null,
+        }).eq('id', id).select('id');
+      if (error) note(`could not move the task — ${error.message}`, 'bad');
+      refresh();
+    });
+  });
+  document.querySelectorAll('[data-taskdel]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const { error } = await supabase.from('todos').delete()
+        .eq('id', Number(b.dataset.taskdel));
+      if (error) note(`could not delete the task — ${error.message}`, 'bad');
       refresh();
     }));
   document.getElementById('loghours')?.addEventListener('submit', async (e) => {
@@ -2542,6 +2615,24 @@ function paint(force = false) {
       await supabase.from('work_log').delete().eq('id', Number(b.dataset.logdel));
       refresh();
     }));
+  // One time / Recurring pills, DOM-only so a click never wipes a half-typed
+  // form: the choice lives in a hidden input until submit.
+  document.querySelectorAll('[data-costkind]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const rec = b.dataset.costkind === 'rec';
+      document.querySelectorAll('[data-costkind]').forEach((x) =>
+        x.classList.toggle('on', x === b));
+      document.getElementById('ac-freqs').style.display = rec ? '' : 'none';
+      document.getElementById('ac-rec').value = rec
+        ? (document.querySelector('[data-costfreq].on')?.dataset.costfreq || 'monthly')
+        : 'one-time';
+    }));
+  document.querySelectorAll('[data-costfreq]').forEach((b) =>
+    b.addEventListener('click', () => {
+      document.querySelectorAll('[data-costfreq]').forEach((x) =>
+        x.classList.toggle('on', x === b));
+      document.getElementById('ac-rec').value = b.dataset.costfreq;
+    }));
   document.getElementById('addcost')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const { error } = await supabase.from('expenses').insert({
@@ -2549,7 +2640,8 @@ function paint(force = false) {
       item: document.getElementById('ac-item').value.trim(),
       amount: Number(document.getElementById('ac-amount').value),
       category: document.getElementById('ac-cat').value,
-      bought_on: document.getElementById('ac-date').value,
+      bought_on: today(),
+      recurrence: document.getElementById('ac-rec').value,
     }).select('id');
     note(error ? `could not log the purchase — ${error.message}` : 'purchase logged', error ? 'bad' : 'good');
     if (!error) { document.getElementById('ac-item').value = ''; document.getElementById('ac-amount').value = ''; }
@@ -2560,6 +2652,26 @@ function paint(force = false) {
       await supabase.from('expenses').delete().eq('id', Number(b.dataset.costdel));
       refresh();
     }));
+  document.getElementById('doccompose')?.addEventListener('click', () => {
+    const c = document.getElementById('composer');
+    c.style.display = c.style.display === 'none' ? '' : 'none';
+    if (c.style.display !== 'none') document.getElementById('doc-title')?.focus();
+  });
+  document.getElementById('docsave')?.addEventListener('click', async () => {
+    const title = document.getElementById('doc-title').value.trim();
+    const body = document.getElementById('doc-body').value;
+    if (!title) { note('give it a title first', 'bad'); return; }
+    const name = `${Date.now()}-${title.replace(/[^\w\- ]+/g, '').trim() || 'untitled'}.md`;
+    const { error } = await supabase.storage.from('documents')
+      .upload(name, new Blob([body], { type: 'text/markdown' }));
+    note(error ? `could not save — ${error.message}` : 'saved to the shelf', error ? 'bad' : 'good');
+    if (!error) {
+      document.getElementById('doc-title').value = '';
+      document.getElementById('doc-body').value = '';
+      document.getElementById('composer').style.display = 'none';
+    }
+    refresh();
+  });
   document.getElementById('docpick')?.addEventListener('click', () =>
     document.getElementById('docupload')?.click());
   document.getElementById('docupload')?.addEventListener('change', async (e) => {
