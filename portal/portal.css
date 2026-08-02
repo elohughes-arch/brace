@@ -579,3 +579,6 @@ label.row, .pickside { cursor: pointer; }
 .callbtn:hover { border-color: var(--line-strong); color: var(--text-1); }
 .callbtn.on { background: var(--clay); border-color: var(--clay);
   color: var(--ink-on-clay); font-weight: 600; }
+
+/* One clear way out of the sign-in screen */
+.gate-foot .btn { width: auto; padding: 9px 16px; font-size: 11px; }

@@ -99,6 +99,12 @@ function renderBroken(what, err) {
   });
 }
 
+// A recovery arrival must always reach the password screen. Before this, the
+// route depended on a per-tab flag, so a stale one sent an owner who had come
+// to reset their password to the authenticator instead — the one screen that
+// cannot help them.
+let recovering = /[?&#]type=recovery/.test(window.location.href);
+
 /* ---------- 1 · password ---------- */
 
 function renderSignIn(err = '') {
@@ -112,8 +118,7 @@ function renderSignIn(err = '') {
       <button class="btn" type="submit">Continue</button>
     </form>
     <div class="gate-foot">
-      <a href="#" id="first">First time, or forgotten it?</a><br />
-      <a href="../app/">Open the app</a> · <a href="../">Back to the site</a>
+      <button class="btn btn-ghost" id="first" type="button">Forgot password</button>
     </div>`);
 
   document.getElementById('f').addEventListener('submit', async (e) => {
@@ -138,9 +143,10 @@ function renderSignIn(err = '') {
 
 function renderBootstrap(err = '') {
   gate(`
-    <h1>Set up your access</h1>
-    <p class="gate-lede">We'll email you a one-time link. It won't open the portal on its own —
-       it lets you set a password and add your authenticator.</p>
+    <h1>Reset your password</h1>
+    <p class="gate-lede">We'll email you a reset link. It cannot open the portal on its
+       own — it lets you set a new password, and your authenticator is still required
+       afterwards.</p>
     <form id="f">
       <div class="field"><input type="email" id="email" placeholder="you@estate.com" autocomplete="email" required /></div>
       <div class="err" id="err">${esc(err)}</div>
@@ -153,14 +159,13 @@ function renderBootstrap(err = '') {
     const btn = e.target.querySelector('.btn');
     const email = document.getElementById('email').value.trim();
     busy(btn, true, 'Sending…'); setErr('');
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin + window.location.pathname },
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin + window.location.pathname,
     });
     if (error) { busy(btn, false, 'Email me a link'); setErr(error.message); return; }
     gate(`<h1>Check your inbox</h1>
-      <p class="gate-lede">A set-up link is on its way to <strong>${esc(email)}</strong>.
-         Open it on this device.</p>`);
+      <p class="gate-lede">A reset link is on its way to <strong>${esc(email)}</strong>.
+         Open it on this device — it lands on a page for choosing a new password.</p>`);
   });
   document.getElementById('back').addEventListener('click', (e) => { e.preventDefault(); renderSignIn(); });
 }
@@ -194,6 +199,7 @@ function renderSetPassword(err = '', change = false) {
       password: a, data: { portal_password_set: true },
     });
     if (error) { busy(btn, false, 'Save password'); return setErr(error.message); }
+    recovering = false;
     sessionStorage.setItem('brace-portal-pw', '1');
     boot();
   });
@@ -2483,6 +2489,8 @@ async function route() {
   if (ownerEmail.error) return renderBroken('Could not check the owners list.', ownerEmail.error);
   if (!ownerEmail.data) return renderDenied(email);
 
+  if (recovering) return renderSetPassword();
+
   stage('checking your sign-in method');
   const { data: aal } = await within(supabase.auth.mfa.getAuthenticatorAssuranceLevel(), 12, 'Reading your assurance level');
 
@@ -2524,6 +2532,11 @@ async function route() {
 
 supabase.auth.onAuthStateChange((event, session) => {
   if (event === 'SIGNED_OUT') { routedToken = null; return boot(); }
+  if (event === 'PASSWORD_RECOVERY') {
+    recovering = true;
+    sessionStorage.removeItem('brace-portal-pw');   // a stale flag must not skip it
+    return boot();
+  }
   if (event !== 'SIGNED_IN' && event !== 'MFA_CHALLENGE_VERIFIED') return;
   // A stored session is replayed as SIGNED_IN on every load, so this fires once
   // for a session route() is already handling. Re-route only when the token has
