@@ -124,6 +124,25 @@ def _sb():
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
 
+def _noted(sb, summary, tone="good"):
+    """Record a finished run in the portal's activity feed, then return it.
+
+    The browser only hears a 202 for long runs; this is how their real
+    outcome reaches the feed. Best-effort — the feed must never stop work.
+    """
+    try:
+        stage = summary.get("stage", "?")
+        said = " \u00b7 ".join(f"{k.replace('_', ' ')} {v}"
+                                for k, v in summary.items() if k != "stage")
+        sb.table("pipeline_activity").insert({
+            "stage": stage, "tone": tone, "email": "modal",
+            "line": f"{stage} finished on Modal" + (f" \u2014 {said}" if said else ""),
+        }).execute()
+    except Exception as e:  # noqa: BLE001
+        print(f"[activity] not recorded: {e}")
+    return summary
+
+
 def _split(group: str) -> str:
     """The split judge: deal a whole scene into train, valid or test.
 
@@ -496,17 +515,17 @@ def triage(request: fastapi.Request):
                                      f"{str(e)[:300]}"}
                 ).eq("video_id", vid).execute()
                 volume.commit()
-                return {"stage": "triage", "examined": len(rows),
+                return _noted(sb, {"stage": "triage", "examined": len(rows),
                         "kept": kept, "dropped": dropped, "errors": failed,
                         "stopped": "the Anthropic account is not answering — "
-                                   "nothing was marked errored, the queue is intact"}
+                                   "nothing was marked errored, the queue is intact"}, "bad")
             sb.table("pipeline_videos").update(
                 {"status": "error", "triage_notes": str(e)[:500]}
             ).eq("video_id", vid).execute()
             failed += 1
     volume.commit()
-    return {"stage": "triage", "examined": len(rows),
-            "kept": kept, "dropped": dropped, "errors": failed}
+    return _noted(sb, {"stage": "triage", "examined": len(rows),
+            "kept": kept, "dropped": dropped, "errors": failed})
 
 
 # ---------------------------------------------------------------- clip
@@ -660,8 +679,8 @@ def clip(request: fastapi.Request):
         except Exception as e:  # noqa: BLE001
             print(f"[clip] preview failed for {k['clip_id']}: {e}")
 
-    return {"stage": "clip", "videos": len(rows), "clips_created": made,
-            "previews_made": previewed, "errors": failed}
+    return _noted(sb, {"stage": "clip", "videos": len(rows), "clips_created": made,
+            "previews_made": previewed, "errors": failed})
 
 
 # ---------------------------------------------------------------- screen
@@ -840,7 +859,7 @@ def screen(request: fastapi.Request):
 
     volume.commit()   # the trims rewrote clip files on the volume
     _flush_usage(sb, "screen")
-    return {"stage": "screen", "processed": done, "kept": kept}
+    return _noted(sb, {"stage": "screen", "processed": done, "kept": kept})
 
 
 # ---------------------------------------------------------------- prelabel
@@ -973,8 +992,8 @@ def prelabel(request: fastapi.Request):
         print(f"[prelabel] {row.get('clip_id')} failed, left queued: {e}")
         failed += 1
 
-    return {"stage": "prelabel", "processed": done,
-            "frames_uploaded": uploaded, "errors": failed}
+    return _noted(sb, {"stage": "prelabel", "processed": done,
+            "frames_uploaded": uploaded, "errors": failed})
 
 
 def _judge_burst(row, frames, fps, step, boxes_per_frame):
@@ -1223,9 +1242,9 @@ def rejudge(request: fastapi.Request):
             skipped += 1
 
     _flush_usage(sb, "trial" if trial else "rejudge")
-    return {"stage": "rejudge", "model": model_name,
+    return _noted(sb, {"stage": "rejudge", "model": model_name,
             "trial": trial, "rejudged": done,
-            "differs_from_live": changed, "skipped": skipped}
+            "differs_from_live": changed, "skipped": skipped})
 
 
 def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):

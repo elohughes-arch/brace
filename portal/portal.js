@@ -400,10 +400,12 @@ const RUNS = [
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-const note = (line, tone = '') => { log.unshift({ t: now(), line, tone }); log.length = Math.min(log.length, 40); };
+const note = (line, tone = '') => { log.unshift({ ts: Date.now(), t: now(), line, tone }); log.length = Math.min(log.length, 40); };
 
 // The feed used to live only in this array, so a reload forgot every run.
-// Outcomes are also written to pipeline_activity; boot reads them back.
+// Run outcomes also land in pipeline_activity — written by this browser for
+// quick stages and by Modal itself for the long ones — and every refresh
+// reads the table back, so the feed is shared, durable, and live.
 const when = (iso) => {
   const d = new Date(iso);
   return d.toDateString() === new Date().toDateString()
@@ -414,12 +416,21 @@ function record(stage, line, tone = '') {
   supabase.from('pipeline_activity').insert({ stage, line, tone })
     .then(({ error }) => { if (error) console.warn('activity not recorded:', error.message); });
 }
-async function seedActivity() {
+async function loadActivity() {
   const { data } = await supabase.from('pipeline_activity')
     .select('at,line,tone').order('at', { ascending: false }).limit(40);
-  if (!data || !data.length) return;
-  log.length = 0;
-  data.forEach((r) => log.push({ t: when(r.at), line: r.line, tone: r.tone || '' }));
+  return data || [];
+}
+// One list from two sources: durable rows plus this tab's transient notes
+// ("task added", "purchase logged") that are not worth keeping. A quick run
+// appears in both — same line text — so the table copy is dropped.
+function feed() {
+  const local = log.map((l) => ({ ts: l.ts || 0, t: l.t, line: l.line, tone: l.tone }));
+  const seen = new Set(local.map((l) => l.line));
+  const past = (state.activity || [])
+    .filter((r) => !seen.has(r.line))
+    .map((r) => ({ ts: Date.parse(r.at), t: when(r.at), line: r.line, tone: r.tone || '' }));
+  return [...local, ...past].sort((a, b) => b.ts - a.ts).slice(0, 12);
 }
 
 const mmss = (s) => {
@@ -1588,7 +1599,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -1810,10 +1821,10 @@ function controlView() {
 
       <section class="panel">
         <div class="p-head"><span class="p-title">Activity</span></div>
-        ${log.length ? log.slice(0, 12).map((l, i) => `
+        ${feed().length ? feed().map((l, i) => `
           <div class="line ${l.tone} ${i === 0 ? 'fresh' : ''}">
             <span class="t">${l.t}</span><span class="m">${esc(l.line)}</span>
-          </div>`).join('') : '<div class="empty">Nothing run this session yet — the machine does not need you to press anything.</div>'}
+          </div>`).join('') : '<div class="empty">Nothing run yet — the machine does not need you to press anything.</div>'}
       </section>
     </div>
 
@@ -2500,6 +2511,7 @@ function signature() {
   return JSON.stringify([
     view, state.email, state.loading, running, state.counts,
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
+    (state.activity || []).length, state.activity?.[0]?.at,
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
     clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.owner_outcome || '')),
@@ -2934,7 +2946,7 @@ async function refresh() {
     // with it, and the page reported only that it could not read the pipeline.
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity] = await Promise.all([
       settle(loadCounts(), state.counts),
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
@@ -2957,6 +2969,7 @@ async function refresh() {
       view === 'costs' ? settle(loadCosts(), state.costs) : Promise.resolve(state.costs),
       view === 'documents' ? settle(loadDocs(), state.docs) : Promise.resolve(state.docs),
       view === 'triage' ? settle(loadDiscovered(), state.disc) : Promise.resolve(state.disc),
+      settle(loadActivity(), state.activity),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -2980,6 +2993,7 @@ async function refresh() {
     state.costs = costs;
     state.docs = docs;
     state.disc = disc;
+    state.activity = activity;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -3000,10 +3014,9 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
-  await seedActivity();          // yesterday's runs, back on the board
   await refresh();
   if (mine !== epoch) return;          // route() moved on; do not start a poll
   clearInterval(poll);

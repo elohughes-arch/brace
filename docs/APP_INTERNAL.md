@@ -60,6 +60,7 @@ this reason.
 | Counts / badges | `pipeline_videos` by `status`, `pipeline_clips` by `label_status`, `todos` where `done = false` |
 | Review queue | `pipeline_videos` where `status = 'downloaded'` |
 | Health | `pipeline_health` (probe, status, detail, checked_at) |
+| Activity feed | `pipeline_activity` (at, stage, line, tone) — every run's outcome, written by the web portal and by Modal itself; newest first |
 | AI spend | RPC `total_spend()` |
 | Dataset ladder | RPC `dataset_progress()`; splits via `split_preview()` |
 | Model trials | `verdict_trials` + RPC `trial_accuracy()` |
