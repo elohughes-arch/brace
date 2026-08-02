@@ -14,7 +14,7 @@
     confirmOver: 50,
   };
 
-  const OWNER_COLOURS = { eddie: "#2F6FEB", rupert: "#B8995A" };
+  const OWNER_COLOURS = { eddie: "#2F6FEB", rupert: "#7E9B82" };
 
   const selected = new Set();
   let marquee = null, dragStart = null, dragBase = new Set(), dragMoved = false;
@@ -272,7 +272,7 @@
       "#marquee { position: absolute; z-index: 9999; pointer-events: none;" +
       "  border: 1px solid #2F6FEB; background: rgba(47,111,235,.14); border-radius: 2px; }" +
       CONFIG.clipSelector + " { position: relative; user-select: none; cursor: pointer; border-radius: 6px;" +
-      "  box-shadow: inset 0 0 0 3px var(--owner-colour, transparent);" +
+      "  outline: 2px solid var(--owner-colour, transparent) !important; outline-offset: 3px;" +
       "  transition: box-shadow .12s ease, transform .12s ease, opacity .15s ease; }" +
       CONFIG.clipSelector + ".is-selected { box-shadow: inset 0 0 0 3px var(--owner-colour, #2F6FEB)," +
       "  0 0 0 3px #0B1B2D, 0 0 0 5px var(--owner-colour, #2F6FEB); transform: scale(.985); }" +
