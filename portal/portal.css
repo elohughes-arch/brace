@@ -582,3 +582,49 @@ label.row, .pickside { cursor: pointer; }
 
 /* One clear way out of the sign-in screen */
 .gate-foot .btn { width: auto; padding: 9px 16px; font-size: 11px; }
+
+/* ---------- The office: four rooms in the left column ---------- */
+
+/* Section heads in the nav — Agentic folds its ten pages beneath it */
+.views .navhead { display: block; font-size: 13px; font-weight: 600;
+  letter-spacing: .02em; color: var(--text-2); padding: 7px 12px;
+  border-radius: var(--r-pill); }
+.views .navhead:hover { color: var(--text-1); }
+.views .navhead.on { color: var(--text-1); background: rgba(255,255,255,.06); }
+.views .navhead b { color: var(--clay); font-weight: 500;
+  font-variant-numeric: tabular-nums; }
+.views .groupnav { margin: 2px 0 6px; padding-left: 6px;
+  border-left: 1px solid var(--line); }
+
+/* Donut charts drawn with a conic gradient — no library, no canvas */
+.donutwrap { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.donut { width: 128px; height: 128px; border-radius: 50%; flex: 0 0 auto;
+  position: relative; }
+.donut::after { content: ''; position: absolute; inset: 26px;
+  border-radius: 50%; background: var(--panel, #33352F); }
+.legend { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.legend .leg { display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+  color: var(--text-2); }
+.legend .swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+.legend .leg b { color: var(--text-1); font-weight: 600;
+  font-variant-numeric: tabular-nums; margin-left: auto; padding-left: 12px; }
+
+/* Office forms: one row, inputs that match the dark theme */
+.formrow { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+.formcol { display: flex; flex-direction: column; gap: 4px; }
+.formcol .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-3); }
+.inp { background: rgba(255,255,255,.05); border: 1px solid var(--line);
+  border-radius: var(--r-md); color: var(--text-1); font: inherit;
+  font-size: 13px; padding: 8px 11px; min-width: 0; }
+.inp:focus { outline: none; border-color: var(--line-strong); }
+.inp::placeholder { color: var(--text-3); }
+select.inp { appearance: none; }
+.grow { flex: 1 1 160px; }
+.formrow .btn { width: auto; flex: 0 0 auto; }
+
+/* The done pile: crossed off, kept forever */
+.donehead { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-3); border-top: 1px solid var(--line);
+  margin-top: 14px; padding-top: 12px; }
+.struck { text-decoration: line-through; color: var(--text-3); }

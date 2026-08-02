@@ -420,12 +420,13 @@ async function tally(table, idCol, stateCol, values) {
 }
 
 async function loadCounts() {
-  const [videos, clips] = await Promise.all([
+  const [videos, clips, todo] = await Promise.all([
     tally('pipeline_videos', 'video_id', 'status',
       ['discovered', 'downloaded', 'approved', 'clipped', 'rejected', 'binned', 'error']),
     tally('pipeline_clips', 'clip_id', 'label_status', ['raw', 'pending', 'queued', 'prelabelled']),
+    supabase.from('todos').select('id', { count: 'exact', head: true }).eq('done', false),
   ]);
-  return { ...videos, ...clips };
+  return { ...videos, ...clips, todo: todo.error ? 0 : (todo.count ?? 0) };
 }
 
 async function loadSources() {
@@ -1185,6 +1186,277 @@ function healthView() {
     </section>`;
 }
 
+
+/* ---------- the office: productivity, costs, documents ---------- */
+
+const NAMES = { 'elohughes@icloud.com': 'Eddie', 'rupertokelly98@gmail.com': 'Rupert' };
+const who = (e) => NAMES[e] || (e || '').split('@')[0];
+const PIE = ['#F05A28', '#4ECDC4', '#CBBE93', '#6FBE72', '#E0705F', '#8f9bff'];
+const today = () => new Date().toISOString().slice(0, 10);
+const gbp = (n) => `£${Number(n).toFixed(2)}`;
+
+// A donut with no chart library: conic-gradient does the slicing, a hole
+// punched by a pseudo-element, and a legend that carries the numbers.
+function donut(slices, title) {
+  const total = slices.reduce((a, x) => a + x.v, 0);
+  if (!total) return '<div class="empty">Nothing logged yet.</div>';
+  let acc = 0;
+  const stops = slices.map((x, i) => {
+    const from = (acc / total) * 100; acc += x.v;
+    return `${PIE[i % PIE.length]} ${from}% ${(acc / total) * 100}%`;
+  }).join(', ');
+  const leg = slices.map((x, i) =>
+    `<span><i style="background:${PIE[i % PIE.length]}"></i>${esc(x.label)} — ${x.text}</span>`).join('');
+  return `
+    <div class="donutwrap">
+      <div class="donut" style="background:conic-gradient(${stops})"><span>${esc(title)}</span></div>
+      <div class="legend">${leg}</div>
+    </div>`;
+}
+
+async function loadProd() {
+  const [logs, tasks] = await Promise.all([
+    supabase.from('work_log').select('*')
+      .order('worked_on', { ascending: false }).order('id', { ascending: false }).limit(200),
+    supabase.from('todos').select('*')
+      .order('done').order('created_at', { ascending: false }).limit(200),
+  ]);
+  return {
+    logs: logs.data || [], tasks: tasks.data || [],
+    err: logs.error?.message || tasks.error?.message || '',
+  };
+}
+
+async function loadCosts() {
+  const { data, error } = await supabase.from('expenses').select('*')
+    .order('bought_on', { ascending: false }).order('id', { ascending: false }).limit(300);
+  return { rows: data || [], err: error?.message || '' };
+}
+
+async function loadDocs() {
+  try {
+    const { data, error } = await supabase.storage.from('documents')
+      .list('', { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
+    if (error) return { rows: [], err: error.message };
+    return { rows: (data || []).filter((f) => f.name !== '.emptyFolderPlaceholder'), err: '' };
+  } catch (e) { return { rows: [], err: String(e && e.message || e) }; }
+}
+
+function productivityView() {
+  if (state.loading) return '<div class="empty">Loading…</div>';
+  const { logs = [], tasks = [], err = '' } = state.prod || {};
+  const open = tasks.filter((t) => !t.done);
+  const done = tasks.filter((t) => t.done).slice(0, 20);
+
+  const byPerson = new Map();
+  logs.forEach((l) => byPerson.set(l.email, (byPerson.get(l.email) || 0) + Number(l.hours)));
+  const slices = [...byPerson.entries()].map(([e, v]) =>
+    ({ label: who(e), v, text: `${Math.round(v * 10) / 10}h` }));
+  const totalH = logs.reduce((a, l) => a + Number(l.hours), 0);
+
+  const personCard = (email) => {
+    const mine = logs.filter((l) => l.email === email);
+    const h = mine.reduce((a, l) => a + Number(l.hours), 0);
+    const week = mine.filter((l) => (Date.now() - new Date(l.worked_on)) < 7 * 864e5)
+      .reduce((a, l) => a + Number(l.hours), 0);
+    return `
+      <div class="stat">
+        <div class="num">${Math.round(h * 10) / 10}h</div>
+        <div class="cap">${esc(who(email))}</div>
+        <div class="sub">${Math.round(week * 10) / 10}h in the last 7 days · ${fmt(mine.length)} entries</div>
+      </div>`;
+  };
+
+  const logRow = (l) => `
+    <div class="row">
+      <span class="dot on"></span>
+      <div class="main">
+        <div class="t">${esc(l.task)}</div>
+        <div class="s">${esc(who(l.email))} · ${Number(l.hours)}h · ${dateFmt(l.worked_on)}</div>
+      </div>
+      <div class="end">${l.email === state.email
+    ? `<button class="linky bad" data-logdel="${l.id}">Remove</button>` : ''}</div>
+    </div>`;
+
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Productivity</h1>
+        <p>The company's hours and its task list. Log what you did and how long it
+           took — each of you writes your own ledger, both of you see the whole.</p>
+      </div>
+    </div>
+    ${err ? `<div class="err" style="margin-bottom:14px">${esc(err)}</div>` : ''}
+
+    <section class="panel" style="margin-bottom:18px">
+      <div class="p-head"><span class="p-title">To do — ${fmt(open.length)}</span></div>
+      <form id="addtask" class="formrow">
+        <input class="inp grow" type="text" id="task-title" placeholder="What needs doing?" required />
+        <button class="btn mini-btn" type="submit">Add</button>
+      </form>
+      ${open.length ? open.map((t) => `
+        <div class="row">
+          <label class="pickside"><input type="checkbox" class="tick" data-taskdone="${t.id}" /></label>
+          <div class="main"><div class="t">${esc(t.title)}</div>
+            <div class="s">added by ${esc(who(t.added_by))} · ${dateFmt(t.created_at)}</div></div>
+        </div>`).join('') : '<div class="empty">Nothing on the list — add the next thing.</div>'}
+      ${done.length ? `
+      <div class="donehead">Done pile</div>
+      ${done.map((t) => `
+        <div class="row done">
+          <label class="pickside"><input type="checkbox" class="tick" checked data-taskdone="${t.id}" /></label>
+          <div class="main"><div class="t struck">${esc(t.title)}</div>
+            <div class="s">${t.done_at ? dateFmt(t.done_at) : ''}</div></div>
+        </div>`).join('')}` : ''}
+    </section>
+
+    <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+      ${personCard('elohughes@icloud.com')}
+      ${personCard('rupertokelly98@gmail.com')}
+      <div class="stat"><div class="num">${Math.round(totalH * 10) / 10}h</div>
+        <div class="cap">Together</div><div class="sub">all time, on the record</div></div>
+    </div>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="p-head"><span class="p-title">Log hours</span></div>
+        <form id="loghours" class="formcol">
+          <input class="inp" type="number" id="lh-hours" min="0.25" max="24" step="0.25" placeholder="Hours (e.g. 2.5)" required />
+          <input class="inp" type="text" id="lh-task" placeholder="What did you get done?" required />
+          <input class="inp" type="date" id="lh-date" value="${today()}" required />
+          <button class="btn" type="submit">Log as ${esc(who(state.email))}</button>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="p-head"><span class="p-title">Whose hours</span></div>
+        ${donut(slices, `${Math.round(totalH)}h`)}
+      </section>
+    </div>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">The ledger — newest first</span></div>
+      ${logs.length ? logs.slice(0, 30).map(logRow).join('')
+    : '<div class="empty">No hours logged yet.</div>'}
+    </section>`;
+}
+
+const COST_CATS = ['Software subscription', 'Hardware', 'Data & AI', 'Travel', 'Other'];
+
+function costsView() {
+  if (state.loading) return '<div class="empty">Loading…</div>';
+  const { rows = [], err = '' } = state.costs || {};
+  const total = rows.reduce((a, r) => a + Number(r.amount), 0);
+  const byCat = new Map();
+  const byPerson = new Map();
+  rows.forEach((r) => {
+    byCat.set(r.category, (byCat.get(r.category) || 0) + Number(r.amount));
+    byPerson.set(r.email, (byPerson.get(r.email) || 0) + Number(r.amount));
+  });
+  const catSlices = [...byCat.entries()].sort((a, b) => b[1] - a[1])
+    .map(([c, v]) => ({ label: c, v, text: gbp(v) }));
+  const perSlices = [...byPerson.entries()]
+    .map(([e, v]) => ({ label: who(e), v, text: gbp(v) }));
+
+  const row = (r) => `
+    <div class="row">
+      <span class="dot on"></span>
+      <div class="main">
+        <div class="t">${esc(r.item)}</div>
+        <div class="s">${esc(r.category)} · ${esc(who(r.email))} · ${dateFmt(r.bought_on)}</div>
+      </div>
+      <div class="end"><span class="s"><b>${gbp(r.amount)}</b></span>
+        ${r.email === state.email ? `<button class="linky bad" data-costdel="${r.id}">Remove</button>` : ''}</div>
+    </div>`;
+
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Costs</h1>
+        <p>Every pound the company spends, who spent it and on what. The AI spend
+           on Home is metered automatically; this is everything bought by hand.</p>
+      </div>
+    </div>
+    ${err ? `<div class="err" style="margin-bottom:14px">${esc(err)}</div>` : ''}
+
+    <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+      <div class="stat"><div class="num">${gbp(total)}</div>
+        <div class="cap">Total spend</div><div class="sub">${fmt(rows.length)} purchases on the record</div></div>
+      ${[...byPerson.entries()].map(([e, v]) => `
+      <div class="stat"><div class="num">${gbp(v)}</div>
+        <div class="cap">${esc(who(e))}</div>
+        <div class="sub">${fmt(rows.filter((r) => r.email === e).length)} purchases</div></div>`).join('')}
+      <div class="stat"><div class="num">${rows.length ? gbp(total / rows.length) : '—'}</div>
+        <div class="cap">Average purchase</div><div class="sub">total over count</div></div>
+    </div>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="p-head"><span class="p-title">Log a purchase</span></div>
+        <form id="addcost" class="formcol">
+          <input class="inp" type="text" id="ac-item" placeholder="What was bought?" required />
+          <input class="inp" type="number" id="ac-amount" min="0" step="0.01" placeholder="Amount (£)" required />
+          <select class="inp" id="ac-cat">
+            ${COST_CATS.map((c) => `<option>${c}</option>`).join('')}
+          </select>
+          <input class="inp" type="date" id="ac-date" value="${today()}" required />
+          <button class="btn" type="submit">Log as ${esc(who(state.email))}</button>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="p-head"><span class="p-title">Where it goes</span></div>
+        ${donut(catSlices, gbp(total))}
+        <div style="height:18px"></div>
+        ${perSlices.length > 1 ? donut(perSlices, 'who') : ''}
+      </section>
+    </div>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">The book — newest first</span></div>
+      ${rows.length ? rows.slice(0, 40).map(row).join('')
+    : '<div class="empty">Nothing bought yet — or nothing owned up to.</div>'}
+    </section>`;
+}
+
+function documentsView() {
+  if (state.loading) return '<div class="empty">Loading…</div>';
+  const { rows = [], err = '' } = state.docs || {};
+  const size = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB`
+    : b > 1024 ? `${Math.round(b / 1024)} KB` : `${b || 0} B`);
+  const used = rows.reduce((a, f) => a + (f.metadata?.size || 0), 0);
+  const row = (f) => `
+    <div class="row">
+      <span class="dot on"></span>
+      <div class="main">
+        <div class="t">${esc(f.name.replace(/^\d+-/, ''))}</div>
+        <div class="s">${size(f.metadata?.size || 0)} · ${dateFmt(f.created_at)}</div>
+      </div>
+      <div class="end">
+        <button class="linky" data-docdl="${esc(f.name)}">Open</button>
+        <button class="linky bad" data-docdel="${esc(f.name)}">Delete</button>
+      </div>
+    </div>`;
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Documents</h1>
+        <p>The company's shelf: decks, market research, agreements — anything worth
+           both of you being able to reach. Private to owners, like everything here.</p>
+      </div>
+      <button class="btn mini-btn" id="docpick">Upload</button>
+      <input type="file" id="docupload" multiple style="display:none" />
+    </div>
+    ${err ? `<div class="err" style="margin-bottom:14px">${esc(err)}</div>` : ''}
+    <section class="panel">
+      <div class="p-head"><span class="p-title">${fmt(rows.length)} document${rows.length === 1 ? '' : 's'} · ${size(used)} of roughly 1 GB on the current plan</span></div>
+      ${rows.length ? rows.map(row).join('')
+    : '<div class="empty">Empty shelf. Upload the deck, the market research, the plan.</div>'}
+      <p class="foot-note">Files live in the same private storage as the clip previews,
+         behind the same owners-only rule; Open mints a one-hour signed link. The free
+         plan holds a gigabyte across everything, so keep videos out of here — this
+         shelf is for paper.</p>
+    </section>`;
+}
+
 /* ---------- running a stage ---------- */
 
 let running = null;
@@ -1230,9 +1502,9 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected'].find((v) => location.hash === `#${v}`) || 'control';
+const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'control';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -1253,6 +1525,9 @@ let epoch = 0;
 let dashEpoch = -1;
 const dashboardIsCurrent = () => dashEpoch === epoch;
 
+const AGENTIC_VIEWS = ['control', 'review', 'sources', 'triage', 'rejected',
+  'labelling', 'mastersheet', 'strategy', 'export', 'health'];
+
 function shell(body) {
   root.dataset.up = '1';
   const item = (hash, label, badge = 0) => `
@@ -1263,6 +1538,9 @@ function shell(body) {
       <aside class="side">
         <a class="brand" href="../"><img src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" /></a>
         <nav class="views">
+          <a href="#control" class="navhead ${AGENTIC_VIEWS.includes(view) ? 'on' : ''}">Agentic</a>
+          ${AGENTIC_VIEWS.includes(view) ? `
+          <div class="groupnav">
           ${item('control', 'Home')}
           ${item('review', 'Review', state.counts?.downloaded)}
           ${item('sources', 'Sources')}
@@ -1273,6 +1551,10 @@ function shell(body) {
           ${item('strategy', 'Dataset strategy')}
           ${item('export', 'Export')}
           ${item('health', 'Health', (state.health || []).filter((h) => healthStatus(h)[0] !== 'ok').length)}
+          </div>` : ''}
+          <a href="#productivity" class="navhead ${view === 'productivity' ? 'on' : ''}">Productivity${state.counts?.todo ? ` <b>${fmt(state.counts.todo)}</b>` : ''}</a>
+          <a href="#costs" class="navhead ${view === 'costs' ? 'on' : ''}">Costs</a>
+          <a href="#documents" class="navhead ${view === 'documents' ? 'on' : ''}">Documents</a>
         </nav>
         <div class="side-foot">
           ${state.spend && state.spend.usd
@@ -2112,6 +2394,8 @@ function signature() {
     state.health,
     (state.trials?.trials || []).length,
     rejPage, (state.pile?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')), state.pile?.total,
+    (state.prod?.logs || []).length, (state.prod?.tasks || []).map((t) => t.id + (t.done ? 'd' : '')),
+    (state.costs?.rows || []).length, (state.docs?.rows || []).map((f) => f.name),
     (state.pile?.vids || []).map((v) => v.video_id), state.pile?.vtotal,
     state.coverage,
   ]);
@@ -2151,6 +2435,9 @@ function paint(force = false) {
     : view === 'export' ? exportView()
     : view === 'health' ? healthView()
     : view === 'rejected' ? rejectedView()
+    : view === 'productivity' ? productivityView()
+    : view === 'costs' ? costsView()
+    : view === 'documents' ? documentsView()
     : controlView());
 
   document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
@@ -2195,6 +2482,87 @@ function paint(force = false) {
       [...state.ai, ...state.clips].forEach((k) => {
         if (k.clip_id === id) k.owner_outcome = out;
       });
+    }));
+  // ---- the office ----
+  document.getElementById('addtask')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = document.getElementById('task-title').value.trim();
+    if (!title) return;
+    const { error } = await supabase.from('todos')
+      .insert({ title, added_by: state.email }).select('id');
+    note(error ? `could not add the task — ${error.message}` : 'task added', error ? 'bad' : 'good');
+    document.getElementById('task-title').value = '';
+    refresh();
+  });
+  document.querySelectorAll('[data-taskdone]').forEach((cb) =>
+    cb.addEventListener('change', async () => {
+      const { error } = await supabase.from('todos')
+        .update({ done: cb.checked, done_at: cb.checked ? new Date().toISOString() : null })
+        .eq('id', Number(cb.dataset.taskdone)).select('id');
+      if (error) note(`could not update the task — ${error.message}`, 'bad');
+      refresh();
+    }));
+  document.getElementById('loghours')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const { error } = await supabase.from('work_log').insert({
+      email: state.email,
+      hours: Number(document.getElementById('lh-hours').value),
+      task: document.getElementById('lh-task').value.trim(),
+      worked_on: document.getElementById('lh-date').value,
+    }).select('id');
+    note(error ? `could not log hours — ${error.message}` : 'hours logged', error ? 'bad' : 'good');
+    if (!error) { document.getElementById('lh-hours').value = ''; document.getElementById('lh-task').value = ''; }
+    refresh();
+  });
+  document.querySelectorAll('[data-logdel]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      await supabase.from('work_log').delete().eq('id', Number(b.dataset.logdel));
+      refresh();
+    }));
+  document.getElementById('addcost')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const { error } = await supabase.from('expenses').insert({
+      email: state.email,
+      item: document.getElementById('ac-item').value.trim(),
+      amount: Number(document.getElementById('ac-amount').value),
+      category: document.getElementById('ac-cat').value,
+      bought_on: document.getElementById('ac-date').value,
+    }).select('id');
+    note(error ? `could not log the purchase — ${error.message}` : 'purchase logged', error ? 'bad' : 'good');
+    if (!error) { document.getElementById('ac-item').value = ''; document.getElementById('ac-amount').value = ''; }
+    refresh();
+  });
+  document.querySelectorAll('[data-costdel]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      await supabase.from('expenses').delete().eq('id', Number(b.dataset.costdel));
+      refresh();
+    }));
+  document.getElementById('docpick')?.addEventListener('click', () =>
+    document.getElementById('docupload')?.click());
+  document.getElementById('docupload')?.addEventListener('change', async (e) => {
+    const files = [...(e.target.files || [])];
+    if (!files.length) return;
+    note(`uploading ${files.length} file${files.length === 1 ? '' : 's'}…`);
+    for (const f of files) {
+      const { error } = await supabase.storage.from('documents')
+        .upload(`${Date.now()}-${f.name}`, f);
+      if (error) note(`${f.name} failed — ${error.message}`, 'bad');
+    }
+    note('upload finished', 'good');
+    refresh();
+  });
+  document.querySelectorAll('[data-docdl]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const { data, error } = await supabase.storage.from('documents')
+        .createSignedUrl(b.dataset.docdl, 3600);
+      if (error || !data?.signedUrl) { note(`could not open — ${error?.message || 'no link'}`, 'bad'); return; }
+      window.open(data.signedUrl, '_blank', 'noopener');
+    }));
+  document.querySelectorAll('[data-docdel]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const { error } = await supabase.storage.from('documents').remove([b.dataset.docdel]);
+      note(error ? `could not delete — ${error.message}` : 'deleted', error ? 'bad' : 'good');
+      refresh();
     }));
   document.getElementById('healthrun')?.addEventListener('click', () => runStage('health'));
   // The bulk handover and the ledger download, from the Export page.
@@ -2377,7 +2745,7 @@ async function refresh() {
     // with it, and the page reported only that it could not read the pipeline.
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs] = await Promise.all([
       settle(loadCounts(), state.counts),
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
@@ -2396,6 +2764,9 @@ async function refresh() {
       view === 'export' ? settle(loadExport(), state.exp) : Promise.resolve(state.exp),
       settle(loadHealth(), state.health),
       view === 'rejected' ? settle(loadRejectedPile(), state.pile) : Promise.resolve(state.pile),
+      view === 'productivity' ? settle(loadProd(), state.prod) : Promise.resolve(state.prod),
+      view === 'costs' ? settle(loadCosts(), state.costs) : Promise.resolve(state.costs),
+      view === 'documents' ? settle(loadDocs(), state.docs) : Promise.resolve(state.docs),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -2415,6 +2786,9 @@ async function refresh() {
     state.exp = exp;
     state.health = health;
     state.pile = pile;
+    state.prod = prod;
+    state.costs = costs;
+    state.docs = docs;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -2435,7 +2809,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
