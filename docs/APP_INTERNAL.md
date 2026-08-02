@@ -64,6 +64,7 @@ this reason.
 | AI spend | RPC `total_spend()` |
 | Dataset ladder | RPC `dataset_progress()`; splits via `split_preview()` |
 | Model trials | `verdict_trials` + RPC `trial_accuracy()` |
+| Owner verdicts | `pipeline_clips.owner_outcome` / `_2` / `_3` — one call per clay (hit / chipped / miss / unclear); per-video summary via RPC `sheet_clip_verdicts()` |
 | Tasks | `todos` — a kanban: `status` is `not_started` / `in_progress` / `complete`. Insert `{title, added_by}` (status defaults to not started); move a task by updating `status` (also set `done` and `done_at` when it reaches complete, the web portal keeps them in step); any owner may update or delete |
 | Hours | `work_log` — insert `{email, hours, task, worked_on}`; owners read all, delete own |
 | Costs | `expenses` — `{email, item, amount, category, bought_on, recurrence}`; categories: Software subscription, Hardware, Data & AI, Shooting, Other; `recurrence` is `one-time` / `weekly` / `monthly` / `yearly`. The forecast stat is derived, not stored: sum recurring rows normalised to a month (weekly ×52/12, monthly ×1, yearly ÷12) |

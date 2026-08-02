@@ -339,8 +339,14 @@ function renderChallenge(factorId, err = '') {
       <div class="err" id="err">${esc(err)}</div>
       <button class="btn" type="submit">Unlock</button>
     </form>
-    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`,
+    <div class="gate-foot"><a href="#" id="out">Sign out</a> &middot;
+      <a href="#" id="lost">Forgot password</a></div>`,
     'Owners portal', 'centred');
+
+  document.getElementById('lost').addEventListener('click', (e) => {
+    e.preventDefault();
+    renderBootstrap();
+  });
 
   document.getElementById('f').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -495,6 +501,15 @@ async function loadSpend() {
   return { rows, usd: rows.reduce((a, r) => a + r.usd, 0) };
 }
 
+// The credit book: Anthropic exposes no balance endpoint, so the estimate
+// is arithmetic — top-ups logged here minus every metered token since the
+// meter went in. The live probe on this page remains the truth about empty.
+async function loadCredits() {
+  const { data, error } = await supabase.from('credit_topups')
+    .select('*').order('noted_at', { ascending: false }).limit(20);
+  return { rows: error ? [] : (data || []), err: error?.message || '' };
+}
+
 // The coverage matrix: surviving clips per weather slice, split into what
 // trains the model and what measures it. A thin row is a condition the model
 // has not been taught yet, and it names the next filming day to chase.
@@ -508,7 +523,7 @@ async function loadCoverage() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,owner_outcome,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,owner_outcome,owner_outcome_2,owner_outcome_3,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
@@ -554,7 +569,7 @@ async function titleClips(rows) {
 async function loadAiClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,clay_colour,det_conf,range_m,speed_mph,created_at')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,owner_outcome_2,owner_outcome_3,clay_colour,det_conf,range_m,speed_mph,created_at')
     .in('label_status', ['queued', 'prelabelled'])
     .order(aiSort === 'new' ? 'created_at' : 'outcome_conf',
       { ascending: aiSort === 'lo', nullsFirst: false })
@@ -618,18 +633,46 @@ async function loadSheet() {
   const rows = data || [];
   // clips cut / sent per video, computed fresh rather than stored
   try {
-    const { data: cc } = await supabase.rpc('sheet_clip_counts');
+    const { data: cc } = await supabase.rpc('sheet_clip_verdicts');
     const byVid = new Map((cc || []).map((x) => [x.video_id, x]));
     rows.forEach((v) => {
       const x = byVid.get(v.video_id);
       v.clips = x ? Number(x.clips) : 0;
       v.sent = x ? Number(x.sent) : 0;
+      v.called = x ? Number(x.called) : 0;
+      v.hit = x ? Number(x.hit) : 0;
+      v.chipped = x ? Number(x.chipped) : 0;
+      v.miss = x ? Number(x.miss) : 0;
+      v.unclear = x ? Number(x.unclear) : 0;
     });
   } catch { /* counts stay undefined; the sheet still lists */ }
   return rows;
 }
 
 const judged = new Set();   // survives a queue read that overtakes a decision
+
+// One row of buttons per clay. A pair is two answers and a burst is three —
+// a single call on a two-clay clip teaches the model half the truth.
+const clayRows = new Map();          // clip_id -> rows opened by hand
+const OWNER_SLOTS = ['owner_outcome', 'owner_outcome_2', 'owner_outcome_3'];
+function callRows(k) {
+  const auto = (k.outcome_3 || k.owner_outcome_3) ? 3
+    : (k.is_pair || k.outcome_2 || k.owner_outcome_2) ? 2 : 1;
+  const shown = Math.max(auto, clayRows.get(k.clip_id) || 1);
+  const slot = (n) => `
+    <div class="calls">
+      ${shown > 1 ? `<span class="clayno">clay ${n}</span>` : ''}
+      ${['hit', 'chipped', 'miss', 'unclear'].map((o) => `
+        <button class="callbtn ${k[OWNER_SLOTS[n - 1]] === o ? 'on' : ''}"
+          data-call="${esc(k.clip_id)}" data-slot="${n}" data-out="${o}">${o}</button>`).join('')}
+    </div>`;
+  return `
+    <div class="yourcall">
+      <span class="k">Your call${shown > 1 ? 's — every clay gets one' : ''}</span>
+      ${Array.from({ length: shown }, (_, i) => slot(i + 1)).join('')}
+      ${shown < 3 ? `<button class="linky addclay" data-addclay="${esc(k.clip_id)}" data-next="${shown + 1}">+ another clay</button>` : ''}
+    </div>`;
+}
 
 // Discovery's home: what the search found that triage has not yet judged.
 // These rows are on the master from the moment discover returns — the page
@@ -1226,6 +1269,53 @@ function healthView() {
          quota), Roboflow reachability, cookie age, and the stage backlogs. The
          heartbeat row is stamped by every hourly beat — its age, not its word, is
          the proof of life.</p>
+    </section>
+
+    ${creditPanel()}`;
+}
+
+// Anthropic has no balance endpoint, so this is a ledger: what you put in,
+// minus what the meter has watched go out. The probe above stays the truth
+// about actually-empty; this is the fuel gauge between refills.
+function creditPanel() {
+  const { rows = [], err = '' } = state.credits || {};
+  const inUsd = rows.reduce((a, r) => a + Number(r.amount_usd), 0);
+  const outUsd = state.spend?.usd || 0;
+  const left = inUsd - outUsd;
+  const low = rows.length && left <= 2;
+  const topup = (r) => `
+    <div class="row">
+      <span class="dot on"></span>
+      <div class="main">
+        <div class="t">$${Number(r.amount_usd).toFixed(2)} added</div>
+        <div class="s">${esc(who(r.email))} \u00b7 ${dateFmt(r.noted_at)}</div>
+      </div>
+      <div class="end">${r.email === state.email
+    ? `<button class="linky bad" data-topupdel="${r.id}">Remove</button>` : ''}</div>
+    </div>`;
+  return `
+    <section class="panel ${low ? 'stat-warn' : ''}" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Anthropic credit \u2014 the ledger</span></div>
+      ${err ? `<div class="err" style="margin-bottom:12px">${esc(err)}</div>` : ''}
+      <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-bottom:14px">
+        <div class="stat"><div class="num ${low ? 'h-fail' : ''}">${rows.length ? `$${left.toFixed(2)}` : '\u2014'}</div>
+          <div class="cap">Estimated remaining</div><div class="sub">top-ups minus metered spend</div></div>
+        <div class="stat"><div class="num">$${inUsd.toFixed(2)}</div>
+          <div class="cap">Put in</div><div class="sub">${fmt(rows.length)} top-up${rows.length === 1 ? '' : 's'} on record</div></div>
+        <div class="stat"><div class="num">$${outUsd.toFixed(2)}</div>
+          <div class="cap">Metered out</div><div class="sub">every token since the meter</div></div>
+      </div>
+      <form id="addtopup" class="formrow" style="margin-bottom:12px">
+        <input class="inp" type="number" id="tu-amount" min="1" step="0.01" placeholder="Top-up ($)" required style="max-width:140px" />
+        <button class="btn mini-btn" type="submit">Record top-up</button>
+      </form>
+      ${rows.length ? rows.slice(0, 8).map(topup).join('')
+    : '<div class="empty">No top-ups on record. When you add credits at console.anthropic.com, log the amount here and the gauge starts.</div>'}
+      <p class="foot-note">Anthropic offers no balance API, so this gauge is
+         arithmetic: what you record going in, minus what the pipeline's meter
+         watched go out. Spend from before the meter (2 Aug) and any use of the
+         key outside the pipeline are invisible to it \u2014 the Claude probe above
+         is the final word on empty.</p>
     </section>`;
 }
 
@@ -1599,7 +1689,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -1984,6 +2074,9 @@ const ROBOFLOW_ANNOTATE = 'https://app.roboflow.com/elohughes-icloud-com/brace-c
 // Ticked clips survive the 8-second repaint because the selection lives here,
 // not in the DOM the repaint replaces.
 const picked = new Set();
+let sweeping = false;      // Select multiple: drag across cards to pick them
+let sweepDown = false;
+window.addEventListener('mouseup', () => { sweepDown = false; });
 
 function triageClipsView() {
   if (state.loading) return '<div class="empty">Loading clips…</div>';
@@ -1999,7 +2092,7 @@ function triageClipsView() {
   // preview plays in place; a poster-only clip shows its still with a badge;
   // a brand-new cut holds the space with a note.
   const pendingCard = (k) => `
-    <div class="clipcard" data-id="${esc(k.clip_id)}" data-owner="${esc(k.sorter)}" data-src="${esc(k.preview_url)}">
+    <div class="clipcard" data-id="${esc(k.clip_id)}" data-clip="${esc(k.clip_id)}" data-owner="${esc(k.sorter)}" data-src="${esc(k.preview_url)}">
       <div class="clipmedia">
         <label class="clippick" title="Pick this clip">
           <input type="checkbox" class="tick" data-pick="${esc(k.clip_id)}" ${picked.has(k.clip_id) ? 'checked' : ''} />
@@ -2014,14 +2107,7 @@ function triageClipsView() {
         <div class="t">Shot ${k.shot_no || '?'} · ${mmss(k.shot_ts)}
           · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
         <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
-        <div class="yourcall">
-          <span class="k">Your call</span>
-          <div class="calls">
-            ${['hit', 'chipped', 'miss', 'unclear'].map((o) => `
-              <button class="callbtn ${k.owner_outcome === o ? 'on' : ''}"
-                data-call="${esc(k.clip_id)}" data-out="${o}">${o}</button>`).join('')}
-          </div>
-        </div>
+        ${callRows(k)}
       </div>
     </div>`;
 
@@ -2067,23 +2153,6 @@ function triageClipsView() {
         <div class="cap">Pre-labelled</div><div class="sub">boxed, in Roboflow</div></div>
     </div>
 
-    <section class="panel" style="margin-bottom:18px">
-      <div class="p-head"><span class="p-title">Discovered — waiting for triage · ${fmt(c.discovered ?? 0)}</span></div>
-      ${(state.disc || []).length ? (state.disc || []).map((v) => `
-      <div class="row">
-        <span class="dot"></span>
-        <div class="main">
-          <div class="t"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}" target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a></div>
-          <div class="s">${esc(v.channel || 'unknown channel')} · ${mmss(v.duration_s)} · ${fmt(v.view_count || 0)} views</div>
-        </div>
-        <div class="end"><span class="s">${v.discovered_at ? ago(v.discovered_at) : ''}</span></div>
-      </div>`).join('')
-    : '<div class="empty">Nothing waiting — run a discovery from Home and the finds land here.</div>'}
-      <p class="foot-note">Every find is written to the master the moment discovery
-         returns — this is the queue the next triage run will judge. Showing the
-         newest ${Math.min((state.disc || []).length, 30)} of ${fmt(c.discovered ?? 0)}.</p>
-    </section>
-
     <section class="panel">
       <p class="foot-note" style="margin:0 0 16px;padding:0;border:none">Call each shot as
          you watch it — hit, chipped, miss, or unclear if you genuinely cannot tell. Your
@@ -2093,7 +2162,8 @@ function triageClipsView() {
          clip rather than a suggestion.</p>
       <div class="p-head"><span class="p-title">Clips to check${totalPending ? ` — ${fmt(totalPending)}` : ''}</span>
         <span>
-          <button class="linky" id="pickall">Select all shown</button>
+          <button class="linky ${sweeping ? 'chip-on' : ''}" id="sweep">${sweeping ? 'Done selecting' : 'Select multiple'}</button>
+          <button class="linky" id="pickall" style="margin-left:10px">Select all shown</button>
           <button class="linky" id="picknone" style="margin-left:10px">Clear</button>
           <button class="btn mini-btn" id="sendsel" style="margin-left:14px"
             ${picked.size ? '' : 'disabled'}>Send <span id="pickn">${picked.size}</span> to AI</button>
@@ -2107,7 +2177,8 @@ function triageClipsView() {
     return `<b>${fmt(Number(r?.clips || 0))}</b> ${s}`;
   }).join(' · ')}
         — dealt per video, so no flight's frames ever straddle a set.</p>` : ''}
-      ${grouped ? `<div class="clipgrid">${grouped}</div>`
+      ${sweeping ? '<p class="split-line">Hold the mouse down and sweep across clips to pick them; sweep a picked one to unpick. Press Done selecting to watch previews again.</p>' : ''}
+      ${grouped ? `<div class="clipgrid ${sweeping ? 'sweepmode' : ''}">${grouped}</div>`
     : '<div class="empty">Nothing waiting. Approve videos in Review and the clipper feeds this list within the hour.</div>'}
       ${pages > 1 ? `
       <div class="pager">
@@ -2148,7 +2219,24 @@ function triageClipsView() {
          clay is in there, "send back" returns it for re-screening, and tell the
          machine's keeper, because a silent wrong rejection is a training example
          lost. Only the newest twelve show; the count above is the full pile.</p>
-    </section>` : ''}`;
+    </section>` : ''}
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Discovered — waiting for triage · ${fmt(c.discovered ?? 0)}</span></div>
+      ${(state.disc || []).length ? (state.disc || []).slice(0, 8).map((v) => `
+      <div class="row">
+        <span class="dot"></span>
+        <div class="main">
+          <div class="t"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}" target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a></div>
+          <div class="s">${esc(v.channel || 'unknown channel')} · ${mmss(v.duration_s)} · ${fmt(v.view_count || 0)} views</div>
+        </div>
+        <div class="end"><span class="s">${v.discovered_at ? ago(v.discovered_at) : ''}</span></div>
+      </div>`).join('')
+    : '<div class="empty">Nothing waiting — run a discovery from Home and the finds land here.</div>'}
+      <p class="foot-note">Every find is written to the master the moment discovery
+         returns — this is the queue the next triage run will judge. Newest
+         ${Math.min((state.disc || []).length, 8)} shown of ${fmt(c.discovered ?? 0)}; the mastersheet holds them all.</p>
+    </section>`;
 }
 
 function labellingView() {
@@ -2200,14 +2288,7 @@ function labellingView() {
     : `pre-labelled${k.n_clays != null ? ` · ${fmt(k.n_clays)} clay${k.n_clays === 1 ? '' : 's'} boxed` : ''} · frames in Roboflow`}</div>
         </div>
         <div class="aimetrics">${panel}
-          <div class="yourcall">
-            <span class="k">Your call</span>
-            <div class="calls">
-              ${['hit', 'chipped', 'miss', 'unclear'].map((o) => `
-                <button class="callbtn ${k.owner_outcome === o ? 'on' : ''}"
-                  data-call="${esc(k.clip_id)}" data-out="${o}">${o}</button>`).join('')}
-            </div>
-          </div>
+          ${callRows(k)}
         </div>
       </div>
     </div>`;
@@ -2298,6 +2379,10 @@ function mastersheetView() {
     ? ` · scored ${Number(v.triage_score).toFixed(1)}` : ''}${v.weather && v.weather !== 'unknown'
     ? ` · ${esc(v.weather)}` : ''} · ${mmss(v.duration_s)} · ${dateFmt(v.updated_at)}</div>
         ${auditing && v.triage_notes ? `<div class="s why" title="${esc(v.triage_notes)}">${esc(v.triage_notes)}</div>` : ''}
+        ${v.clips ? `<div class="s verdictline">${v.called
+    ? `your calls: ${[['hit', v.hit], ['chipped', v.chipped], ['miss', v.miss], ['unclear', v.unclear]]
+      .filter(([, n]) => n).map(([o, n]) => `${fmt(n)} ${o}`).join(' · ') || 'none yet'}${v.called < v.clips ? ` — ${fmt(v.clips - v.called)} of ${fmt(v.clips)} clips unwatched` : ''}`
+    : `${fmt(v.clips)} clip${v.clips === 1 ? '' : 's'} awaiting your verdicts`}</div>` : ''}
       </div>
       <div class="end">
         ${v.clips ? `<span class="s">${fmt(v.clips)} clips · ${fmt(v.sent)} sent</span>` : ''}
@@ -2514,14 +2599,15 @@ function signature() {
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
     (state.activity || []).length, state.activity?.[0]?.at,
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
-    clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
-    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.owner_outcome || '')),
+    clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size, sweeping,
+    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.owner_outcome || '') + (k.owner_outcome_2 || '') + (k.owner_outcome_3 || '')),
+    [...clayRows.entries()].map(([k, v]) => k + v).join(),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     state.rej?.total,
     state.ai.map((k) => k.clip_id + k.label_status + (k.preview_url ? 'v' : '')
       + (k.outcome || '') + (k.outcome_2 || '') + (k.outcome_3 || '')
       + (k.speed_mph ?? '') + (k.range_m ?? '')),
-    state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '') + (v.ds_level ?? '')),
+    state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '') + (v.ds_level ?? '') + (v.called ?? '') + (v.hit ?? '') + (v.miss ?? '')),
     state.progress,
     state.cats,
     state.split,
@@ -2532,6 +2618,7 @@ function signature() {
     (state.prod?.logs || []).length, (state.prod?.tasks || []).map((t) => t.id + (t.status || '')),
     (state.costs?.rows || []).length, (state.docs?.rows || []).map((f) => f.name),
     (state.disc || []).map((v) => v.video_id),
+    (state.credits?.rows || []).length, state.spend?.usd,
     (state.pile?.vids || []).map((v) => v.video_id), state.pile?.vtotal,
     state.coverage,
   ]);
@@ -2607,18 +2694,25 @@ function paint(force = false) {
   document.querySelectorAll('[data-call]').forEach((b) =>
     b.addEventListener('click', async () => {
       const id = b.dataset.call;
+      const field = OWNER_SLOTS[Number(b.dataset.slot || 1) - 1];
       const already = b.classList.contains('on');
       const out = already ? null : b.dataset.out;
       // paint the choice at once; the refresh confirms it
       b.closest('.calls').querySelectorAll('.callbtn').forEach((x) => x.classList.remove('on'));
       if (out) b.classList.add('on');
+      const patch = { [field]: out };
+      if (field === 'owner_outcome') patch.owner_outcome_at = out ? new Date().toISOString() : null;
       const { error } = await supabase.from('pipeline_clips')
-        .update({ owner_outcome: out, owner_outcome_at: out ? new Date().toISOString() : null })
-        .eq('clip_id', id).select('clip_id');
+        .update(patch).eq('clip_id', id).select('clip_id');
       if (error) note(`could not save your call — ${error.message}`, 'bad');
       [...state.ai, ...state.clips].forEach((k) => {
-        if (k.clip_id === id) k.owner_outcome = out;
+        if (k.clip_id === id) k[field] = out;
       });
+    }));
+  document.querySelectorAll('[data-addclay]').forEach((b) =>
+    b.addEventListener('click', () => {
+      clayRows.set(b.dataset.addclay, Math.min(3, Number(b.dataset.next)));
+      paint(true);
     }));
   // ---- the office ----
   document.getElementById('addtask')?.addEventListener('submit', async (e) => {
@@ -2766,6 +2860,21 @@ function paint(force = false) {
       note(error ? `could not delete — ${error.message}` : 'deleted', error ? 'bad' : 'good');
       refresh();
     }));
+  document.getElementById('addtopup')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const amount = Number(document.getElementById('tu-amount').value);
+    if (!(amount > 0)) return;
+    const { error } = await supabase.from('credit_topups')
+      .insert({ amount_usd: amount }).select('id');
+    note(error ? `could not record the top-up \u2014 ${error.message}` : `$${amount.toFixed(2)} top-up recorded`, error ? 'bad' : 'good');
+    if (!error) document.getElementById('tu-amount').value = '';
+    refresh();
+  });
+  document.querySelectorAll('[data-topupdel]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      await supabase.from('credit_topups').delete().eq('id', Number(b.dataset.topupdel));
+      refresh();
+    }));
   document.getElementById('healthrun')?.addEventListener('click', () => runStage('health'));
   // The bulk handover and the ledger download, from the Export page.
   document.getElementById('exportall')?.addEventListener('click', async () => {
@@ -2899,6 +3008,37 @@ function paint(force = false) {
         : 'sent back — the next screening beat re-examines it', error ? 'bad' : 'good');
       refresh();
     }));
+  document.getElementById('sweep')?.addEventListener('click', () => {
+    sweeping = !sweeping;
+    sweepDown = false;
+    paint(true);
+  });
+  if (sweeping) {
+    const sync = () => {
+      const n = document.getElementById('pickn');
+      if (n) n.textContent = picked.size;
+      const send = document.getElementById('sendsel');
+      if (send) send.disabled = !picked.size;
+    };
+    const set = (card, on) => {
+      const id = card.dataset.clip;
+      if (!id) return;
+      on ? picked.add(id) : picked.delete(id);
+      const cb = card.querySelector('[data-pick]');
+      if (cb) cb.checked = on;
+      sync();
+    };
+    document.querySelectorAll('.clipcard[data-clip]').forEach((card) => {
+      card.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        sweepDown = true;
+        set(card, !picked.has(card.dataset.clip));
+      });
+      card.addEventListener('mouseenter', () => {
+        if (sweepDown) set(card, true);
+      });
+    });
+  }
   document.getElementById('pickall')?.addEventListener('click', () => {
     document.querySelectorAll('[data-pick]').forEach((cb) => { cb.checked = true; picked.add(cb.dataset.pick); });
     paint(true);
@@ -2947,7 +3087,7 @@ async function refresh() {
     // with it, and the page reported only that it could not read the pipeline.
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits] = await Promise.all([
       settle(loadCounts(), state.counts),
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
@@ -2971,6 +3111,7 @@ async function refresh() {
       view === 'documents' ? settle(loadDocs(), state.docs) : Promise.resolve(state.docs),
       view === 'triage' ? settle(loadDiscovered(), state.disc) : Promise.resolve(state.disc),
       settle(loadActivity(), state.activity),
+      view === 'health' ? settle(loadCredits(), state.credits) : Promise.resolve(state.credits),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -2995,6 +3136,7 @@ async function refresh() {
     state.docs = docs;
     state.disc = disc;
     state.activity = activity;
+    state.credits = credits;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -3015,7 +3157,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

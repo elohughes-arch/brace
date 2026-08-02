@@ -5,3 +5,4 @@ __pycache__/
 
 # the pipeline setup script builds its own
 .venv/
+.vercel

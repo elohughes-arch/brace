@@ -680,3 +680,17 @@ select.inp { appearance: none; }
 /* Writing a document in place */
 .doc-body { min-height: 180px; resize: vertical; font: inherit; font-size: 13px;
   line-height: 1.55; }
+
+/* Per-clay verdicts: a pair is two answers, a burst is three */
+.clayno { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-3); min-width: 44px; align-self: center; }
+.calls + .calls { margin-top: 4px; }
+.addclay { font-size: 11px; margin-top: 6px; display: inline-block; }
+
+/* Sweep select: previews stand down so the mouse can paint across cards */
+.sweepmode .clipcard { cursor: crosshair; user-select: none; }
+.sweepmode .clipmedia video, .sweepmode .clipmedia img { pointer-events: none; }
+.sweepmode .clippick { pointer-events: none; }
+
+/* The owner's calls on the mastersheet row */
+.verdictline { color: var(--champagne); }
