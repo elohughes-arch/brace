@@ -458,6 +458,22 @@ def triage(request: fastapi.Request):
                 out.unlink(missing_ok=True)
             kept, dropped = kept + keep, dropped + (not keep)
         except Exception as e:  # noqa: BLE001
+            # An outage is not the video's fault. A dead key or a spent
+            # balance would otherwise burn one video per attempt — fifty-nine
+            # of them, once — so the run stops and leaves the queue intact
+            # for whenever the account is topped up.
+            s = str(e).lower()
+            if any(w in s for w in ("credit", "billing", "quota",
+                                    "authentication", "401", "invalid x-api-key")):
+                sb.table("pipeline_videos").update(
+                    {"triage_notes": "waiting on the Anthropic account: "
+                                     f"{str(e)[:300]}"}
+                ).eq("video_id", vid).execute()
+                volume.commit()
+                return {"stage": "triage", "examined": len(rows),
+                        "kept": kept, "dropped": dropped, "errors": failed,
+                        "stopped": "the Anthropic account is not answering — "
+                                   "nothing was marked errored, the queue is intact"}
             sb.table("pipeline_videos").update(
                 {"status": "error", "triage_notes": str(e)[:500]}
             ).eq("video_id", vid).execute()
