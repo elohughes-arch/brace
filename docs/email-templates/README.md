@@ -74,9 +74,28 @@ letter-spaced text rather than the brand SVG — no mail client renders SVG.
 Supabase refuses to send a link pointing anywhere it does not recognise.
 Dashboard → Authentication → URL Configuration:
 
-- **Site URL**: `https://brace-cyan.vercel.app` (become `https://braceshooting.com`
-  once the domain fronts the site)
-- **Redirect URLs**: `https://brace-cyan.vercel.app/portal/**` and
-  `https://braceshooting.com/portal/**` — list both through the changeover.
+- **Site URL**: `https://www.braceshooting.com`
+- **Redirect URLs**, all of them, because the portal is reachable at each:
+  - `https://www.braceshooting.com/portal/**`
+  - `https://braceshooting.com/portal/**`
+  - `https://www.braceshooting.co.uk/portal/**`
+  - `https://braceshooting.co.uk/portal/**`
+  - `https://brace-cyan.vercel.app/portal/**`
 
-A reset email that never arrives is nearly always this list, not the mailer.
+A reset email that never arrives is nearly always this list, not the mailer —
+and a reset started from a domain missing here fails silently, which is the
+worst way for it to fail.
+
+## 4. Where the records go
+
+The domains are served by Vercel, but that is not the same as being *managed*
+by Vercel. Check GoDaddy → My Products → Domains → braceshooting.com →
+Nameservers:
+
+- `ns1.vercel-dns.com` and friends → add every mail record in **Vercel** →
+  Domains → the domain → DNS Records.
+- GoDaddy's own nameservers → add them in **GoDaddy** → DNS, and Vercel is
+  only being pointed at by A/CNAME records.
+
+Whichever it is, the mail records go where the nameservers point. Adding them
+in the other place does nothing at all, silently.
