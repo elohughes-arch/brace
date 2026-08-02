@@ -402,6 +402,26 @@ const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const note = (line, tone = '') => { log.unshift({ t: now(), line, tone }); log.length = Math.min(log.length, 40); };
 
+// The feed used to live only in this array, so a reload forgot every run.
+// Outcomes are also written to pipeline_activity; boot reads them back.
+const when = (iso) => {
+  const d = new Date(iso);
+  return d.toDateString() === new Date().toDateString()
+    ? d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+};
+function record(stage, line, tone = '') {
+  supabase.from('pipeline_activity').insert({ stage, line, tone })
+    .then(({ error }) => { if (error) console.warn('activity not recorded:', error.message); });
+}
+async function seedActivity() {
+  const { data } = await supabase.from('pipeline_activity')
+    .select('at,line,tone').order('at', { ascending: false }).limit(40);
+  if (!data || !data.length) return;
+  log.length = 0;
+  data.forEach((r) => log.push({ t: when(r.at), line: r.line, tone: r.tone || '' }));
+}
+
 const mmss = (s) => {
   if (!s && s !== 0) return '—';
   const m = Math.floor(s / 60);
@@ -599,6 +619,18 @@ async function loadSheet() {
 }
 
 const judged = new Set();   // survives a queue read that overtakes a decision
+
+// Discovery's home: what the search found that triage has not yet judged.
+// These rows are on the master from the moment discover returns — the page
+// simply never showed them before.
+async function loadDiscovered() {
+  const { data, error } = await supabase.from('pipeline_videos')
+    .select('video_id,title,channel,duration_s,view_count,discovered_at')
+    .eq('status', 'discovered')
+    .order('discovered_at', { ascending: false })
+    .limit(30);
+  return error ? [] : (data || []);
+}
 
 async function loadQueue() {
   const { data, error } = await supabase.from('pipeline_videos')
@@ -1532,17 +1564,21 @@ async function runStage(stage, query = {}) {
     const plain = () => text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
     if (res.status === 202) {
       note(`${stage} is still running on Modal — the counts will catch up.`);
+      record(stage, `${stage} started — still running on Modal`);
     } else if (res.ok) {
       const { stage: _s, ...rest } = body;
       const said = Object.entries(rest).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`).join(' · ');
       note(`${stage} finished${said ? ` — ${said}` : ''}`, 'good');
+      record(stage, `${stage} finished${said ? ` — ${said}` : ''}`, 'good');
     } else {
       // error is the headline, detail is the way out — show both when present.
       const why = [body.error, body.detail].filter(Boolean).join(': ') || plain() || 'no detail';
       note(`${stage} failed (${res.status}) — ${why}`, 'bad');
+      record(stage, `${stage} failed (${res.status}) — ${why}`, 'bad');
     }
   } catch (e) {
     note(`${stage} could not be reached — ${e.message || e}`, 'bad');
+    record(stage, `${stage} could not be reached — ${e.message || e}`, 'bad');
   }
   running = null;
   if (dashboardIsCurrent()) await refresh();
@@ -1552,7 +1588,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -2019,6 +2055,23 @@ function triageClipsView() {
         <div class="cap">Pre-labelled</div><div class="sub">boxed, in Roboflow</div></div>
     </div>
 
+    <section class="panel" style="margin-bottom:18px">
+      <div class="p-head"><span class="p-title">Discovered — waiting for triage · ${fmt(c.discovered ?? 0)}</span></div>
+      ${(state.disc || []).length ? (state.disc || []).map((v) => `
+      <div class="row">
+        <span class="dot"></span>
+        <div class="main">
+          <div class="t"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}" target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a></div>
+          <div class="s">${esc(v.channel || 'unknown channel')} · ${mmss(v.duration_s)} · ${fmt(v.view_count || 0)} views</div>
+        </div>
+        <div class="end"><span class="s">${v.discovered_at ? ago(v.discovered_at) : ''}</span></div>
+      </div>`).join('')
+    : '<div class="empty">Nothing waiting — run a discovery from Home and the finds land here.</div>'}
+      <p class="foot-note">Every find is written to the master the moment discovery
+         returns — this is the queue the next triage run will judge. Showing the
+         newest ${Math.min((state.disc || []).length, 30)} of ${fmt(c.discovered ?? 0)}.</p>
+    </section>
+
     <section class="panel">
       <p class="foot-note" style="margin:0 0 16px;padding:0;border:none">Call each shot as
          you watch it — hit, chipped, miss, or unclear if you genuinely cannot tell. Your
@@ -2465,6 +2518,7 @@ function signature() {
     rejPage, (state.pile?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')), state.pile?.total,
     (state.prod?.logs || []).length, (state.prod?.tasks || []).map((t) => t.id + (t.status || '')),
     (state.costs?.rows || []).length, (state.docs?.rows || []).map((f) => f.name),
+    (state.disc || []).map((v) => v.video_id),
     (state.pile?.vids || []).map((v) => v.video_id), state.pile?.vtotal,
     state.coverage,
   ]);
@@ -2880,7 +2934,7 @@ async function refresh() {
     // with it, and the page reported only that it could not read the pipeline.
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc] = await Promise.all([
       settle(loadCounts(), state.counts),
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
@@ -2902,6 +2956,7 @@ async function refresh() {
       view === 'productivity' ? settle(loadProd(), state.prod) : Promise.resolve(state.prod),
       view === 'costs' ? settle(loadCosts(), state.costs) : Promise.resolve(state.costs),
       view === 'documents' ? settle(loadDocs(), state.docs) : Promise.resolve(state.docs),
+      view === 'triage' ? settle(loadDiscovered(), state.disc) : Promise.resolve(state.disc),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -2924,6 +2979,7 @@ async function refresh() {
     state.prod = prod;
     state.costs = costs;
     state.docs = docs;
+    state.disc = disc;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -2944,9 +3000,10 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
+  await seedActivity();          // yesterday's runs, back on the board
   await refresh();
   if (mine !== epoch) return;          // route() moved on; do not start a poll
   clearInterval(poll);
