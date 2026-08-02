@@ -1447,13 +1447,13 @@ function documentsView() {
     </div>
     ${err ? `<div class="err" style="margin-bottom:14px">${esc(err)}</div>` : ''}
     <section class="panel">
-      <div class="p-head"><span class="p-title">${fmt(rows.length)} document${rows.length === 1 ? '' : 's'} · ${size(used)} of roughly 1 GB on the current plan</span></div>
+      <div class="p-head"><span class="p-title">${fmt(rows.length)} document${rows.length === 1 ? '' : 's'} · ${size(used)} of 100 GB on the plan</span></div>
       ${rows.length ? rows.map(row).join('')
     : '<div class="empty">Empty shelf. Upload the deck, the market research, the plan.</div>'}
       <p class="foot-note">Files live in the same private storage as the clip previews,
-         behind the same owners-only rule; Open mints a one-hour signed link. The free
-         plan holds a gigabyte across everything, so keep videos out of here — this
-         shelf is for paper.</p>
+         behind the same owners-only rule; Open mints a one-hour signed link. The plan
+         holds a hundred gigabytes across everything — room for every deck this
+         company will ever write.</p>
     </section>`;
 }
 
