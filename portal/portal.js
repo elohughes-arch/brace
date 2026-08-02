@@ -1329,7 +1329,7 @@ function productivityView() {
           <input class="inp" type="number" id="lh-hours" min="0.25" max="24" step="0.25" placeholder="Hours (e.g. 2.5)" required />
           <input class="inp" type="text" id="lh-task" placeholder="What did you get done?" required />
           <input class="inp" type="date" id="lh-date" value="${today()}" required />
-          <button class="btn" type="submit">Log as ${esc(who(state.email))}</button>
+          <button class="btn" type="submit">Log hours</button>
         </form>
       </section>
       <section class="panel">
@@ -1425,7 +1425,7 @@ function costsView() {
               <button type="button" class="callbtn" data-costfreq="yearly">Yearly</button>
             </span>
           </div>
-          <button class="btn" type="submit">Log as ${esc(who(state.email))}</button>
+          <button class="btn" type="submit">Log purchase</button>
         </form>
       </section>
       <section class="panel">
