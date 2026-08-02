@@ -93,6 +93,13 @@ for the .com, `ns53`/`ns54` for the .co.uk), so **every DNS record goes in
 GoDaddy → Domains → DNS**. Vercel is merely pointed at by an A record; adding
 anything in Vercel's DNS panel would do nothing at all, quietly.
 
+### The canonical domain is braceshooting.com
+
+The .com is the address Brace answers to: the site serves on
+`www.braceshooting.com`, the mail is there, and the .co.uk redirects to it.
+Everything below — sender address, Supabase URLs, Resend's records — belongs
+to the .com.
+
 ### What is already there
 
 `braceshooting.com` carries working mail. Its MX points at
@@ -108,8 +115,15 @@ must be *merged in* rather than added alongside. For Resend:
 
     v=spf1 include:secureserver.net include:_spf.resend.com -all
 
-`braceshooting.co.uk` has no mail at all — no MX, no SPF — and its apex
+Microsoft 365's DKIM is also in place on the .com — the two
+`selector1`/`selector2._domainkey` CNAMEs — and DMARC sits at
+`p=quarantine`. Nothing on this domain needs changing to send mail as
+Brace; Resend's records are added beside these, and only the SPF row is
+edited rather than added.
+
+`braceshooting.co.uk` is the spare. It has no mail at all, and its apex
 carries three A records where it should carry one: `216.198.79.1` is Vercel,
-while `3.33.130.190` and `15.197.148.33` are GoDaddy's own forwarding. That
-is precisely the Invalid Configuration Vercel reports. Delete the two
-GoDaddy addresses; keep Vercel's.
+while `3.33.130.190` and `15.197.148.33` are GoDaddy's own forwarding — which
+is precisely the Invalid Configuration Vercel reports. Delete the two GoDaddy
+addresses, keep Vercel's, then point the domain at the .com as a redirect in
+Vercel so there is one address and one set of links in the world.
