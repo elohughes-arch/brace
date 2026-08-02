@@ -1340,7 +1340,7 @@ function productivityView() {
     </section>`;
 }
 
-const COST_CATS = ['Software subscription', 'Hardware', 'Data & AI', 'Travel', 'Other'];
+const COST_CATS = ['Software subscription', 'Hardware', 'Data & AI', 'Shooting', 'Other'];
 
 function costsView() {
   if (state.loading) return '<div class="empty">Loading…</div>';
@@ -1502,7 +1502,7 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'control';
+const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
 let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, loading: true };
 let sheetFilter = 'all';
@@ -1528,6 +1528,27 @@ const dashboardIsCurrent = () => dashEpoch === epoch;
 const AGENTIC_VIEWS = ['control', 'review', 'sources', 'triage', 'rejected',
   'labelling', 'mastersheet', 'strategy', 'export', 'health'];
 
+/* The portal's front door: four rooms, pick one. The wordmark up top
+   always leads back here. */
+function officeView() {
+  const room = (hash, name, blurb, badge = 0) => `
+    <a class="room" href="#${hash}">
+      <div class="room-name">${name}${badge ? ` <b>${fmt(badge)}</b>` : ''}</div>
+      <div class="room-blurb">${blurb}</div>
+    </a>`;
+  return `
+    <div class="head"><h1>Owners portal</h1>
+      <div class="sub">Where Brace is run.</div></div>
+    <div class="rooms">
+      ${room('control', 'Agentic', 'The pipeline — discovery, triage, review, labelling and export.',
+    (state.counts?.pending || 0) + (state.counts?.downloaded || 0))}
+      ${room('productivity', 'Productivity', 'The task list, and who worked which hours on what.',
+    state.counts?.todo)}
+      ${room('costs', 'Costs', 'Who bought what, and where the money goes.')}
+      ${room('documents', 'Documents', 'Decks, market research and everything worth keeping.')}
+    </div>`;
+}
+
 function shell(body) {
   root.dataset.up = '1';
   const item = (hash, label, badge = 0) => `
@@ -1536,25 +1557,26 @@ function shell(body) {
   root.innerHTML = `
     <div class="crm">
       <aside class="side">
-        <a class="brand" href="../"><img src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" /></a>
+        <a class="brand" href="#" title="Portal home"><img src="../assets/brand/brace-wordmark-white.svg" alt="Brace" width="3579" height="732" /></a>
         <nav class="views">
-          <a href="#control" class="navhead ${AGENTIC_VIEWS.includes(view) ? 'on' : ''}">Agentic</a>
           ${AGENTIC_VIEWS.includes(view) ? `
+          <a href="#control" class="navhead on">Agentic</a>
           <div class="groupnav">
           ${item('control', 'Home')}
-          ${item('review', 'Review', state.counts?.downloaded)}
+          ${item('strategy', 'Dataset strategy')}
           ${item('sources', 'Sources')}
           ${item('triage', 'Triage', state.counts?.pending)}
           <a href="#rejected" class="sub ${view === 'rejected' ? 'on' : ''}">Rejected pile${(state.pile?.vtotal || 0) + (state.pile?.total || 0) ? ` <b>${fmt((state.pile?.vtotal || 0) + (state.pile?.total || 0))}</b>` : ''}</a>
+          ${item('review', 'Review', state.counts?.downloaded)}
           ${item('labelling', 'Labelling', state.counts?.queued)}
           ${item('mastersheet', 'Mastersheet')}
-          ${item('strategy', 'Dataset strategy')}
           ${item('export', 'Export')}
           ${item('health', 'Health', (state.health || []).filter((h) => healthStatus(h)[0] !== 'ok').length)}
-          </div>` : ''}
+          </div>` : `
+          <a href="#control" class="navhead">Agentic</a>
           <a href="#productivity" class="navhead ${view === 'productivity' ? 'on' : ''}">Productivity${state.counts?.todo ? ` <b>${fmt(state.counts.todo)}</b>` : ''}</a>
           <a href="#costs" class="navhead ${view === 'costs' ? 'on' : ''}">Costs</a>
-          <a href="#documents" class="navhead ${view === 'documents' ? 'on' : ''}">Documents</a>
+          <a href="#documents" class="navhead ${view === 'documents' ? 'on' : ''}">Documents</a>`}
         </nav>
         <div class="side-foot">
           ${state.spend && state.spend.usd
@@ -2438,7 +2460,8 @@ function paint(force = false) {
     : view === 'productivity' ? productivityView()
     : view === 'costs' ? costsView()
     : view === 'documents' ? documentsView()
-    : controlView());
+    : view === 'control' ? controlView()
+    : officeView());
 
   document.querySelectorAll('.views a').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
