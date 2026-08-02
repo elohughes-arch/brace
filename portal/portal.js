@@ -1806,6 +1806,7 @@ function controlView() {
         <div class="p-head"><span class="p-title">Run a stage by hand</span>
           <select id="batch" class="mini" title="How many videos one press works through — the cost dial">
             ${[3, 10, 25, 50].map((v) => `<option value="${v}" ${v === batch ? 'selected' : ''}>${v} at a time</option>`).join('')}
+            <option value="500" ${batch === 500 ? 'selected' : ''}>everything in the queue</option>
           </select></div>
         <div class="runrow">
           ${RUNS.map((r) => `
