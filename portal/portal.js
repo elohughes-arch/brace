@@ -495,6 +495,15 @@ async function loadSpend() {
   return { rows, usd: rows.reduce((a, r) => a + r.usd, 0) };
 }
 
+// The credit book: Anthropic exposes no balance endpoint, so the estimate
+// is arithmetic — top-ups logged here minus every metered token since the
+// meter went in. The live probe on this page remains the truth about empty.
+async function loadCredits() {
+  const { data, error } = await supabase.from('credit_topups')
+    .select('*').order('noted_at', { ascending: false }).limit(20);
+  return { rows: error ? [] : (data || []), err: error?.message || '' };
+}
+
 // The coverage matrix: surviving clips per weather slice, split into what
 // trains the model and what measures it. A thin row is a condition the model
 // has not been taught yet, and it names the next filming day to chase.
@@ -1226,6 +1235,53 @@ function healthView() {
          quota), Roboflow reachability, cookie age, and the stage backlogs. The
          heartbeat row is stamped by every hourly beat — its age, not its word, is
          the proof of life.</p>
+    </section>
+
+    ${creditPanel()}`;
+}
+
+// Anthropic has no balance endpoint, so this is a ledger: what you put in,
+// minus what the meter has watched go out. The probe above stays the truth
+// about actually-empty; this is the fuel gauge between refills.
+function creditPanel() {
+  const { rows = [], err = '' } = state.credits || {};
+  const inUsd = rows.reduce((a, r) => a + Number(r.amount_usd), 0);
+  const outUsd = state.spend?.usd || 0;
+  const left = inUsd - outUsd;
+  const low = rows.length && left <= 2;
+  const topup = (r) => `
+    <div class="row">
+      <span class="dot on"></span>
+      <div class="main">
+        <div class="t">$${Number(r.amount_usd).toFixed(2)} added</div>
+        <div class="s">${esc(who(r.email))} \u00b7 ${dateFmt(r.noted_at)}</div>
+      </div>
+      <div class="end">${r.email === state.email
+    ? `<button class="linky bad" data-topupdel="${r.id}">Remove</button>` : ''}</div>
+    </div>`;
+  return `
+    <section class="panel ${low ? 'stat-warn' : ''}" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Anthropic credit \u2014 the ledger</span></div>
+      ${err ? `<div class="err" style="margin-bottom:12px">${esc(err)}</div>` : ''}
+      <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-bottom:14px">
+        <div class="stat"><div class="num ${low ? 'h-fail' : ''}">${rows.length ? `$${left.toFixed(2)}` : '\u2014'}</div>
+          <div class="cap">Estimated remaining</div><div class="sub">top-ups minus metered spend</div></div>
+        <div class="stat"><div class="num">$${inUsd.toFixed(2)}</div>
+          <div class="cap">Put in</div><div class="sub">${fmt(rows.length)} top-up${rows.length === 1 ? '' : 's'} on record</div></div>
+        <div class="stat"><div class="num">$${outUsd.toFixed(2)}</div>
+          <div class="cap">Metered out</div><div class="sub">every token since the meter</div></div>
+      </div>
+      <form id="addtopup" class="formrow" style="margin-bottom:12px">
+        <input class="inp" type="number" id="tu-amount" min="1" step="0.01" placeholder="Top-up ($)" required style="max-width:140px" />
+        <button class="btn mini-btn" type="submit">Record top-up</button>
+      </form>
+      ${rows.length ? rows.slice(0, 8).map(topup).join('')
+    : '<div class="empty">No top-ups on record. When you add credits at console.anthropic.com, log the amount here and the gauge starts.</div>'}
+      <p class="foot-note">Anthropic offers no balance API, so this gauge is
+         arithmetic: what you record going in, minus what the pipeline's meter
+         watched go out. Spend from before the meter (2 Aug) and any use of the
+         key outside the pipeline are invisible to it \u2014 the Claude probe above
+         is the final word on empty.</p>
     </section>`;
 }
 
@@ -1599,7 +1655,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -2532,6 +2588,7 @@ function signature() {
     (state.prod?.logs || []).length, (state.prod?.tasks || []).map((t) => t.id + (t.status || '')),
     (state.costs?.rows || []).length, (state.docs?.rows || []).map((f) => f.name),
     (state.disc || []).map((v) => v.video_id),
+    (state.credits?.rows || []).length, state.spend?.usd,
     (state.pile?.vids || []).map((v) => v.video_id), state.pile?.vtotal,
     state.coverage,
   ]);
@@ -2766,6 +2823,21 @@ function paint(force = false) {
       note(error ? `could not delete — ${error.message}` : 'deleted', error ? 'bad' : 'good');
       refresh();
     }));
+  document.getElementById('addtopup')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const amount = Number(document.getElementById('tu-amount').value);
+    if (!(amount > 0)) return;
+    const { error } = await supabase.from('credit_topups')
+      .insert({ amount_usd: amount }).select('id');
+    note(error ? `could not record the top-up \u2014 ${error.message}` : `$${amount.toFixed(2)} top-up recorded`, error ? 'bad' : 'good');
+    if (!error) document.getElementById('tu-amount').value = '';
+    refresh();
+  });
+  document.querySelectorAll('[data-topupdel]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      await supabase.from('credit_topups').delete().eq('id', Number(b.dataset.topupdel));
+      refresh();
+    }));
   document.getElementById('healthrun')?.addEventListener('click', () => runStage('health'));
   // The bulk handover and the ledger download, from the Export page.
   document.getElementById('exportall')?.addEventListener('click', async () => {
@@ -2947,7 +3019,7 @@ async function refresh() {
     // with it, and the page reported only that it could not read the pipeline.
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits] = await Promise.all([
       settle(loadCounts(), state.counts),
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
@@ -2971,6 +3043,7 @@ async function refresh() {
       view === 'documents' ? settle(loadDocs(), state.docs) : Promise.resolve(state.docs),
       view === 'triage' ? settle(loadDiscovered(), state.disc) : Promise.resolve(state.disc),
       settle(loadActivity(), state.activity),
+      view === 'health' ? settle(loadCredits(), state.credits) : Promise.resolve(state.credits),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -2995,6 +3068,7 @@ async function refresh() {
     state.docs = docs;
     state.disc = disc;
     state.activity = activity;
+    state.credits = credits;
   } catch (e) {
     note(`could not read the pipeline — ${e.message || e}`, 'bad');
   }
@@ -3015,7 +3089,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
