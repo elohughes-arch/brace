@@ -576,7 +576,7 @@ async function loadSentClips() {
   // Only clips that have actually gone to the AI — a raw cut still waiting on
   // screening is not "sent", and listing it here read as a bug.
   const { data } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,file_path')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,file_path,sorter,sorter_colour')
     .in('label_status', ['queued', 'prelabelled'])
     .order('created_at', { ascending: false }).limit(8);
   const rows = data || [];
@@ -597,7 +597,7 @@ async function loadSplitPreview() {
 // owner can watch each one and send any mistake back for re-screening.
 async function loadRejectedClips() {
   const { data, error, count } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,preview_path,poster_path,file_path,created_at', { count: 'exact' })
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,preview_path,poster_path,file_path,created_at,sorter,sorter_colour', { count: 'exact' })
     .eq('label_status', 'rejected')
     .order('created_at', { ascending: false })
     .limit(12);
@@ -1999,7 +1999,7 @@ function triageClipsView() {
   // preview plays in place; a poster-only clip shows its still with a badge;
   // a brand-new cut holds the space with a note.
   const pendingCard = (k) => `
-    <div class="clipcard">
+    <div class="clipcard" data-id="${esc(k.clip_id)}" data-owner="${esc(k.sorter)}" data-src="${esc(k.preview_url)}">
       <div class="clipmedia">
         <label class="clippick" title="Pick this clip">
           <input type="checkbox" class="tick" data-pick="${esc(k.clip_id)}" ${picked.has(k.clip_id) ? 'checked' : ''} />
