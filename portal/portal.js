@@ -466,7 +466,7 @@ async function loadSpend() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,owner_outcome,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
@@ -1605,6 +1605,14 @@ function triageClipsView() {
         <div class="t">Shot ${k.shot_no || '?'} · ${mmss(k.shot_ts)}
           · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
         <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
+        <div class="yourcall">
+          <span class="k">Your call</span>
+          <div class="calls">
+            ${['hit', 'chipped', 'miss', 'unclear'].map((o) => `
+              <button class="callbtn ${k.owner_outcome === o ? 'on' : ''}"
+                data-call="${esc(k.clip_id)}" data-out="${o}">${o}</button>`).join('')}
+          </div>
+        </div>
       </div>
     </div>`;
 
@@ -1651,6 +1659,12 @@ function triageClipsView() {
     </div>
 
     <section class="panel">
+      <p class="foot-note" style="margin:0 0 16px;padding:0;border:none">Call each shot as
+         you watch it — hit, chipped, miss, or unclear if you genuinely cannot tell. Your
+         calls are the only ground truth in the system: they are what the trialled models
+         are scored against, and what an outcome model would one day be trained on. The
+         machines' own verdicts are deliberately not shown here, so what you see is the
+         clip rather than a suggestion.</p>
       <div class="p-head"><span class="p-title">Clips to check${totalPending ? ` — ${fmt(totalPending)}` : ''}</span>
         <span>
           <button class="linky" id="pickall">Select all shown</button>
@@ -2074,7 +2088,7 @@ function signature() {
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
     clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
-    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
+    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.owner_outcome || '')),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     state.rej?.total,
     state.ai.map((k) => k.clip_id + k.label_status + (k.preview_url ? 'v' : '')
@@ -2168,8 +2182,9 @@ function paint(force = false) {
         .update({ owner_outcome: out, owner_outcome_at: out ? new Date().toISOString() : null })
         .eq('clip_id', id).select('clip_id');
       if (error) note(`could not save your call — ${error.message}`, 'bad');
-      const row = state.ai.find((k) => k.clip_id === id);
-      if (row) row.owner_outcome = out;
+      [...state.ai, ...state.clips].forEach((k) => {
+        if (k.clip_id === id) k.owner_outcome = out;
+      });
     }));
   document.getElementById('healthrun')?.addEventListener('click', () => runStage('health'));
   // The bulk handover and the ledger download, from the Export page.
