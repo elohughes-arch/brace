@@ -2123,23 +2123,6 @@ function triageClipsView() {
         <div class="cap">Pre-labelled</div><div class="sub">boxed, in Roboflow</div></div>
     </div>
 
-    <section class="panel" style="margin-bottom:18px">
-      <div class="p-head"><span class="p-title">Discovered — waiting for triage · ${fmt(c.discovered ?? 0)}</span></div>
-      ${(state.disc || []).length ? (state.disc || []).map((v) => `
-      <div class="row">
-        <span class="dot"></span>
-        <div class="main">
-          <div class="t"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}" target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a></div>
-          <div class="s">${esc(v.channel || 'unknown channel')} · ${mmss(v.duration_s)} · ${fmt(v.view_count || 0)} views</div>
-        </div>
-        <div class="end"><span class="s">${v.discovered_at ? ago(v.discovered_at) : ''}</span></div>
-      </div>`).join('')
-    : '<div class="empty">Nothing waiting — run a discovery from Home and the finds land here.</div>'}
-      <p class="foot-note">Every find is written to the master the moment discovery
-         returns — this is the queue the next triage run will judge. Showing the
-         newest ${Math.min((state.disc || []).length, 30)} of ${fmt(c.discovered ?? 0)}.</p>
-    </section>
-
     <section class="panel">
       <p class="foot-note" style="margin:0 0 16px;padding:0;border:none">Call each shot as
          you watch it — hit, chipped, miss, or unclear if you genuinely cannot tell. Your
@@ -2204,7 +2187,24 @@ function triageClipsView() {
          clay is in there, "send back" returns it for re-screening, and tell the
          machine's keeper, because a silent wrong rejection is a training example
          lost. Only the newest twelve show; the count above is the full pile.</p>
-    </section>` : ''}`;
+    </section>` : ''}
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Discovered — waiting for triage · ${fmt(c.discovered ?? 0)}</span></div>
+      ${(state.disc || []).length ? (state.disc || []).slice(0, 8).map((v) => `
+      <div class="row">
+        <span class="dot"></span>
+        <div class="main">
+          <div class="t"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}" target="_blank" rel="noopener">${esc(v.title || v.video_id)}</a></div>
+          <div class="s">${esc(v.channel || 'unknown channel')} · ${mmss(v.duration_s)} · ${fmt(v.view_count || 0)} views</div>
+        </div>
+        <div class="end"><span class="s">${v.discovered_at ? ago(v.discovered_at) : ''}</span></div>
+      </div>`).join('')
+    : '<div class="empty">Nothing waiting — run a discovery from Home and the finds land here.</div>'}
+      <p class="foot-note">Every find is written to the master the moment discovery
+         returns — this is the queue the next triage run will judge. Newest
+         ${Math.min((state.disc || []).length, 8)} shown of ${fmt(c.discovered ?? 0)}; the mastersheet holds them all.</p>
+    </section>`;
 }
 
 function labellingView() {
