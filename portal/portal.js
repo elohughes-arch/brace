@@ -2092,11 +2092,8 @@ function triageClipsView() {
   // preview plays in place; a poster-only clip shows its still with a badge;
   // a brand-new cut holds the space with a note.
   const pendingCard = (k) => `
-    <div class="clipcard" data-id="${esc(k.clip_id)}" data-clip="${esc(k.clip_id)}" data-owner="${esc(k.sorter)}" data-src="${esc(k.preview_url)}">
+    <div class="clipcard ${picked.has(k.clip_id) ? 'picked' : ''}" data-id="${esc(k.clip_id)}" data-clip="${esc(k.clip_id)}" data-owner="${esc(k.sorter)}" data-src="${esc(k.preview_url)}">
       <div class="clipmedia">
-        <label class="clippick" title="Pick this clip">
-          <input type="checkbox" class="tick" data-pick="${esc(k.clip_id)}" ${picked.has(k.clip_id) ? 'checked' : ''} />
-        </label>
         ${k.preview_url
     ? `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
     : k.poster_url
@@ -2108,6 +2105,9 @@ function triageClipsView() {
           · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
         <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
         ${callRows(k)}
+        <div class="clipsend-row">
+          <button class="btn clipsend" data-sendone="${esc(k.clip_id)}">Send to AI</button>
+        </div>
       </div>
     </div>`;
 
@@ -2934,12 +2934,9 @@ function paint(force = false) {
     el.querySelectorAll('[data-act]').forEach((b) =>
       b.addEventListener('click', () => judge(el.dataset.id, b.dataset.act, el))));
 
-  document.querySelectorAll('[data-pick]').forEach((cb) => cb.addEventListener('change', () => {
-    cb.checked ? picked.add(cb.dataset.pick) : picked.delete(cb.dataset.pick);
-    const n = document.getElementById('pickn');
-    if (n) n.textContent = picked.size;
-    const send = document.getElementById('sendsel');
-    if (send) send.disabled = !picked.size;
+  document.querySelectorAll('[data-sendone]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    queueClips([b.dataset.sendone], b);
   }));
   // Page flips show the loading state immediately — the fetch takes a beat,
   // and a button that answers half a second later reads as broken.
@@ -3024,12 +3021,12 @@ function paint(force = false) {
       const id = card.dataset.clip;
       if (!id) return;
       on ? picked.add(id) : picked.delete(id);
-      const cb = card.querySelector('[data-pick]');
-      if (cb) cb.checked = on;
+      card.classList.toggle('picked', on);
       sync();
     };
     document.querySelectorAll('.clipcard[data-clip]').forEach((card) => {
       card.addEventListener('mousedown', (e) => {
+        if (e.target.closest('[data-sendone]')) return;
         e.preventDefault();
         sweepDown = true;
         set(card, !picked.has(card.dataset.clip));
@@ -3040,8 +3037,14 @@ function paint(force = false) {
     });
   }
   document.getElementById('pickall')?.addEventListener('click', () => {
-    document.querySelectorAll('[data-pick]').forEach((cb) => { cb.checked = true; picked.add(cb.dataset.pick); });
-    paint(true);
+    document.querySelectorAll('.clipcard[data-clip]').forEach((card) => {
+      picked.add(card.dataset.clip);
+      card.classList.add('picked');
+    });
+    const n = document.getElementById('pickn');
+    if (n) n.textContent = picked.size;
+    const send = document.getElementById('sendsel');
+    if (send) send.disabled = !picked.size;
   });
   document.getElementById('picknone')?.addEventListener('click', () => {
     picked.clear(); paint(true);

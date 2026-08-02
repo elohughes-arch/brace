@@ -360,6 +360,7 @@ label.row, .pickside { cursor: pointer; }
 .clipgrid .grouphead { grid-column: 1 / -1; }
 .clipcard { border: 1px solid var(--line); border-radius: var(--r-md);
   overflow: hidden; background: rgba(0,0,0,.14); }
+.clipcard.picked { border-color: var(--clay); box-shadow: inset 0 0 0 2px var(--clay); }
 .clipmedia { position: relative; aspect-ratio: 16 / 9; background: #000; }
 .clipmedia video, .clipmedia img { position: absolute; inset: 0;
   width: 100%; height: 100%; object-fit: contain; }
@@ -376,6 +377,8 @@ label.row, .pickside { cursor: pointer; }
 .clipcap .t { font-size: 13px; color: var(--text-1); }
 .clipcap .s { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 .mini-btn { width: auto; display: inline-flex; padding: 7px 14px; font-size: 11px; }
+.clipsend-row { display: flex; justify-content: flex-end; margin-top: 8px; }
+.clipsend { width: auto; padding: 7px 14px; font-size: 11px; }
 
 .row.src.off { opacity: .5; }
 .row .end { margin-left: auto; flex: 0 0 auto;
@@ -690,7 +693,6 @@ select.inp { appearance: none; }
 /* Sweep select: previews stand down so the mouse can paint across cards */
 .sweepmode .clipcard { cursor: crosshair; user-select: none; }
 .sweepmode .clipmedia video, .sweepmode .clipmedia img { pointer-events: none; }
-.sweepmode .clippick { pointer-events: none; }
 
 /* The owner's calls on the mastersheet row */
 .verdictline { color: var(--champagne); }
