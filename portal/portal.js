@@ -2106,6 +2106,7 @@ function triageClipsView() {
         <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
         ${callRows(k)}
         <div class="clipsend-row">
+          <button class="btn btn-ghost clipsend" data-deleteone="${esc(k.clip_id)}">Delete</button>
           <button class="btn clipsend" data-sendone="${esc(k.clip_id)}">Send to AI</button>
         </div>
       </div>
@@ -2165,7 +2166,9 @@ function triageClipsView() {
           <button class="linky ${sweeping ? 'chip-on' : ''}" id="sweep">${sweeping ? 'Done selecting' : 'Select multiple'}</button>
           <button class="linky" id="pickall" style="margin-left:10px">Select all shown</button>
           <button class="linky" id="picknone" style="margin-left:10px">Clear</button>
-          <button class="btn mini-btn" id="sendsel" style="margin-left:14px"
+          <button class="btn btn-ghost mini-btn" id="deletesel" style="margin-left:14px"
+            ${picked.size ? '' : 'disabled'}>Delete <span id="pickdn">${picked.size}</span></button>
+          <button class="btn mini-btn" id="sendsel" style="margin-left:8px"
             ${picked.size ? '' : 'disabled'}>Send <span id="pickn">${picked.size}</span> to AI</button>
           <button class="btn btn-ghost mini-btn" id="sendall" style="margin-left:8px"
             ${totalPending ? '' : 'disabled'}>Push all ${fmt(totalPending)} to Roboflow</button>
@@ -2347,6 +2350,19 @@ async function queueClips(ids, btn) {
   // heartbeat, so the labeller is fired immediately. It works through 50 a
   // run; the heartbeat sweeps up anything beyond that within the hour.
   await runStage('prelabel', { limit: 50 });
+}
+
+async function deleteClips(ids, btn) {
+  if (!ids.length) return;
+  if (btn) busy(btn, true, 'Deleting…');
+  // Same bucket screening's own rejects land in — reversible from the
+  // Rejected by screening panel rather than gone for good.
+  const { error } = await supabase.from('pipeline_clips')
+    .update({ label_status: 'rejected' }).in('clip_id', ids).select('clip_id');
+  if (error) { note(`could not delete clips — ${error.message}`, 'bad'); await refresh(); return; }
+  note(`${ids.length} clip${ids.length === 1 ? '' : 's'} deleted`, 'good');
+  ids.forEach((id) => picked.delete(id));
+  await refresh();
 }
 
 /* ---------- mastersheet ---------- */
@@ -2938,6 +2954,10 @@ function paint(force = false) {
     e.stopPropagation();
     queueClips([b.dataset.sendone], b);
   }));
+  document.querySelectorAll('[data-deleteone]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    deleteClips([b.dataset.deleteone], b);
+  }));
   // Page flips show the loading state immediately — the fetch takes a beat,
   // and a button that answers half a second later reads as broken.
   const flip = (set) => { set(); state.loading = true; paint(true); refresh(); };
@@ -3010,23 +3030,27 @@ function paint(force = false) {
     sweepDown = false;
     paint(true);
   });
+  const syncPick = () => {
+    const n = document.getElementById('pickn');
+    if (n) n.textContent = picked.size;
+    const dn = document.getElementById('pickdn');
+    if (dn) dn.textContent = picked.size;
+    const send = document.getElementById('sendsel');
+    if (send) send.disabled = !picked.size;
+    const del = document.getElementById('deletesel');
+    if (del) del.disabled = !picked.size;
+  };
   if (sweeping) {
-    const sync = () => {
-      const n = document.getElementById('pickn');
-      if (n) n.textContent = picked.size;
-      const send = document.getElementById('sendsel');
-      if (send) send.disabled = !picked.size;
-    };
     const set = (card, on) => {
       const id = card.dataset.clip;
       if (!id) return;
       on ? picked.add(id) : picked.delete(id);
       card.classList.toggle('picked', on);
-      sync();
+      syncPick();
     };
     document.querySelectorAll('.clipcard[data-clip]').forEach((card) => {
       card.addEventListener('mousedown', (e) => {
-        if (e.target.closest('[data-sendone]')) return;
+        if (e.target.closest('[data-sendone], [data-deleteone]')) return;
         e.preventDefault();
         sweepDown = true;
         set(card, !picked.has(card.dataset.clip));
@@ -3041,16 +3065,15 @@ function paint(force = false) {
       picked.add(card.dataset.clip);
       card.classList.add('picked');
     });
-    const n = document.getElementById('pickn');
-    if (n) n.textContent = picked.size;
-    const send = document.getElementById('sendsel');
-    if (send) send.disabled = !picked.size;
+    syncPick();
   });
   document.getElementById('picknone')?.addEventListener('click', () => {
     picked.clear(); paint(true);
   });
   document.getElementById('sendsel')?.addEventListener('click', (e) =>
     queueClips([...picked], e.target));
+  document.getElementById('deletesel')?.addEventListener('click', (e) =>
+    deleteClips([...picked], e.target));
   document.getElementById('sendall')?.addEventListener('click', async (e) => {
     // every pending clip, not just the page shown
     busy(e.target, true, 'Sending…');

@@ -377,7 +377,7 @@ label.row, .pickside { cursor: pointer; }
 .clipcap .t { font-size: 13px; color: var(--text-1); }
 .clipcap .s { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 .mini-btn { width: auto; display: inline-flex; padding: 7px 14px; font-size: 11px; }
-.clipsend-row { display: flex; justify-content: flex-end; margin-top: 8px; }
+.clipsend-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .clipsend { width: auto; padding: 7px 14px; font-size: 11px; }
 
 .row.src.off { opacity: .5; }
@@ -690,8 +690,10 @@ select.inp { appearance: none; }
 .calls + .calls { margin-top: 4px; }
 .addclay { font-size: 11px; margin-top: 6px; display: inline-block; }
 
-/* Sweep select: previews stand down so the mouse can paint across cards */
-.sweepmode .clipcard { cursor: crosshair; user-select: none; }
+/* Sweep select: previews stand down so the mouse can paint across cards,
+   and nothing on the page catches a text selection while it drags. */
+.sweepmode { user-select: none; }
+.sweepmode .clipcard { cursor: crosshair; }
 .sweepmode .clipmedia video, .sweepmode .clipmedia img { pointer-events: none; }
 
 /* The owner's calls on the mastersheet row */
