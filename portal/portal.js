@@ -173,11 +173,14 @@ function renderBootstrap(err = '') {
 /* ---------- 2 · set a password (first run) ---------- */
 
 function renderSetPassword(err = '', change = false) {
+  const reset = recovering && !change;
   gate(`
-    <h1>${change ? 'Change your password' : 'Choose a password'}</h1>
+    <h1>${change ? 'Change your password' : reset ? 'Choose a new password' : 'Choose a password'}</h1>
     <p class="gate-lede">${change
       ? 'This replaces the first of your two factors. Your authenticator is untouched.'
-      : 'This is the first of your two factors. Make it long and unique to Brace.'}</p>
+      : reset
+        ? 'Your authenticator has confirmed you. This replaces the password you lost — make it long and unique to Brace.'
+        : 'This is the first of your two factors. Make it long and unique to Brace.'}</p>
     <form id="f">
       <div class="field"><input type="password" id="pw1" placeholder="New password" autocomplete="new-password" required /></div>
       <div class="field"><input type="password" id="pw2" placeholder="Repeat it" autocomplete="new-password" required /></div>
@@ -322,9 +325,13 @@ async function renderEnrol(err = '') {
 /* ---------- 4 · the second factor, every sign-in ---------- */
 
 function renderChallenge(factorId, err = '') {
+  // On a reset the code is not the last step but the first: it proves who is
+  // asking before a new password can be set.
+  const forReset = recovering;
   gate(`
-    <h1>Authenticator code</h1>
-    <p class="gate-lede">Six digits from your authenticator app.</p>
+    <h1>${forReset ? 'Confirm it is you' : 'Authenticator code'}</h1>
+    <p class="gate-lede">Six digits from your authenticator app.${forReset
+      ? ' Your new password comes next — the code proves who is asking for it.' : ''}</p>
     <div class="rule"></div>
     <form id="f">
       <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code"
@@ -2489,8 +2496,6 @@ async function route() {
   if (ownerEmail.error) return renderBroken('Could not check the owners list.', ownerEmail.error);
   if (!ownerEmail.data) return renderDenied(email);
 
-  if (recovering) return renderSetPassword();
-
   stage('checking your sign-in method');
   const { data: aal } = await within(supabase.auth.mfa.getAuthenticatorAssuranceLevel(), 12, 'Reading your assurance level');
 
@@ -2501,15 +2506,25 @@ async function route() {
   // The link route is the only one that lands here without a password, and its
   // one purpose is setting a first one. Routing only — the database is what
   // actually grants access.
+  stage('reading your authenticator');
+  const { data: factors, error: fErr } = await within(supabase.auth.mfa.listFactors(), 15, 'Reading your authenticator');
+  if (fErr) return renderBroken('Could not read your authenticator settings.', fErr);
+  const verified = (factors?.totp || []).filter((f) => f.status === 'verified');
+
+  // A recovery link lands at aal1, and Supabase refuses a password change on
+  // an account with MFA until the session reaches aal2. So on a recovery the
+  // authenticator comes first and the new password second — the reverse of
+  // the first-run order, where there is no factor to answer with yet.
+  if (recovering) {
+    if (verified.length && aal?.currentLevel !== 'aal2') return renderChallenge(verified[0].id);
+    return renderSetPassword();
+  }
+
   if (!authMethods(session, aal).includes('password')
       && sessionStorage.getItem('brace-portal-pw') !== '1') {
     return renderSetPassword();
   }
 
-  stage('reading your authenticator');
-  const { data: factors, error: fErr } = await within(supabase.auth.mfa.listFactors(), 15, 'Reading your authenticator');
-  if (fErr) return renderBroken('Could not read your authenticator settings.', fErr);
-  const verified = (factors?.totp || []).filter((f) => f.status === 'verified');
   if (!verified.length) return renderEnrol();
 
   // aal2 alone is not enough: the browser keeps the session, so a returning
