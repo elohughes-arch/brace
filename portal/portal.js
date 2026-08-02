@@ -517,7 +517,7 @@ async function loadCoverage() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,owner_outcome,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,owner_outcome,owner_outcome_2,owner_outcome_3,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
@@ -563,7 +563,7 @@ async function titleClips(rows) {
 async function loadAiClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,clay_colour,det_conf,range_m,speed_mph,created_at')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,owner_outcome_2,owner_outcome_3,clay_colour,det_conf,range_m,speed_mph,created_at')
     .in('label_status', ['queued', 'prelabelled'])
     .order(aiSort === 'new' ? 'created_at' : 'outcome_conf',
       { ascending: aiSort === 'lo', nullsFirst: false })
@@ -627,18 +627,46 @@ async function loadSheet() {
   const rows = data || [];
   // clips cut / sent per video, computed fresh rather than stored
   try {
-    const { data: cc } = await supabase.rpc('sheet_clip_counts');
+    const { data: cc } = await supabase.rpc('sheet_clip_verdicts');
     const byVid = new Map((cc || []).map((x) => [x.video_id, x]));
     rows.forEach((v) => {
       const x = byVid.get(v.video_id);
       v.clips = x ? Number(x.clips) : 0;
       v.sent = x ? Number(x.sent) : 0;
+      v.called = x ? Number(x.called) : 0;
+      v.hit = x ? Number(x.hit) : 0;
+      v.chipped = x ? Number(x.chipped) : 0;
+      v.miss = x ? Number(x.miss) : 0;
+      v.unclear = x ? Number(x.unclear) : 0;
     });
   } catch { /* counts stay undefined; the sheet still lists */ }
   return rows;
 }
 
 const judged = new Set();   // survives a queue read that overtakes a decision
+
+// One row of buttons per clay. A pair is two answers and a burst is three —
+// a single call on a two-clay clip teaches the model half the truth.
+const clayRows = new Map();          // clip_id -> rows opened by hand
+const OWNER_SLOTS = ['owner_outcome', 'owner_outcome_2', 'owner_outcome_3'];
+function callRows(k) {
+  const auto = (k.outcome_3 || k.owner_outcome_3) ? 3
+    : (k.is_pair || k.outcome_2 || k.owner_outcome_2) ? 2 : 1;
+  const shown = Math.max(auto, clayRows.get(k.clip_id) || 1);
+  const slot = (n) => `
+    <div class="calls">
+      ${shown > 1 ? `<span class="clayno">clay ${n}</span>` : ''}
+      ${['hit', 'chipped', 'miss', 'unclear'].map((o) => `
+        <button class="callbtn ${k[OWNER_SLOTS[n - 1]] === o ? 'on' : ''}"
+          data-call="${esc(k.clip_id)}" data-slot="${n}" data-out="${o}">${o}</button>`).join('')}
+    </div>`;
+  return `
+    <div class="yourcall">
+      <span class="k">Your call${shown > 1 ? 's — every clay gets one' : ''}</span>
+      ${Array.from({ length: shown }, (_, i) => slot(i + 1)).join('')}
+      ${shown < 3 ? `<button class="linky addclay" data-addclay="${esc(k.clip_id)}" data-next="${shown + 1}">+ another clay</button>` : ''}
+    </div>`;
+}
 
 // Discovery's home: what the search found that triage has not yet judged.
 // These rows are on the master from the moment discover returns — the page
@@ -2040,6 +2068,9 @@ const ROBOFLOW_ANNOTATE = 'https://app.roboflow.com/elohughes-icloud-com/brace-c
 // Ticked clips survive the 8-second repaint because the selection lives here,
 // not in the DOM the repaint replaces.
 const picked = new Set();
+let sweeping = false;      // Select multiple: drag across cards to pick them
+let sweepDown = false;
+window.addEventListener('mouseup', () => { sweepDown = false; });
 
 function triageClipsView() {
   if (state.loading) return '<div class="empty">Loading clips…</div>';
@@ -2055,7 +2086,7 @@ function triageClipsView() {
   // preview plays in place; a poster-only clip shows its still with a badge;
   // a brand-new cut holds the space with a note.
   const pendingCard = (k) => `
-    <div class="clipcard">
+    <div class="clipcard" data-clip="${esc(k.clip_id)}">
       <div class="clipmedia">
         <label class="clippick" title="Pick this clip">
           <input type="checkbox" class="tick" data-pick="${esc(k.clip_id)}" ${picked.has(k.clip_id) ? 'checked' : ''} />
@@ -2070,14 +2101,7 @@ function triageClipsView() {
         <div class="t">Shot ${k.shot_no || '?'} · ${mmss(k.shot_ts)}
           · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
         <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
-        <div class="yourcall">
-          <span class="k">Your call</span>
-          <div class="calls">
-            ${['hit', 'chipped', 'miss', 'unclear'].map((o) => `
-              <button class="callbtn ${k.owner_outcome === o ? 'on' : ''}"
-                data-call="${esc(k.clip_id)}" data-out="${o}">${o}</button>`).join('')}
-          </div>
-        </div>
+        ${callRows(k)}
       </div>
     </div>`;
 
@@ -2132,7 +2156,8 @@ function triageClipsView() {
          clip rather than a suggestion.</p>
       <div class="p-head"><span class="p-title">Clips to check${totalPending ? ` — ${fmt(totalPending)}` : ''}</span>
         <span>
-          <button class="linky" id="pickall">Select all shown</button>
+          <button class="linky ${sweeping ? 'chip-on' : ''}" id="sweep">${sweeping ? 'Done selecting' : 'Select multiple'}</button>
+          <button class="linky" id="pickall" style="margin-left:10px">Select all shown</button>
           <button class="linky" id="picknone" style="margin-left:10px">Clear</button>
           <button class="btn mini-btn" id="sendsel" style="margin-left:14px"
             ${picked.size ? '' : 'disabled'}>Send <span id="pickn">${picked.size}</span> to AI</button>
@@ -2146,7 +2171,8 @@ function triageClipsView() {
     return `<b>${fmt(Number(r?.clips || 0))}</b> ${s}`;
   }).join(' · ')}
         — dealt per video, so no flight's frames ever straddle a set.</p>` : ''}
-      ${grouped ? `<div class="clipgrid">${grouped}</div>`
+      ${sweeping ? '<p class="split-line">Hold the mouse down and sweep across clips to pick them; sweep a picked one to unpick. Press Done selecting to watch previews again.</p>' : ''}
+      ${grouped ? `<div class="clipgrid ${sweeping ? 'sweepmode' : ''}">${grouped}</div>`
     : '<div class="empty">Nothing waiting. Approve videos in Review and the clipper feeds this list within the hour.</div>'}
       ${pages > 1 ? `
       <div class="pager">
@@ -2256,14 +2282,7 @@ function labellingView() {
     : `pre-labelled${k.n_clays != null ? ` · ${fmt(k.n_clays)} clay${k.n_clays === 1 ? '' : 's'} boxed` : ''} · frames in Roboflow`}</div>
         </div>
         <div class="aimetrics">${panel}
-          <div class="yourcall">
-            <span class="k">Your call</span>
-            <div class="calls">
-              ${['hit', 'chipped', 'miss', 'unclear'].map((o) => `
-                <button class="callbtn ${k.owner_outcome === o ? 'on' : ''}"
-                  data-call="${esc(k.clip_id)}" data-out="${o}">${o}</button>`).join('')}
-            </div>
-          </div>
+          ${callRows(k)}
         </div>
       </div>
     </div>`;
@@ -2354,6 +2373,10 @@ function mastersheetView() {
     ? ` · scored ${Number(v.triage_score).toFixed(1)}` : ''}${v.weather && v.weather !== 'unknown'
     ? ` · ${esc(v.weather)}` : ''} · ${mmss(v.duration_s)} · ${dateFmt(v.updated_at)}</div>
         ${auditing && v.triage_notes ? `<div class="s why" title="${esc(v.triage_notes)}">${esc(v.triage_notes)}</div>` : ''}
+        ${v.clips ? `<div class="s verdictline">${v.called
+    ? `your calls: ${[['hit', v.hit], ['chipped', v.chipped], ['miss', v.miss], ['unclear', v.unclear]]
+      .filter(([, n]) => n).map(([o, n]) => `${fmt(n)} ${o}`).join(' · ') || 'none yet'}${v.called < v.clips ? ` — ${fmt(v.clips - v.called)} of ${fmt(v.clips)} clips unwatched` : ''}`
+    : `${fmt(v.clips)} clip${v.clips === 1 ? '' : 's'} awaiting your verdicts`}</div>` : ''}
       </div>
       <div class="end">
         ${v.clips ? `<span class="s">${fmt(v.clips)} clips · ${fmt(v.sent)} sent</span>` : ''}
@@ -2570,14 +2593,15 @@ function signature() {
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
     (state.activity || []).length, state.activity?.[0]?.at,
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
-    clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
-    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.owner_outcome || '')),
+    clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size, sweeping,
+    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.owner_outcome || '') + (k.owner_outcome_2 || '') + (k.owner_outcome_3 || '')),
+    [...clayRows.entries()].map(([k, v]) => k + v).join(),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     state.rej?.total,
     state.ai.map((k) => k.clip_id + k.label_status + (k.preview_url ? 'v' : '')
       + (k.outcome || '') + (k.outcome_2 || '') + (k.outcome_3 || '')
       + (k.speed_mph ?? '') + (k.range_m ?? '')),
-    state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '') + (v.ds_level ?? '')),
+    state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '') + (v.ds_level ?? '') + (v.called ?? '') + (v.hit ?? '') + (v.miss ?? '')),
     state.progress,
     state.cats,
     state.split,
@@ -2664,18 +2688,25 @@ function paint(force = false) {
   document.querySelectorAll('[data-call]').forEach((b) =>
     b.addEventListener('click', async () => {
       const id = b.dataset.call;
+      const field = OWNER_SLOTS[Number(b.dataset.slot || 1) - 1];
       const already = b.classList.contains('on');
       const out = already ? null : b.dataset.out;
       // paint the choice at once; the refresh confirms it
       b.closest('.calls').querySelectorAll('.callbtn').forEach((x) => x.classList.remove('on'));
       if (out) b.classList.add('on');
+      const patch = { [field]: out };
+      if (field === 'owner_outcome') patch.owner_outcome_at = out ? new Date().toISOString() : null;
       const { error } = await supabase.from('pipeline_clips')
-        .update({ owner_outcome: out, owner_outcome_at: out ? new Date().toISOString() : null })
-        .eq('clip_id', id).select('clip_id');
+        .update(patch).eq('clip_id', id).select('clip_id');
       if (error) note(`could not save your call — ${error.message}`, 'bad');
       [...state.ai, ...state.clips].forEach((k) => {
-        if (k.clip_id === id) k.owner_outcome = out;
+        if (k.clip_id === id) k[field] = out;
       });
+    }));
+  document.querySelectorAll('[data-addclay]').forEach((b) =>
+    b.addEventListener('click', () => {
+      clayRows.set(b.dataset.addclay, Math.min(3, Number(b.dataset.next)));
+      paint(true);
     }));
   // ---- the office ----
   document.getElementById('addtask')?.addEventListener('submit', async (e) => {
@@ -2971,6 +3002,37 @@ function paint(force = false) {
         : 'sent back — the next screening beat re-examines it', error ? 'bad' : 'good');
       refresh();
     }));
+  document.getElementById('sweep')?.addEventListener('click', () => {
+    sweeping = !sweeping;
+    sweepDown = false;
+    paint(true);
+  });
+  if (sweeping) {
+    const sync = () => {
+      const n = document.getElementById('pickn');
+      if (n) n.textContent = picked.size;
+      const send = document.getElementById('sendsel');
+      if (send) send.disabled = !picked.size;
+    };
+    const set = (card, on) => {
+      const id = card.dataset.clip;
+      if (!id) return;
+      on ? picked.add(id) : picked.delete(id);
+      const cb = card.querySelector('[data-pick]');
+      if (cb) cb.checked = on;
+      sync();
+    };
+    document.querySelectorAll('.clipcard[data-clip]').forEach((card) => {
+      card.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        sweepDown = true;
+        set(card, !picked.has(card.dataset.clip));
+      });
+      card.addEventListener('mouseenter', () => {
+        if (sweepDown) set(card, true);
+      });
+    });
+  }
   document.getElementById('pickall')?.addEventListener('click', () => {
     document.querySelectorAll('[data-pick]').forEach((cb) => { cb.checked = true; picked.add(cb.dataset.pick); });
     paint(true);
