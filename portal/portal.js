@@ -463,6 +463,16 @@ async function loadSpend() {
   return { rows, usd: rows.reduce((a, r) => a + r.usd, 0) };
 }
 
+// The coverage matrix: surviving clips per weather slice, split into what
+// trains the model and what measures it. A thin row is a condition the model
+// has not been taught yet, and it names the next filming day to chase.
+async function loadCoverage() {
+  try {
+    const { data, error } = await supabase.rpc('coverage_matrix');
+    return error ? [] : (data || []);
+  } catch { return []; }   // a missing function is a blank panel, not a broken page
+}
+
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
@@ -2362,25 +2372,30 @@ async function refresh() {
   // This runs on a timer, so a rejection here would be an unhandled one every
   // eight seconds. Report it in the activity log and keep the page alive.
   try {
+    // settled, not all: a loader that throws should cost its own panel and
+    // nothing else. A missing function once took every figure on the page
+    // with it, and the page reported only that it could not read the pipeline.
+    const settle = (p, fallback) => Promise.resolve(p).then(
+      (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
     const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile] = await Promise.all([
-      loadCounts(),
-      view === 'review' ? loadQueue() : Promise.resolve(state.queue),
-      view === 'sources' ? loadSources() : Promise.resolve(state.sources),
-      view === 'control' ? loadIssues() : Promise.resolve(state.issues),
-      loadSpend(),
-      view === 'control' ? loadCoverage() : Promise.resolve(state.coverage),
-      view === 'triage' ? loadClips() : Promise.resolve(state.clips),
-      view === 'triage' ? loadSentClips() : Promise.resolve(state.sent),
-      view === 'triage' ? loadRejectedClips() : Promise.resolve(state.rej),
-      view === 'triage' ? loadSplitPreview() : Promise.resolve(state.split),
-      view === 'labelling' ? loadAiClips() : Promise.resolve(state.ai),
-      view === 'labelling' ? loadTrials() : Promise.resolve(state.trials),
-      view === 'mastersheet' ? loadSheet() : Promise.resolve(state.sheet),
-      view === 'strategy' ? loadProgress() : Promise.resolve(state.progress),
-      view === 'strategy' ? loadCategories() : Promise.resolve(state.cats),
-      view === 'export' ? loadExport() : Promise.resolve(state.exp),
-      loadHealth(),
-      view === 'rejected' ? loadRejectedPile() : Promise.resolve(state.pile),
+      settle(loadCounts(), state.counts),
+      view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
+      view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
+      view === 'control' ? settle(loadIssues(), state.issues) : Promise.resolve(state.issues),
+      settle(loadSpend(), state.spend),
+      view === 'control' ? settle(loadCoverage(), state.coverage) : Promise.resolve(state.coverage),
+      view === 'triage' ? settle(loadClips(), state.clips) : Promise.resolve(state.clips),
+      view === 'triage' ? settle(loadSentClips(), state.sent) : Promise.resolve(state.sent),
+      view === 'triage' ? settle(loadRejectedClips(), state.rej) : Promise.resolve(state.rej),
+      view === 'triage' ? settle(loadSplitPreview(), state.split) : Promise.resolve(state.split),
+      view === 'labelling' ? settle(loadAiClips(), state.ai) : Promise.resolve(state.ai),
+      view === 'labelling' ? settle(loadTrials(), state.trials) : Promise.resolve(state.trials),
+      view === 'mastersheet' ? settle(loadSheet(), state.sheet) : Promise.resolve(state.sheet),
+      view === 'strategy' ? settle(loadProgress(), state.progress) : Promise.resolve(state.progress),
+      view === 'strategy' ? settle(loadCategories(), state.cats) : Promise.resolve(state.cats),
+      view === 'export' ? settle(loadExport(), state.exp) : Promise.resolve(state.exp),
+      settle(loadHealth(), state.health),
+      view === 'rejected' ? settle(loadRejectedPile(), state.pile) : Promise.resolve(state.pile),
     ]);
     state.counts = counts;
     state.queue = queue;
