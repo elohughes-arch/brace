@@ -339,8 +339,14 @@ function renderChallenge(factorId, err = '') {
       <div class="err" id="err">${esc(err)}</div>
       <button class="btn" type="submit">Unlock</button>
     </form>
-    <div class="gate-foot"><a href="#" id="out">Sign out</a></div>`,
+    <div class="gate-foot"><a href="#" id="out">Sign out</a> &middot;
+      <a href="#" id="lost">Forgot password</a></div>`,
     'Owners portal', 'centred');
+
+  document.getElementById('lost').addEventListener('click', (e) => {
+    e.preventDefault();
+    renderBootstrap();
+  });
 
   document.getElementById('f').addEventListener('submit', async (e) => {
     e.preventDefault();
