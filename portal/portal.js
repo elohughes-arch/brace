@@ -437,27 +437,17 @@ const HAIKU_IN_PER_M = 1.00;
 const HAIKU_OUT_PER_M = 5.00;
 
 async function loadSpend() {
+  // Everything the pipeline has spent, priced per model — triage and the
+  // verdicts both. Verdicts were invisible here for a fortnight and ran up
+  // fifteen dollars unseen; a cost you cannot see is a cost you cannot govern.
   let data, error;
-  try { ({ data, error } = await supabase.rpc('pipeline_spend')); }
-  catch { return null; }   // a missing function is a blank line, not a broken page
+  try { ({ data, error } = await supabase.rpc('total_spend')); }
+  catch { return null; }
   if (error || !data || !data.length) return null;
-  const s = data[0];
-  return {
-    scored: Number(s.scored || 0),
-    usd: (Number(s.in_tokens || 0) / 1e6) * HAIKU_IN_PER_M
-       + (Number(s.out_tokens || 0) / 1e6) * HAIKU_OUT_PER_M,
-  };
-}
-
-// The coverage matrix: surviving clips per weather slice, split into what
-// trains the model and what measures it (the golden holdout). This is the
-// sourcing dashboard — a thin row is a condition the model hasn't been
-// taught yet, and that row names the next filming day or channel to chase.
-async function loadCoverage() {
-  try {
-    const { data, error } = await supabase.rpc('coverage_matrix');
-    return error ? [] : (data || []);
-  } catch { return []; }   // a missing function is a blank panel, not a broken page
+  const rows = data.map((r) => ({
+    model: r.model, calls: Number(r.calls || 0), usd: Number(r.usd || 0),
+  }));
+  return { rows, usd: rows.reduce((a, r) => a + r.usd, 0) };
 }
 
 async function loadClips() {
@@ -1234,8 +1224,8 @@ function shell(body) {
           ${item('health', 'Health', (state.health || []).filter((h) => healthStatus(h)[0] !== 'ok').length)}
         </nav>
         <div class="side-foot">
-          ${state.spend && state.spend.scored
-    ? `<div class="side-line">${fmt(state.spend.scored)} scored · ~$${state.spend.usd.toFixed(2)}</div>` : ''}
+          ${state.spend && state.spend.usd
+    ? `<div class="side-line">~$${state.spend.usd.toFixed(2)} spent on AI</div>` : ''}
           <div class="side-line who" title="${esc(state.email)}">${esc(state.email)}</div>
           <button class="signout" id="changepw">${ic('lock', 14)} Password</button>
           <button class="signout" id="signout">${ic('signout', 14)} Sign out</button>
@@ -1318,9 +1308,25 @@ function controlView() {
       <span class="m-sep">·</span>
       <a href="#health">${unwell ? `${unwell} probe${unwell === 1 ? '' : 's'} need attention`
     : 'all systems healthy'}</a>
-      ${state.spend && state.spend.scored ? `<span class="m-sep">·</span>
-        <span>${fmt(state.spend.scored)} videos scored for ~$${state.spend.usd.toFixed(2)}</span>` : ''}
+      ${state.spend && state.spend.usd ? `<span class="m-sep">·</span>
+        <span title="${esc(state.spend.rows.map((r) => `${r.model}: ${fmt(r.calls)} calls, $${r.usd.toFixed(2)}`).join(' · '))}">~$${state.spend.usd.toFixed(2)} spent on AI</span>` : ''}
     </div>
+
+    ${state.spend && state.spend.rows.length > 1 ? `
+    <section class="panel" style="margin-bottom:18px">
+      <div class="p-head"><span class="p-title">What the thinking costs — $${state.spend.usd.toFixed(2)} all told</span></div>
+      <table class="matrix">
+        <thead><tr><th>Model</th><th>Calls</th><th>Cost</th></tr></thead>
+        <tbody>
+          ${state.spend.rows.map((r) => `
+          <tr><td>${esc(r.model)}</td><td>${fmt(r.calls)}</td><td>$${r.usd.toFixed(2)}</td></tr>`).join('')}
+        </tbody>
+      </table>
+      <p class="foot-note">Triage scores each video once; verdicts judge each bang,
+         so a pair costs two calls and a burst three. Re-judging the whole library
+         after an improvement costs a full pass again — which is where fifteen
+         dollars went in a single day, unseen, before this table existed.</p>
+    </section>` : ''}
 
     <section class="panel">
       <div class="p-head"><span class="p-title">Where the work is sitting</span>
@@ -2279,7 +2285,7 @@ async function refresh() {
       view === 'review' ? loadQueue() : Promise.resolve(state.queue),
       view === 'sources' ? loadSources() : Promise.resolve(state.sources),
       view === 'control' ? loadIssues() : Promise.resolve(state.issues),
-      view === 'control' ? loadSpend() : Promise.resolve(state.spend),
+      loadSpend(),
       view === 'control' ? loadCoverage() : Promise.resolve(state.coverage),
       view === 'triage' ? loadClips() : Promise.resolve(state.clips),
       view === 'triage' ? loadSentClips() : Promise.resolve(state.sent),

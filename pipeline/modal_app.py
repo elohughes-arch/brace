@@ -78,6 +78,32 @@ gpu_image = (
 
 secret = modal.Secret.from_name("brace-pipeline")
 
+# What the verdicts actually cost. Judging was spending real money with
+# nothing counting it — the portal priced triage alone — so every call
+# appends its usage here and the stage that ran flushes one row per model
+# when it finishes. Module-level is right: a request runs in one container.
+_USAGE: list = []
+
+
+def _flush_usage(sb, stage):
+    """Write what this run's verdicts cost, then forget it."""
+    if not _USAGE:
+        return
+    per: dict = {}
+    for model, i, o in _USAGE:
+        row = per.setdefault(model, [0, 0, 0])
+        row[0] += 1
+        row[1] += i or 0
+        row[2] += o or 0
+    _USAGE.clear()
+    try:
+        sb.table("pipeline_spend_log").insert([
+            {"stage": stage, "model": m, "calls": c,
+             "in_tokens": i, "out_tokens": o}
+            for m, (c, i, o) in per.items()]).execute()
+    except Exception as e:  # noqa: BLE001 — accounting must never stop work
+        print(f"[spend] could not record usage: {e}")
+
 UNAUTHORISED = fastapi.responses.JSONResponse(
     {"error": "unauthorised"}, status_code=401)
 
@@ -813,6 +839,7 @@ def screen(request: fastapi.Request):
             {"label_status": "rejected"}).eq("clip_id", row["clip_id"]).execute()
 
     volume.commit()   # the trims rewrote clip files on the volume
+    _flush_usage(sb, "screen")
     return {"stage": "screen", "processed": done, "kept": kept}
 
 
@@ -1195,6 +1222,7 @@ def rejudge(request: fastapi.Request):
             print(f"[rejudge] {row.get('clip_id')} failed: {e}")
             skipped += 1
 
+    _flush_usage(sb, "trial" if trial else "rejudge")
     return {"stage": "rejudge", "model": model_name,
             "trial": trial, "rejudged": done,
             "differs_from_live": changed, "skipped": skipped}
@@ -1262,9 +1290,18 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
                 crop = cv2.resize(crop, (max(1, int(crop.shape[1] * s)), 384))
             return crop, True
 
+        def shrink(frame):
+            """A full frame costs four times a crop. Send it smaller."""
+            h, w = frame.shape[:2]
+            if w <= 768:
+                return frame
+            return cv2.resize(frame, (768, max(1, int(h * 768.0 / w))))
+
         blocks = []
         for n, i in enumerate(picks, 1):
             img, zoomed = eye(i)
+            if not zoomed:
+                img = shrink(img)
             ok, jpg = cv2.imencode(".jpg", img,
                                    [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ok:
@@ -1307,6 +1344,9 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
                 messages=[{"role": "user", "content": blocks}])
             text = "".join(b.text for b in msg.content
                            if getattr(b, "type", "") == "text")
+            u = getattr(msg, "usage", None)
+            _USAGE.append((model, getattr(u, "input_tokens", 0),
+                           getattr(u, "output_tokens", 0)))
         data = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
         outcome = str(data.get("outcome", "unclear"))
         if outcome not in ("hit", "chipped", "miss", "unclear"):
