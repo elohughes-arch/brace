@@ -86,16 +86,30 @@ A reset email that never arrives is nearly always this list, not the mailer —
 and a reset started from a domain missing here fails silently, which is the
 worst way for it to fail.
 
-## 4. Where the records go
+## 4. Where the records go — settled
 
-The domains are served by Vercel, but that is not the same as being *managed*
-by Vercel. Check GoDaddy → My Products → Domains → braceshooting.com →
-Nameservers:
+Both domains answer to GoDaddy's nameservers (`ns05`/`ns06.domaincontrol.com`
+for the .com, `ns53`/`ns54` for the .co.uk), so **every DNS record goes in
+GoDaddy → Domains → DNS**. Vercel is merely pointed at by an A record; adding
+anything in Vercel's DNS panel would do nothing at all, quietly.
 
-- `ns1.vercel-dns.com` and friends → add every mail record in **Vercel** →
-  Domains → the domain → DNS Records.
-- GoDaddy's own nameservers → add them in **GoDaddy** → DNS, and Vercel is
-  only being pointed at by A/CNAME records.
+### What is already there
 
-Whichever it is, the mail records go where the nameservers point. Adding them
-in the other place does nothing at all, silently.
+`braceshooting.com` carries working mail. Its MX points at
+`braceshooting-com.mail.protection.outlook.com` — GoDaddy's Professional
+Email is Microsoft 365 underneath — alongside two verification records, one
+for Microsoft and one for Vercel, and this SPF:
+
+    v=spf1 include:secureserver.net -all
+
+Note the `-all`: a hard fail, meaning anything not listed is to be rejected
+outright rather than merely doubted. Correct, and the reason a second sender
+must be *merged in* rather than added alongside. For Resend:
+
+    v=spf1 include:secureserver.net include:_spf.resend.com -all
+
+`braceshooting.co.uk` has no mail at all — no MX, no SPF — and its apex
+carries three A records where it should carry one: `216.198.79.1` is Vercel,
+while `3.33.130.190` and `15.197.148.33` are GoDaddy's own forwarding. That
+is precisely the Invalid Configuration Vercel reports. Delete the two
+GoDaddy addresses; keep Vercel's.
