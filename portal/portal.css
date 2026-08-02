@@ -568,3 +568,14 @@ label.row, .pickside { cursor: pointer; }
 /* Model trials: each model's call under the clip it judged */
 .clipcap .tm { display: inline-block; min-width: 94px; color: var(--text-3);
   font-size: 11px; }
+
+/* The owner's own call on a shot — the only ground truth in the system */
+.yourcall { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 10px; }
+.yourcall .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-3); }
+.calls { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.callbtn { font-size: 11px; padding: 4px 9px; border-radius: var(--r-pill);
+  border: 1px solid var(--line); color: var(--text-3); text-transform: capitalize; }
+.callbtn:hover { border-color: var(--line-strong); color: var(--text-1); }
+.callbtn.on { background: var(--clay); border-color: var(--clay);
+  color: var(--ink-on-clay); font-weight: 600; }

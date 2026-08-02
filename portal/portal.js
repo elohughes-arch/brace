@@ -499,7 +499,7 @@ async function titleClips(rows) {
 async function loadAiClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,clay_colour,det_conf,range_m,speed_mph,created_at')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,clay_colour,det_conf,range_m,speed_mph,created_at')
     .in('label_status', ['queued', 'prelabelled'])
     .order(aiSort === 'new' ? 'created_at' : 'outcome_conf',
       { ascending: aiSort === 'lo', nullsFirst: false })
@@ -730,14 +730,19 @@ function strategyView() {
 async function loadTrials() {
   const { data, error } = await supabase.from('verdict_trials')
     .select('clip_id,model,outcome,outcome_conf').limit(2000);
-  if (error || !data || !data.length) return { trials: [], clips: [] };
+  if (error || !data || !data.length) return { trials: [], clips: [], acc: [] };
+  let acc = [];
+  try {
+    const { data: a } = await supabase.rpc('trial_accuracy');
+    acc = a || [];
+  } catch { /* no calls made yet */ }
   const ids = [...new Set(data.map((t) => t.clip_id))];
   const { data: cl } = await supabase.from('pipeline_clips')
     .select('clip_id,video_id,shot_ts,outcome,outcome_conf,preview_path,poster_path,file_path')
     .in('clip_id', ids);
   const clips = cl || [];
   await Promise.all([signClipMedia(clips), titleClips(clips)]);
-  return { trials: data, clips };
+  return { trials: data, clips, acc };
 }
 
 const TRIAL_OUTCOMES = ['hit', 'chipped', 'miss', 'unclear'];
@@ -796,9 +801,32 @@ function trialsPanel() {
     </div>`;
   }).join('');
 
+  const acc = (state.trials || {}).acc || [];
   return `
     <section class="panel" style="margin-top:18px">
       <div class="p-head"><span class="p-title">Model trials — ${fmt(complete.length)} clips judged by all ${models.length}</span></div>
+      ${acc.length ? `
+      <table class="matrix" style="margin-bottom:20px">
+        <thead><tr><th>Scored against your calls</th><th>Judged</th><th>Right</th>
+          <th>Accuracy</th><th>Ducked it</th><th>Confidently wrong</th></tr></thead>
+        <tbody>
+          ${acc.map((r) => `
+          <tr><td>${esc(r.model)}</td><td>${fmt(Number(r.judged))}</td>
+            <td>${fmt(Number(r.correct))}</td>
+            <td><b>${r.pct == null ? '—' : `${r.pct}%`}</b></td>
+            <td class="dim">${fmt(Number(r.said_unclear))}</td>
+            <td class="${Number(r.confidently_wrong) ? 'h-fail' : 'dim'}">${fmt(Number(r.confidently_wrong))}</td></tr>`).join('')}
+        </tbody>
+      </table>
+      <p class="foot-note" style="margin:-10px 0 18px">The only honest column is
+         accuracy, and it exists because you called these shots yourself. "Ducked it"
+         counts clips it called unclear where you saw an answer — wasted footage.
+         "Confidently wrong" counts calls it made at 80% or better and got wrong —
+         far more dangerous than a duck, because nothing downstream doubts it.</p>`
+    : `<p class="foot-note" style="margin:-6px 0 16px">No calls of your own yet — use
+        the verdict buttons under each clip above and this becomes a real scorecard.
+        Until then the models can only be compared to each other, which proves
+        consistency, not correctness.</p>`}
       <table class="matrix">
         <thead><tr><th>Model</th><th>Judged</th>
           ${TRIAL_OUTCOMES.map((o) => `<th>${o}</th>`).join('')}
@@ -1718,7 +1746,16 @@ function labellingView() {
     ? 'queued — the AI boxes it within the hour'
     : `pre-labelled${k.n_clays != null ? ` · ${fmt(k.n_clays)} clay${k.n_clays === 1 ? '' : 's'} boxed` : ''} · frames in Roboflow`}</div>
         </div>
-        <div class="aimetrics">${panel}</div>
+        <div class="aimetrics">${panel}
+          <div class="yourcall">
+            <span class="k">Your call</span>
+            <div class="calls">
+              ${['hit', 'chipped', 'miss', 'unclear'].map((o) => `
+                <button class="callbtn ${k.owner_outcome === o ? 'on' : ''}"
+                  data-call="${esc(k.clip_id)}" data-out="${o}">${o}</button>`).join('')}
+            </div>
+          </div>
+        </div>
       </div>
     </div>`;
   };
@@ -2104,6 +2141,23 @@ function paint(force = false) {
   // written for that ladder rung and stamp what's found with its level.
   document.querySelectorAll('[data-dsfind]').forEach((b) =>
     b.addEventListener('click', () => runStage('discover', { level: b.dataset.dsfind })));
+  // The owner's verdict on a shot — ground truth. Models are scored against
+  // these, and one day an outcome model will be trained on them.
+  document.querySelectorAll('[data-call]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const id = b.dataset.call;
+      const already = b.classList.contains('on');
+      const out = already ? null : b.dataset.out;
+      // paint the choice at once; the refresh confirms it
+      b.closest('.calls').querySelectorAll('.callbtn').forEach((x) => x.classList.remove('on'));
+      if (out) b.classList.add('on');
+      const { error } = await supabase.from('pipeline_clips')
+        .update({ owner_outcome: out, owner_outcome_at: out ? new Date().toISOString() : null })
+        .eq('clip_id', id).select('clip_id');
+      if (error) note(`could not save your call — ${error.message}`, 'bad');
+      const row = state.ai.find((k) => k.clip_id === id);
+      if (row) row.owner_outcome = out;
+    }));
   document.getElementById('healthrun')?.addEventListener('click', () => runStage('health'));
   // The bulk handover and the ledger download, from the Export page.
   document.getElementById('exportall')?.addEventListener('click', async () => {
