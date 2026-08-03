@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04b';
+const BUILD = '2026-08-04c';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -551,13 +551,26 @@ async function loadCoverage() {
 }
 
 async function loadClips() {
-  const PAGE = 40;
-  const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,presentation,presentations,clay_colour,clay_colours,weather,background,backgrounds,shot_type,created_at')
-    .eq('label_status', 'pending')
+  // Twelve, not forty. Every card carries a player and, once a pair or a
+  // flush opens its rows, a dozen controls of its own — forty of them was
+  // over a thousand live elements on one page, rebuilt whole on every
+  // repaint, and two people working at once made it unusable. Twelve fills
+  // a screen, and the pager is right there.
+  const PAGE = TRIAGE_PAGE;
+  let q = supabase.from('pipeline_clips')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,presentation,presentations,clay_colour,clay_colours,weather,background,backgrounds,shot_type,created_at',
+      { count: 'exact' })
+    .eq('label_status', 'pending');
+  const me = WHOAMI();
+  if (clipOwner === 'mine' && me) q = q.eq('sorter', me);
+  if (clipOwner === 'theirs' && me) q = q.neq('sorter', me);
+  const { data, error, count } = await q
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
   if (error) return [];
+  // The pager has to count what the filter actually returns, or "Mine"
+  // offers pages that are not there.
+  state.clipTotal = count ?? null;
   const rows = data || [];
   // Whose clip is whose. The queue is ordered the same way every load, so
   // alternating on the row's position in the whole queue — not just this
@@ -738,6 +751,15 @@ const clayRows = new Map();          // clip_id -> rows opened by hand
 // is only the array — a flush is however many birds were in the air.
 const OWNER_SLOTS = ['owner_outcome', 'owner_outcome_2', 'owner_outcome_3'];
 const MAX_CLAYS = 8;
+const TRIAGE_PAGE = 12;   // cards per page — see loadClips()
+
+// Whose clips the queue shows. The split judge already deals every clip to
+// one of you, and the cards have carried the owner's colour for weeks — but
+// the queue itself showed everything to everyone, so two people working at
+// once were handed the same twelve clips and either duplicated the work or
+// overwrote each other's call. Yours by default; the whole queue is one
+// choice away for when one of you is clearing the other's backlog.
+let clipOwner = 'mine';
 
 // Who is signed in, in the same words the sorter column uses, so a call is
 // credited to whoever made it rather than to whoever the clip was dealt to.
@@ -1347,7 +1369,7 @@ function rejectedView() {
     <div class="clipcard">
       <div class="clipmedia">
         ${k.preview_url
-    ? `<video controls preload="metadata" data-path="${esc(k.preview_path || '')}" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    ? `<video controls preload="none" data-path="${esc(k.preview_path || '')}" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
     : k.poster_url
       ? `<img src="${esc(k.poster_url)}" alt="" />`
       : '<span class="rendering">Preview rendering — plays here within the hour</span>'}
@@ -1900,7 +1922,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'findings', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, clipTotal: null, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -2424,11 +2446,23 @@ function wireGlobals() {
   // to see a shot again was the one that took you away from it. It now
   // replays whatever is under the pointer, or the last card worked on if
   // the pointer is elsewhere, and Escape comes back out.
+  // Which card the pointer is over. pointerover fires on every element
+  // boundary the mouse crosses, so this used to walk the tree hundreds of
+  // times a second across the whole document. pointermove on the grid
+  // alone, throttled to once a frame, answers the same question for a
+  // fraction of the work.
   let hoverCard = null;
-  document.addEventListener('pointerover', (e) => {
-    const c = e.target.closest?.('.clipcard[data-clip]');
-    if (c) hoverCard = c.dataset.clip;
-  }, true);
+  let hoverPending = false;
+  document.addEventListener('pointermove', (e) => {
+    if (hoverPending) return;
+    hoverPending = true;
+    const { target } = e;
+    requestAnimationFrame(() => {
+      hoverPending = false;
+      const c = target instanceof Element ? target.closest('.clipcard[data-clip]') : null;
+      if (c) hoverCard = c.dataset.clip;
+    });
+  }, { passive: true });
 
   const goFullscreen = (el) => {
     const go = el.requestFullscreen || el.webkitRequestFullscreen
@@ -2553,7 +2587,7 @@ const ytOpen = new Set();
 function clipMedia(k) {
   const fs = `<button class="expand" data-expand="${esc(k.clip_id)}" title="Full screen">⤢</button>`;
   if (k.preview_url) {
-    return `<video controls preload="metadata" data-path="${esc(k.preview_path || '')}"
+    return `<video controls preload="none" data-path="${esc(k.preview_path || '')}"
       ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>${fs}`;
   }
   if (ytOpen.has(k.clip_id)) {
@@ -2576,8 +2610,8 @@ function clipMedia(k) {
 function triageClipsView() {
   if (state.loading) return '<div class="empty">Loading clips…</div>';
   const c = state.counts || {};
-  const PAGE = 40;
-  const totalPending = c.pending ?? 0;
+  const PAGE = TRIAGE_PAGE;
+  const totalPending = state.clipTotal ?? (c.pending ?? 0);
   const pages = Math.max(1, Math.ceil(totalPending / PAGE));
   const pending = state.clips;
 
@@ -2668,7 +2702,12 @@ function triageClipsView() {
          clip rather than a suggestion.</p>
       <div class="p-head"><span class="p-title">Clips to check${totalPending ? ` — ${fmt(totalPending)}` : ''}</span>
         <span>
-          <button class="linky ${sweeping ? 'chip-on' : ''}" id="sweep">${sweeping ? 'Done selecting' : 'Select multiple'}</button>
+          <select id="clipowner" class="mini" title="Whose clips this queue shows">
+            <option value="mine" ${clipOwner === 'mine' ? 'selected' : ''}>Mine</option>
+            <option value="theirs" ${clipOwner === 'theirs' ? 'selected' : ''}>${state.email === 'rupertokelly98@gmail.com' ? "Eddie's" : "Rupert's"}</option>
+            <option value="all" ${clipOwner === 'all' ? 'selected' : ''}>Everyone's</option>
+          </select>
+          <button class="linky ${sweeping ? 'chip-on' : ''}" id="sweep" style="margin-left:10px">${sweeping ? 'Done selecting' : 'Select multiple'}</button>
           <button class="linky" id="pickall" style="margin-left:10px">Select all shown</button>
           <button class="linky" id="picknone" style="margin-left:10px">Clear</button>
           <button class="btn btn-ghost mini-btn" id="deletesel" style="margin-left:14px"
@@ -2710,7 +2749,7 @@ function triageClipsView() {
         <div class="clipcard">
           <div class="clipmedia">
             ${k.preview_url
-    ? `<video controls preload="metadata" data-path="${esc(k.preview_path || '')}" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    ? `<video controls preload="none" data-path="${esc(k.preview_path || '')}" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
     : k.poster_url
       ? `<img src="${esc(k.poster_url)}" alt="" />`
       : '<span class="rendering">Preview rendering — plays here within the hour</span>'}
@@ -3624,7 +3663,7 @@ function signature() {
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
     (state.activity || []).length, state.activity?.[0]?.at,
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
-    clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
+    clipPage, clipOwner, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
     queuePicked.size, sweeping,
     lastTouched, ytOpen.size, scoreWindow, JSON.stringify(state.scores || {}),
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.needs_recut ? 'r' : '')
@@ -3655,6 +3694,7 @@ function signature() {
   ]);
 }
 let painted = '';
+let tick = 0;   // which poll turn we are on; see refresh()
 
 // After a change is applied to the DOM in place, tell the repaint it has
 // nothing left to do. Without this an edit is drawn twice: once by hand,
@@ -4399,6 +4439,11 @@ function paint(force = false) {
     if (!error) queuePicked.clear();
     state.loading = true; paint(true); refresh();
   });
+  document.getElementById('clipowner')?.addEventListener('change', (e) => {
+    clipOwner = e.target.value;
+    clipPage = 0;
+    state.loading = true; paint(true); refresh();
+  });
   document.getElementById('scorewin')?.addEventListener('change', async (e) => {
     scoreWindow = e.target.value;
     state.loading = true; paint(true);
@@ -4421,7 +4466,7 @@ function paint(force = false) {
     flip(() => { rejPage = Math.min(rejPage + 1, pages - 1); });
   });
   document.getElementById('clipnext')?.addEventListener('click', () => {
-    const pages = Math.max(1, Math.ceil((state.counts?.pending ?? 0) / 40));
+    const pages = Math.max(1, Math.ceil((state.clipTotal ?? state.counts?.pending ?? 0) / TRIAGE_PAGE));
     flip(() => { clipPage = Math.min(clipPage + 1, pages - 1); });
   });
   document.querySelectorAll('[data-unreject]').forEach((b) =>
@@ -4521,6 +4566,12 @@ async function refresh() {
     // settled, not all: a loader that throws should cost its own panel and
     // nothing else. A missing function once took every figure on the page
     // with it, and the page reported only that it could not read the pipeline.
+    // Spend, health and the activity feed do not change between one poll
+    // and the next, and reloading them every fifteen seconds — twice over,
+    // with two people on the page — was work nobody asked for. Once a
+    // minute is plenty; the counts and whatever view is open stay live.
+    tick += 1;
+    const slow = tick % 4 === 1;
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
     const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits, models, findings, scores] = await Promise.all([
@@ -4528,7 +4579,7 @@ async function refresh() {
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
       view === 'control' ? settle(loadIssues(), state.issues) : Promise.resolve(state.issues),
-      settle(loadSpend(), state.spend),
+      slow ? settle(loadSpend(), state.spend) : Promise.resolve(state.spend),
       view === 'control' ? settle(loadCoverage(), state.coverage) : Promise.resolve(state.coverage),
       view === 'triage' ? settle(loadClips(), state.clips) : Promise.resolve(state.clips),
       view === 'triage' ? settle(loadSentClips(), state.sent) : Promise.resolve(state.sent),
@@ -4540,13 +4591,13 @@ async function refresh() {
       view === 'strategy' ? settle(loadProgress(), state.progress) : Promise.resolve(state.progress),
       view === 'strategy' ? settle(loadCategories(), state.cats) : Promise.resolve(state.cats),
       view === 'export' ? settle(loadExport(), state.exp) : Promise.resolve(state.exp),
-      settle(loadHealth(), state.health),
+      slow ? settle(loadHealth(), state.health) : Promise.resolve(state.health),
       view === 'rejected' ? settle(loadRejectedPile(), state.pile) : Promise.resolve(state.pile),
       view === 'productivity' ? settle(loadProd(), state.prod) : Promise.resolve(state.prod),
       view === 'costs' ? settle(loadCosts(), state.costs) : Promise.resolve(state.costs),
       view === 'documents' ? settle(loadDocs(), state.docs) : Promise.resolve(state.docs),
       view === 'triage' ? settle(loadDiscovered(), state.disc) : Promise.resolve(state.disc),
-      settle(loadActivity(), state.activity),
+      slow ? settle(loadActivity(), state.activity) : Promise.resolve(state.activity),
       view === 'health' ? settle(loadCredits(), state.credits) : Promise.resolve(state.credits),
       view === 'labelling' ? settle(loadModels(), state.models) : Promise.resolve(state.models),
       view === 'findings' ? settle(loadFindings(), state.findings) : Promise.resolve(state.findings),
@@ -4599,7 +4650,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, clipTotal: null, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
@@ -4610,7 +4661,7 @@ async function renderDashboard(email) {
   poll = setInterval(() => {
     if (mine !== epoch) return clearInterval(poll);
     if (!document.hidden) refresh();
-  }, 8000);
+  }, 15000);
 }
 
 /* ---------- boot ---------- */
