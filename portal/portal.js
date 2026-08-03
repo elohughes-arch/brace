@@ -406,11 +406,13 @@ const RUNS = [
   { stage: 'dataset', label: 'Build set', busy: 'Building', desc: 'Assemble a training set from the boxes we already hold — no Roboflow involved. The overlay filter runs on the way out, so the reticle never reaches the model. Needs Modal.' },
   { stage: 'train', label: 'Train', busy: 'Training', desc: 'Fine-tune our own clay detector on that set. Once one exists, screening uses it instead of Grounding DINO — better on this subject and far cheaper per frame. Needs Modal.' },
   { stage: 'scrub', label: 'Scrub labels', busy: 'Scrubbing', desc: 'Re-run the current overlay filter over every clip already screened, so red dots and crosshairs stored as clays are re-labelled as the reticle. Anything it corrects goes back in the upload queue to replace the bad copy in Roboflow. Needs Modal.' },
+  { stage: 'ingest', label: 'Add a dataset', busy: 'Ingesting', desc: 'Fold somebody else’s clay dataset into ours. Paste a Roboflow Universe address as workspace/project/version, or a link to a zip of a YOLO dataset. Borrowed images only ever join the training split — valid and test stay our own footage, so the score keeps meaning what it means. Needs Modal.',
+    ask: 'Roboflow Universe address as workspace/project/version, or a link to a zipped YOLO dataset' },
 ];
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04e';
+const BUILD = '2026-08-04f';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -4168,8 +4170,21 @@ function paint(force = false) {
     batch = Number(e.target.value) || 10;
   });
   document.querySelectorAll('[data-stage]').forEach((b) =>
-    b.addEventListener('click', () =>
-      runStage(b.dataset.stage, b.dataset.stage === 'discover' ? {} : { limit: batch })));
+    b.addEventListener('click', () => {
+      const stage = b.dataset.stage;
+      const spec = RUNS.find((r) => r.stage === stage) || {};
+      if (spec.ask) {
+        // Two ways of naming the same thing, told apart by shape: a bare
+        // workspace/project/version is Roboflow's, anything with a scheme is
+        // a zip somewhere. Asking which would be asking the reader to know
+        // our parameter names.
+        const said = (window.prompt(spec.ask) || '').trim();
+        if (!said) return;
+        const q = /^https?:\/\//i.test(said) ? { url: said } : { rf: said };
+        return runStage(stage, q);
+      }
+      return runStage(stage, stage === 'discover' ? {} : { limit: batch });
+    }));
   // Build set and Train take no batch size — they work on the whole set —
   // and both outlive the proxy's wait, so the 202 is the expected answer.
   document.querySelectorAll('[data-run]').forEach((b) =>

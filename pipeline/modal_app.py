@@ -1508,13 +1508,41 @@ def dataset(request: fastapi.Request):
       except Exception as e:  # noqa: BLE001 — one bad clip is not the set
         print(f"[dataset] {row.get('clip_id')} skipped: {e}")
 
+    # Borrowed sets, folded into training only. ?extra=none leaves them out —
+    # the honest comparison when you want to know what our own footage alone
+    # is worth. Anything ingested is otherwise included by default, because
+    # ingesting it was the decision to use it.
+    borrowed = {}
+    extra = (q.get("extra") or "").strip()
+    if extra.lower() != "none":
+        want_x = {x for x in extra.replace(" ", "").split(",") if x}
+        base = Path(DATASETS) / "_external"
+        for d in sorted(base.iterdir()) if base.exists() else []:
+            if not d.is_dir() or (want_x and d.name not in want_x):
+                continue
+            n = 0
+            for img in sorted((d / "images").glob("*")):
+                lab = d / "labels" / f"{img.stem}.txt"
+                if not lab.exists():
+                    continue
+                shutil.copyfile(img, root / "images" / "train" / img.name)
+                shutil.copyfile(lab, root / "labels" / "train" / lab.name)
+                n += 1
+            if n:
+                borrowed[d.name] = n
+                counts["train"] += n
+
     (root / "data.yaml").write_text(
         f"path: {root}\ntrain: images/train\nval: images/valid\n"
         f"test: images/test\nnames:\n  0: clay\n  1: reticle\n")
     volume.commit()
-    return _noted(sb, {"stage": "dataset", "name": name, "clips": clips_used,
-                       "train": counts["train"], "valid": counts["valid"],
-                       "test": counts["test"], "empty_frames": empties})
+    out = {"stage": "dataset", "name": name, "clips": clips_used,
+           "train": counts["train"], "valid": counts["valid"],
+           "test": counts["test"], "empty_frames": empties}
+    if borrowed:
+        out["borrowed"] = sum(borrowed.values())
+        out["borrowed_from"] = ", ".join(f"{k} {v}" for k, v in borrowed.items())
+    return _noted(sb, out)
 
 
 # ---------------------------------------------------------------- train
@@ -2160,6 +2188,220 @@ def _shot_metrics(into_clip, boxes_per_frame, frame_dt, frame_w, outcome):
             if 5 <= mph <= 130:   # outside this is track noise, not a clay
                 out["speed_mph"] = round(mph)
     return out
+
+
+# ---------------------------------------------------------------- ingest
+
+# Borrowed footage. Our own set grows a clip at a time and starts small, and a
+# detector's early problem is not subtlety, it is never having seen a clay
+# against a sky at all. A public clay dataset fixes that cheaply — it is
+# someone else's cameras, someone else's grounds, which is exactly what
+# generalisation needs.
+#
+# It goes into training and nowhere else. The valid and test splits are ours:
+# test is the golden ruler, hand-checked, the number every decision is made
+# against, and the moment a borrowed image lands in it the score stops
+# describing how well the model reads *our* footage. Every image ingested
+# here is marked train, whatever split its author put it in.
+#
+# Class names are mapped, not trusted. Nobody else numbers their classes the
+# way we do, so the map is by name — anything that reads as a clay becomes 0,
+# anything that reads as an aim mark becomes 1, and anything else is dropped
+# with a count in the manifest so a bad guess is visible rather than silently
+# poisoning the labels.
+_CLAY_WORDS = ("clay", "target", "pigeon", "skeet", "trap", "disc", "disk",
+               "bird", "orange")
+_AIM_WORDS = ("reticle", "reticule", "crosshair", "cross-hair", "cross_hair",
+              "dot", "sight", "aim", "pip", "bead")
+
+
+def _class_map(names):
+    """Original class index -> ours (0 clay, 1 reticle), or None to drop."""
+    out = {}
+    for i, raw in enumerate(names):
+        n = str(raw).strip().lower().replace("-", " ").replace("_", " ")
+        if any(w in n for w in _AIM_WORDS):
+            out[i] = 1
+        elif any(w in n for w in _CLAY_WORDS):
+            out[i] = 0
+        else:
+            out[i] = None
+    return out
+
+
+def _yaml_names(text):
+    """The names block out of a data.yaml, in either spelling it comes in:
+    a flat list, or a numbered mapping. Hand-parsed rather than pulling in a
+    YAML dependency for four lines of it."""
+    import re
+    m = re.search(r"^names\s*:\s*\[(.*?)\]", text, re.S | re.M)
+    if m:
+        return [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
+    m = re.search(r"^names\s*:\s*$(.*?)(?=^\S)", text + "\n\x00", re.S | re.M)
+    if not m:
+        return []
+    body, pairs = m.group(1), []
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        mm = re.match(r"^-?\s*(?:(\d+)\s*:)?\s*(.+?)\s*$", line)
+        if mm:
+            pairs.append((int(mm.group(1)) if mm.group(1) else len(pairs),
+                          mm.group(2).strip().strip("'\"")))
+    if not pairs:
+        return []
+    out = [""] * (max(i for i, _ in pairs) + 1)
+    for i, v in pairs:
+        out[i] = v
+    return out
+
+
+@app.function(image=base_image, secrets=[secret], timeout=3600,
+              volumes={MEDIA: volume})
+@web_endpoint(method="POST")
+def ingest(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+
+    import json
+    import os
+    import shutil
+    import urllib.request
+    import zipfile
+    from pathlib import Path
+
+    volume.reload()
+    q = request.query_params
+    url = q.get("url")
+    rf = q.get("rf")            # workspace/project/version, from Universe
+    if not url and not rf:
+        return fastapi.responses.JSONResponse(
+            {"error": "nothing to ingest",
+             "detail": "pass ?url= a zip of a YOLO dataset, or "
+                       "?rf=workspace/project/version for a Roboflow one"},
+            status_code=400)
+    name = "".join(c for c in (q.get("name") or (rf or "borrowed").split("/")[1]
+                               if rf else "borrowed")
+                   if c.isalnum() or c in "-_") or "borrowed"
+
+    staging = Path("/tmp/ingest")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+
+    source = url or f"roboflow:{rf}"
+    try:
+        if rf:
+            from roboflow import Roboflow
+            parts = [p for p in rf.split("/") if p]
+            if len(parts) < 3:
+                return fastapi.responses.JSONResponse(
+                    {"error": "rf must be workspace/project/version"},
+                    status_code=400)
+            ws, pr, ver = parts[0], parts[1], int(parts[2])
+            proj = (Roboflow(api_key=os.environ["ROBOFLOW_API_KEY"])
+                    .workspace(ws).project(pr))
+            last = None
+            for fmt in ("yolov11", "yolov9", "yolov8"):
+                try:
+                    proj.version(ver).download(fmt, location=str(staging))
+                    last = None
+                    break
+                except Exception as e:  # noqa: BLE001 — try the next spelling
+                    last = e
+            if last:
+                raise last
+        else:
+            zp = staging / "src.zip"
+            req = urllib.request.Request(url, headers={"User-Agent": "brace"})
+            with urllib.request.urlopen(req, timeout=600) as r, open(zp, "wb") as f:
+                shutil.copyfileobj(r, f)
+            with zipfile.ZipFile(zp) as z:
+                z.extractall(staging)
+            zp.unlink(missing_ok=True)
+    except Exception as e:  # noqa: BLE001 — the fetch is the likeliest failure
+        return fastapi.responses.JSONResponse(
+            {"error": "could not fetch that dataset", "detail": str(e)[:300]},
+            status_code=502)
+
+    yml = next((p for p in staging.rglob("data.yaml")), None) or \
+          next((p for p in staging.rglob("*.yaml")), None)
+    names = _yaml_names(yml.read_text()) if yml else []
+    if not names:
+        return fastapi.responses.JSONResponse(
+            {"error": "no class list found",
+             "detail": "expected a data.yaml with a names: block"},
+            status_code=400)
+    cmap = _class_map(names)
+    if not any(v == 0 for v in cmap.values()):
+        return fastapi.responses.JSONResponse(
+            {"error": "no class in that dataset reads as a clay",
+             "detail": "classes are: " + ", ".join(names)},
+            status_code=400)
+
+    # Images by stem across the whole tree, so either export layout works:
+    # train/images/x.jpg or images/train/x.jpg, it makes no difference.
+    imgs = {}
+    for ext in ("*.jpg", "*.jpeg", "*.png"):
+        for p in staging.rglob(ext):
+            imgs.setdefault(p.stem, p)
+
+    root = Path(DATASETS) / "_external" / name
+    if root.exists():
+        shutil.rmtree(root)
+    (root / "images").mkdir(parents=True)
+    (root / "labels").mkdir(parents=True)
+
+    kept = boxes = 0
+    per_class = {0: 0, 1: 0}
+    dropped = {}
+    missing = 0
+    for txt in staging.rglob("*.txt"):
+        if "labels" not in {p.name for p in txt.parents}:
+            continue
+        img = imgs.get(txt.stem)
+        if not img:
+            missing += 1
+            continue
+        lines = []
+        for line in txt.read_text().splitlines():
+            bits = line.split()
+            if len(bits) < 5:
+                continue
+            try:
+                c = int(float(bits[0]))
+            except ValueError:
+                continue
+            ours = cmap.get(c)
+            if ours is None:
+                nm = names[c] if 0 <= c < len(names) else str(c)
+                dropped[nm] = dropped.get(nm, 0) + 1
+                continue
+            lines.append(" ".join([str(ours)] + bits[1:5]))
+            per_class[ours] += 1
+        if not lines:
+            continue          # no clay in it: a background-only image teaches
+        stem = f"{name}_{txt.stem}"[:120]
+        shutil.copyfile(img, root / "images" / f"{stem}{img.suffix.lower()}")
+        (root / "labels" / f"{stem}.txt").write_text("\n".join(lines))
+        kept += 1
+        boxes += len(lines)
+
+    manifest = {"name": name, "source": source, "images": kept, "boxes": boxes,
+                "clay_boxes": per_class[0], "reticle_boxes": per_class[1],
+                "original_classes": names,
+                "mapped": {names[i]: ("clay" if v == 0 else "reticle")
+                           for i, v in cmap.items() if v is not None and i < len(names)},
+                "dropped_classes": dropped, "images_without_a_file": missing}
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    volume.commit()
+    shutil.rmtree(staging, ignore_errors=True)
+
+    print(f"[ingest] {name}: {kept} images · {boxes} boxes · "
+          f"dropped {sum(dropped.values())} boxes from {len(dropped)} classes")
+    sb = _sb()
+    return _noted(sb, {"stage": "ingest", **manifest})
 
 
 # ---------------------------------------------------------------- scrub
