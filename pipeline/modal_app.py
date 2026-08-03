@@ -1092,6 +1092,12 @@ def _ask_gemini(model, system, blocks):
         timeout=120)
     r.raise_for_status()
     data = r.json()
+    # Bench runs cost real money too. Without this a Gemini A/B recorded
+    # nothing and read as free next to the Anthropic model it was being
+    # compared against — the one comparison the trial exists to make.
+    um = data.get("usageMetadata") or {}
+    _USAGE.append((model, um.get("promptTokenCount", 0),
+                   um.get("candidatesTokenCount", 0)))
     return "".join(p.get("text", "")
                    for c in data.get("candidates", [])[:1]
                    for p in c.get("content", {}).get("parts", []))
@@ -1201,13 +1207,39 @@ def _clay_track(boxes_per_frame, frame_w):
         fixed = len(t["pts"]) >= max(3, span * 0.4) and spread < frame_w * 0.02
         if fixed:
             continue
-        first, last = t["pts"][0], t["pts"][-1]
-        frames_span = max(1, last[0] - first[0])
-        px_per_frame = math.hypot(last[1] - first[1], last[2] - first[2]) / frames_span
-        # The booster: up to +0.15 confidence for whatever is covering the
-        # most ground per frame, so a real crossing clay outranks a slower
-        # distractor even when both clear the detector's own threshold.
-        boost = min(0.15, (px_per_frame / (frame_w * 0.15)) * 0.15)
+
+        # Speed, measured per step and taken at the median rather than from
+        # the endpoints. Endpoint displacement flatters a box that wandered
+        # and came back, and badly under-reads a clay that curls across the
+        # frame — the path is what matters, not the straight line between
+        # its ends.
+        steps = []
+        for (ia, ax, ay), (ib, bx, by) in zip(t["pts"], t["pts"][1:]):
+            d = max(1, ib - ia)
+            steps.append((math.hypot(bx - ax, by - ay) / d, (bx - ax) / d, (by - ay) / d))
+        if steps:
+            speeds = sorted(s[0] for s in steps)
+            px_per_frame = speeds[len(speeds) // 2]
+        else:
+            px_per_frame = 0.0
+
+        # Direction consistency: a thrown clay holds its heading over the
+        # handful of frames it is in shot, while detector noise skitters.
+        # The mean step vector's length over the mean step length is 1.0 for
+        # a perfectly straight run and near 0 for jitter, so a fast-but-
+        # incoherent track cannot buy its way up on speed alone.
+        coherence = 1.0
+        if len(steps) >= 2:
+            mx = sum(s[1] for s in steps) / len(steps)
+            my = sum(s[2] for s in steps) / len(steps)
+            mean_speed = sum(s[0] for s in steps) / len(steps)
+            if mean_speed > 0:
+                coherence = min(1.0, math.hypot(mx, my) / mean_speed)
+
+        # The booster: up to +0.15 for whatever is covering the most ground
+        # per frame on a coherent heading, so a real crossing clay outranks
+        # a slower distractor even when both clear the detector's threshold.
+        boost = min(0.15, (px_per_frame / (frame_w * 0.15)) * 0.15) * coherence
         for i, b in t["boxes"]:
             out.setdefault(i, []).append({**b, "conf": min(1.0, b["conf"] + boost)})
     return out
