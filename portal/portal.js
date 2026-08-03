@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03f';
+const BUILD = '2026-08-03g';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2487,6 +2487,7 @@ async function loadDrill(verdict) {
       title: by.get(k.video_id)?.title || k.video_id,
       channel: by.get(k.video_id)?.channel || '',
       weather: by.get(k.video_id)?.weather || 'unknown',
+      camera: by.get(k.video_id)?.camera || 'unknown',
       ds_level: by.get(k.video_id)?.ds_level || null,
     }));
   }
@@ -2515,6 +2516,10 @@ function verdictDrill() {
         <button class="linky" data-verdictclose="1">Close</button></div>
       <div class="row"><div class="main"><div class="t">Shot type</div>
         <div class="s">${tally((k) => (k.is_pair ? `pair or burst (${k.n_shots || 2} shots)` : 'single shot'))}</div></div></div>
+      <div class="row"><div class="main"><div class="t">Camera</div>
+        <div class="s">${tally((k) => k.camera || 'unknown')}</div></div></div>
+      <div class="row"><div class="main"><div class="t">Ladder level</div>
+        <div class="s">${tally((k) => (k.ds_level ? `L${k.ds_level} ${(DS_LADDER[k.ds_level - 1] || {}).name || ''}` : 'unplaced'))}</div></div></div>
       <div class="row"><div class="main"><div class="t">Weather</div>
         <div class="s">${tally((k) => k.weather || 'unknown')}</div></div></div>
       <div class="row"><div class="main"><div class="t">Clay colour</div>
@@ -2545,7 +2550,7 @@ function verdictDrill() {
             <div class="s">${k.is_pair ? `pair · ${k.n_shots || 2} shots` : 'single'}
               · ${(k.clip_end - k.clip_start).toFixed(1)}s
               · det ${k.det_conf == null ? '—' : Math.round(k.det_conf * 100) + '%'}
-              · ${esc(k.weather || 'unknown')}${k.slo_mo ? ' · slo-mo' : ''}</div>
+              · ${esc(k.weather || 'unknown')} · ${esc(k.camera || 'unknown')}${k.ds_level ? ` · L${k.ds_level}` : ''}${k.slo_mo ? ' · slo-mo' : ''}</div>
             <div class="s">verdict ${esc(k.outcome)}${k.outcome_conf != null ? ` · ${Math.round(k.outcome_conf * 100)}%` : ''}${k.owner_outcome ? ` · we said <b>${esc(k.owner_outcome)}</b>` : ''}</div>
           </div>
         </div>`).join('')}
@@ -2661,12 +2666,70 @@ function findingsView() {
         <div class="end"><b>${cl.avg_det_conf ?? '—'}</b></div></div>
       <div class="p-head" style="margin-top:14px"><span class="p-title">Split</span></div>
       ${dist(f.splits || {}, ['train', 'valid', 'test'])}
-      <p class="foot-note">Dealt per video, so no flight's frames straddle two sets.
-         ${(f.splits || {}).test ? '' : '<b>There is no test split.</b> Validation tunes the model, so scoring against it flatters — the first mAP will read better than the truth until some clips are held back as a ruler that is never trained on.'}</p>
+      <div class="p-head" style="margin-top:14px"><span class="p-title" style="font-size:12px">The scenes it was dealt from</span></div>
+      ${(f.scenes || []).map((sc) => `
+      <div class="row"><div class="main">
+        <div class="t">${esc(sc.scene)} <span class="s">— ${esc(sc.split)}</span></div>
+      </div><div class="end"><b>${fmt(sc.clips)}</b></div></div>`).join('')
+    || '<div class="empty">Nothing clipped yet.</div>'}
+      <p class="foot-note">The judge deals a whole <b>scene</b> — a channel, meaning one
+         shooter at one ground on one camera — never a loose clip, because splitting by
+         clip leaks near-identical frames across the divide and flatters every score
+         that follows.
+         ${(f.splits || {}).test
+    ? ''
+    : `<b>That is why there is no test scoring:</b> only ${fmt((f.scenes || []).length)}
+         scenes have been clipped, and at roughly one in seven going to test, coming up
+         empty on ${fmt((f.scenes || []).length)} draws is ordinary luck rather than a
+         fault. It fills itself as more channels are clipped — there are
+         ${fmt(state.counts?.downloaded ?? 0)} videos waiting in Review — and until it
+         does the only honest reading is that the model is <b>unmeasured</b>. Validation
+         tunes the model, so a score against it is not evidence.`}</p>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">The curriculum — what complexity we have, and what is missing</span></div>
+      ${DS_LADDER.map((l) => {
+    const have = Number((f.levels || {})[String(l.n)] || 0);
+    const pct = Math.min(100, 100 * have / l.target);
+    const short = Math.max(0, l.target - have);
+    return `
+      <div class="row">
+        <span class="dot ${have >= l.target ? 'on' : ''}"></span>
+        <div class="main">
+          <div class="t">L${l.n} · ${esc(l.name)}
+            ${short ? `<span class="s">— ${fmt(short)} short</span>` : '<span class="s">— met</span>'}</div>
+          <div class="s">${esc(l.sub)}</div>
+          <div class="bar"><span style="width:${pct.toFixed(1)}%"></span></div>
+        </div>
+        <div class="end"><span class="s">${fmt(have)} / ${fmt(l.target)}</span></div>
+      </div>`;
+  }).join('')}
+      ${(f.levels || {})['0'] ? `
+      <div class="row">
+        <span class="dot"></span>
+        <div class="main"><div class="t">Unplaced</div>
+          <div class="s">clipped before the ladder was stamped, or found by a plain
+             search rather than a level's own queries — these count towards nothing
+             until they are placed, from the Mastersheet or as they are sourced.</div></div>
+        <div class="end"><b>${fmt((f.levels || {})['0'])}</b></div>
+      </div>` : ''}
+      <p class="foot-note">The ladder is the whole training strategy: the model earns
+         each rung before the next is poured in, so it learns what a clay is on slow
+         orange discs against clear sky before it is asked to find a grey one against
+         a treeline. A rung far short of its target is the next filming day, and the
+         bar above it is the argument for going. Source a rung from Dataset strategy,
+         which searches that rung's own queries and stamps what it finds.</p>
     </section>
 
     <section class="panel" style="margin-top:18px">
       <div class="p-head"><span class="p-title">Conditions covered</span></div>
+      <div class="p-head"><span class="p-title" style="font-size:12px">Camera — what the footage was shot on</span></div>
+      ${dist(f.camera || {})}
+      <p class="foot-note" style="margin:6px 0 14px">What gets deployed is a camera on a
+         gun or a face, so barrel, gopro and pov_glasses are the footage that matches
+         the job. Broadcast and third_person teach the model a view no customer will
+         ever wear.</p>
       <div class="p-head"><span class="p-title" style="font-size:12px">Weather</span></div>
       ${dist(f.weather || {})}
       <div class="p-head" style="margin-top:14px"><span class="p-title" style="font-size:12px">Clay colour</span></div>

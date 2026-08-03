@@ -572,6 +572,11 @@ def triage(request: fastapi.Request):
             sb.table("pipeline_videos").update({
                 "status": "downloaded" if keep else "rejected",
                 "triage_score": r["score"],
+                # The camera gets its own column as well as the note: the
+                # deployed model watches POV hardware, so what the training
+                # footage was shot on is something to group and count by,
+                # not a string to read.
+                "camera": r.get("camera") or None,
                 "triage_notes": f"[{r.get('camera', '?')}] {shots_heard} shots heard · {r.get('notes', '')}",
                 "triage_in_tokens": r.get("in_tokens"),
                 "triage_out_tokens": r.get("out_tokens"),
