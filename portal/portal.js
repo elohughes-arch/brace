@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03w';
+const BUILD = '2026-08-03y';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -722,11 +722,60 @@ const clayRows = new Map();          // clip_id -> rows opened by hand
 const OWNER_SLOTS = ['owner_outcome', 'owner_outcome_2', 'owner_outcome_3'];
 const MAX_CLAYS = 8;
 
+// Who is signed in, in the same words the sorter column uses, so a call is
+// credited to whoever made it rather than to whoever the clip was dealt to.
+const WHOAMI = () => (state.email === 'rupertokelly98@gmail.com' ? 'rupert'
+  : state.email === 'elohughes@icloud.com' ? 'eddie' : null);
+
+// The tally window. Today by default — the question is almost always "how
+// much have we done today" — but a week, a month and a year answer the
+// other question, which is whether the pace is holding.
+const SCOREBOARDS = [['day', 'Today'], ['week', 'This week'],
+  ['month', 'This month'], ['year', 'This year']];
+let scoreWindow = 'day';
+
+// Local midnight, not UTC: a call made at eleven at night belongs to the
+// day it felt like, not to tomorrow.
+function windowStart(which) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  if (which === 'week') {
+    const dow = (d.getDay() + 6) % 7;      // Monday starts the week
+    d.setDate(d.getDate() - dow);
+  } else if (which === 'month') {
+    d.setDate(1);
+  } else if (which === 'year') {
+    d.setMonth(0, 1);
+  }
+  return d.toISOString();
+}
+
+async function loadScores() {
+  const { data, error } = await supabase.from('pipeline_clips')
+    .select('called_by,sorter')
+    .gte('called_at', windowStart(scoreWindow)).limit(5000);
+  if (error) return null;
+  const out = { eddie: 0, rupert: 0, total: 0 };
+  (data || []).forEach((r) => {
+    const who = r.called_by || r.sorter;
+    if (who === 'eddie' || who === 'rupert') out[who] += 1;
+    out.total += 1;
+  });
+  return out;
+}
+
 // What the clay did and what the sky was, as the person watching sees it.
 // Presentation is a property of the shot, never of the video; weather was
 // only ever read once per film by triage, and a day's light moves.
-const PRESENTATIONS = ['crosser L→R', 'crosser R→L', 'going away', 'incoming',
-  'driven', 'quartering', 'looper', 'teal', 'rabbit', 'battue', 'chandelle',
+// A crosser that falls away is a different target from one holding its
+// line — the clay is dropping through the shot, so the lead changes as it
+// goes. Kept as its own word rather than folded into "crosser", because
+// that is the distinction the footage actually shows. The tracker already
+// names a bare dropper from the flight geometry; these are the ones a
+// coach would say out loud.
+const PRESENTATIONS = ['crosser L→R', 'crosser R→L', 'dropping crosser L→R',
+  'dropping crosser R→L', 'dropper', 'going away', 'incoming', 'driven',
+  'quartering', 'looper', 'teal', 'rabbit', 'battue', 'chandelle',
   'simultaneous pair', 'on report'];
 const WEATHERS = ['clear', 'light cloud', 'overcast', 'bright sun', 'rain',
   'fog', 'dusk', 'low light'];
@@ -1845,7 +1894,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'findings', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -2472,6 +2521,21 @@ function triageClipsView() {
            frames to <b>auto-accepted</b>, shaky ones to <b>needs-review</b>.</p>
       </div>
       <a class="p-act" href="${ROBOFLOW_ANNOTATE}" target="_blank" rel="noopener">Open Roboflow ↗</a>
+    </div>
+
+    <div class="p-head" style="margin-bottom:10px">
+      <span class="p-title">Clips called ${esc((SCOREBOARDS.find((w) => w[0] === scoreWindow) || [])[1] || '').toLowerCase()}</span>
+      <select id="scorewin" class="mini" title="The window these three count over">
+        ${SCOREBOARDS.map(([v, l]) => `<option value="${v}" ${scoreWindow === v ? 'selected' : ''}>${l}</option>`).join('')}
+      </select>
+    </div>
+    <div class="stats scoreboard">
+      <div class="stat owner-eddie"><div class="num">${fmt(state.scores?.eddie ?? 0)}</div>
+        <div class="cap">Eddie</div><div class="sub">clips called</div></div>
+      <div class="stat owner-rupert"><div class="num">${fmt(state.scores?.rupert ?? 0)}</div>
+        <div class="cap">Rupert</div><div class="sub">clips called</div></div>
+      <div class="stat"><div class="num">${fmt(state.scores?.total ?? 0)}</div>
+        <div class="cap">Between you</div><div class="sub">clips called</div></div>
     </div>
 
     <div class="stats">
@@ -3430,7 +3494,7 @@ function signature() {
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
     clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
     queuePicked.size, sweeping,
-    lastTouched, ytOpen.size,
+    lastTouched, ytOpen.size, scoreWindow, JSON.stringify(state.scores || {}),
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.needs_recut ? 'r' : '')
       + k.clip_start + k.clip_end + JSON.stringify(k.presentations || []) + JSON.stringify(k.clay_colours || [])
       + (k.weather || '') + JSON.stringify(k.backgrounds || [])
@@ -3510,6 +3574,10 @@ function wireCalls() {
       // export and the trials all still read them.
       OWNER_SLOTS.forEach((f, i) => { patch[f] = calls[i] ?? null; });
       if (n === 1) patch.owner_outcome_at = out ? new Date().toISOString() : null;
+      // Every clay's call is work, not just the first, and it is credited to
+      // whoever made it rather than to whose queue the clip sat in.
+      patch.called_by = calls.length ? WHOAMI() : null;
+      patch.called_at = calls.length ? new Date().toISOString() : null;
       const { error } = await supabase.from('pipeline_clips')
         .update(patch).eq('clip_id', id).select('clip_id');
       if (error) note(`could not save your call — ${error.message}`, 'bad');
@@ -4216,6 +4284,11 @@ function paint(force = false) {
     if (!error) queuePicked.clear();
     state.loading = true; paint(true); refresh();
   });
+  document.getElementById('scorewin')?.addEventListener('change', async (e) => {
+    scoreWindow = e.target.value;
+    state.scores = await loadScores();
+    paint(true);
+  });
   document.getElementById('rejsort')?.addEventListener('change', (e) => {
     flip(() => { rejSort = e.target.value; rejPage = 0; });
   });
@@ -4332,7 +4405,7 @@ async function refresh() {
     // with it, and the page reported only that it could not read the pipeline.
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits, models, findings] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits, models, findings, scores] = await Promise.all([
       settle(loadCounts(), state.counts),
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
@@ -4359,6 +4432,7 @@ async function refresh() {
       view === 'health' ? settle(loadCredits(), state.credits) : Promise.resolve(state.credits),
       view === 'labelling' ? settle(loadModels(), state.models) : Promise.resolve(state.models),
       view === 'findings' ? settle(loadFindings(), state.findings) : Promise.resolve(state.findings),
+      view === 'triage' ? settle(loadScores(), state.scores) : Promise.resolve(state.scores),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -4373,6 +4447,7 @@ async function refresh() {
     state.ai = ai;
     state.models = models;
     state.findings = findings;
+    state.scores = scores;
     state.trials = trials;
     state.sheet = sheet;
     state.progress = progress;
@@ -4406,7 +4481,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

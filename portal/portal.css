@@ -827,3 +827,12 @@ select.inp { appearance: none; }
 .handrun summary::before { content: '▸ '; }
 .handrun[open] summary::before { content: '▾ '; }
 .handrun summary:hover { color: var(--text-2); }
+
+/* The day's work, in the two owners' own colours. Same blue and sage the
+   clip cards are outlined with, so a tally reads as "mine" without being
+   labelled twice. */
+.scoreboard { margin-bottom: 18px; }
+.scoreboard .stat.owner-eddie { border-color: rgba(47,111,235,.45); }
+.scoreboard .stat.owner-eddie .num { color: #2F6FEB; }
+.scoreboard .stat.owner-rupert { border-color: rgba(126,155,130,.5); }
+.scoreboard .stat.owner-rupert .num { color: #7E9B82; }
