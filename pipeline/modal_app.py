@@ -947,7 +947,9 @@ def screen(request: fastapi.Request):
           # every downstream step: trim, det_conf, and the boxes shipped to
           # Roboflow as ground truth. What survives is scored up by speed.
           boxes_per_frame = _clay_track(
-              boxes_per_frame, frames[0].shape[1] if frames else 0)
+              boxes_per_frame,
+              frames[0].shape[1] if frames else 0,
+              frames[0].shape[0] if frames else 0)
           reticle = getattr(_clay_track, "last_fixtures", {}) or {}
 
           # The clipper cuts by sound, which cannot know whether a clay is in
@@ -1116,8 +1118,32 @@ def prelabel(request: fastapi.Request):
             continue
         frame_dt = float(lab[0].get("frame_dt") or 0.2)
         t_off = float(lab[0].get("t_offset") or 0.0)
-        reticle = lab[0].get("reticle_json") or {}
         cap = cv2.VideoCapture(row["file_path"])
+
+        # Re-filter, never trust. boxes_json was written by whichever version
+        # of the reticle filter happened to be deployed the day the clip was
+        # screened, and this is the stage that turns a box into ground truth a
+        # model is trained on: a red aim dot shipped as class 0 teaches the
+        # detector that the thing in the middle of every ShotKam frame is a
+        # clay, which is the one lesson that can never be unlearned from a
+        # later run. Running the current filter here costs microseconds and
+        # makes the rule that decides what a clay is live in exactly one
+        # place, applied to every clip regardless of its age.
+        _w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        _h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        reticle = {int(k): v for k, v in (lab[0].get("reticle_json") or {}).items()}
+        if _w:
+            clean = _clay_track({int(k): v for k, v in boxes.items()}, _w, _h)
+            for i, bs in (getattr(_clay_track, "last_fixtures", {}) or {}).items():
+                reticle.setdefault(int(i), bs)
+            if not clean:
+                # Every box in the clip was an overlay. There is no clay here.
+                cap.release()
+                sb.table("pipeline_clips").update(
+                    {"label_status": "rejected"}).eq("clip_id", row["clip_id"]).execute()
+                continue
+            boxes = {str(k): v for k, v in clean.items()}
+
         tmp = Path("/tmp/frames")
         tmp.mkdir(parents=True, exist_ok=True)
         idxs = sorted(int(k) for k in boxes)
@@ -1430,10 +1456,18 @@ def dataset(request: fastapi.Request):
 
         cap = cv2.VideoCapture(str(src))
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         if not width:
             cap.release()
             continue
-        boxes = _clay_track(boxes, width)     # the reticle dies here
+        boxes = _clay_track(boxes, width, height)   # the reticle dies here
+        # ...and is reborn as class 1. Take the fixtures this pass found on top
+        # of whatever was stored: the stored set came from an older, laxer
+        # filter, so anything it missed — an aim dot caught in only two frames —
+        # would otherwise vanish from the picture entirely, leaving the very
+        # object the model most needs named as unlabelled background.
+        for i, bs in (getattr(_clay_track, "last_fixtures", {}) or {}).items():
+            reticle.setdefault(int(i), bs)
         if not boxes:
             cap.release()
             continue
@@ -1474,13 +1508,41 @@ def dataset(request: fastapi.Request):
       except Exception as e:  # noqa: BLE001 — one bad clip is not the set
         print(f"[dataset] {row.get('clip_id')} skipped: {e}")
 
+    # Borrowed sets, folded into training only. ?extra=none leaves them out —
+    # the honest comparison when you want to know what our own footage alone
+    # is worth. Anything ingested is otherwise included by default, because
+    # ingesting it was the decision to use it.
+    borrowed = {}
+    extra = (q.get("extra") or "").strip()
+    if extra.lower() != "none":
+        want_x = {x for x in extra.replace(" ", "").split(",") if x}
+        base = Path(DATASETS) / "_external"
+        for d in sorted(base.iterdir()) if base.exists() else []:
+            if not d.is_dir() or (want_x and d.name not in want_x):
+                continue
+            n = 0
+            for img in sorted((d / "images").glob("*")):
+                lab = d / "labels" / f"{img.stem}.txt"
+                if not lab.exists():
+                    continue
+                shutil.copyfile(img, root / "images" / "train" / img.name)
+                shutil.copyfile(lab, root / "labels" / "train" / lab.name)
+                n += 1
+            if n:
+                borrowed[d.name] = n
+                counts["train"] += n
+
     (root / "data.yaml").write_text(
         f"path: {root}\ntrain: images/train\nval: images/valid\n"
         f"test: images/test\nnames:\n  0: clay\n  1: reticle\n")
     volume.commit()
-    return _noted(sb, {"stage": "dataset", "name": name, "clips": clips_used,
-                       "train": counts["train"], "valid": counts["valid"],
-                       "test": counts["test"], "empty_frames": empties})
+    out = {"stage": "dataset", "name": name, "clips": clips_used,
+           "train": counts["train"], "valid": counts["valid"],
+           "test": counts["test"], "empty_frames": empties}
+    if borrowed:
+        out["borrowed"] = sum(borrowed.values())
+        out["borrowed_from"] = ", ".join(f"{k} {v}" for k, v in borrowed.items())
+    return _noted(sb, out)
 
 
 # ---------------------------------------------------------------- train
@@ -1821,7 +1883,7 @@ def _shot_type(boxes_per_frame, frame_w, frame_h):
     return "quartering"
 
 
-def _clay_track(boxes_per_frame, frame_w):
+def _clay_track(boxes_per_frame, frame_w, frame_h=None):
     """Enforces one rule: only a moving clay may reach the trim, the metrics
     or a Roboflow annotation. Nothing fixed in the frame — a reticle, a red
     dot, any burned-in overlay — gets to call itself a clay.
@@ -1851,6 +1913,30 @@ def _clay_track(boxes_per_frame, frame_w):
     import math
 
     _clay_track.last_fixtures = {}
+
+    # Check 0 — a clay is small. Measured across 69 clips and 66,895 stored
+    # detections, a quarter of every box the detector produced covered half
+    # the frame or more, in 68 of the 69 clips: Grounding DINO answering "where
+    # is the small orange disc" with the whole picture. The size distribution
+    # is not a spectrum but two populations — a real one with a median of
+    # 0.041 of frame width, and a junk one bunched at 0.995 — with almost
+    # nothing between 0.07 and 0.6. The cut goes in that empty ground, far
+    # above any real clay at any range, so it costs nothing and takes the
+    # whole junk population with it.
+    #
+    # It runs first for a reason beyond tidiness: a whole-frame box repeats on
+    # the same pixel every time it appears, so it forms tracks, and those
+    # tracks vote in the camera-motion median. Junk that fills the frame was
+    # steering the estimate of how the camera moved, and a wrong estimate
+    # there deletes real clays.
+    big = frame_w * 0.4
+    boxes_per_frame = {
+        i: [b for b in bs
+            if (b["xyxy"][2] - b["xyxy"][0]) <= big
+            and (b["xyxy"][3] - b["xyxy"][1]) <= big]
+        for i, bs in boxes_per_frame.items()}
+    boxes_per_frame = {i: bs for i, bs in boxes_per_frame.items() if bs}
+
     idxs = sorted(boxes_per_frame)
     if not idxs:
         return {}
@@ -1888,7 +1974,31 @@ def _clay_track(boxes_per_frame, frame_w):
     # the expensive one: a clay wrongly dropped leaves an unlabelled clay in
     # the training image, which teaches the detector that a clay is
     # background.
-    fixtures = [c for c in clusters if len(c["frames"]) >= 3]
+    #
+    # The optical centre is the exception. A ShotKam's aim dot sits exactly
+    # there, is a few pixels across, and reads to any detector as a small
+    # orange disc — precisely a clay, and next to a genuinely black clay it is
+    # the *dot* that looks like the orange one. It is also sometimes caught in
+    # only two frames, which the general rule would wave through. Two is
+    # enough when a mark is that small and sitting on the middle of the
+    # picture, because the cost of the rule is bounded: for a real clay to be
+    # taken by it, it would have to land on the same pixel at the centre of
+    # the frame twice over, which means stopping dead on the aim point.
+    # Clays do not stop.
+    cx0, cy0 = frame_w / 2.0, (frame_h or frame_w * 9 / 16.0) / 2.0
+    centre_r = frame_w * 0.03
+    small = frame_w * 0.03
+
+    def at_the_aim_point(c):
+        if math.hypot(c["cx"] - cx0, c["cy"] - cy0) > centre_r:
+            return False
+        w = max((b["xyxy"][2] - b["xyxy"][0]) for _, b in c["items"])
+        h = max((b["xyxy"][3] - b["xyxy"][1]) for _, b in c["items"])
+        return max(w, h) <= small
+
+    fixtures = [c for c in clusters
+                if len(c["frames"]) >= 3
+                or (len(c["frames"]) >= 2 and at_the_aim_point(c))]
     # What the fixtures actually are, frame by frame, for whoever wants them:
     # a reticle is worth keeping, not merely worth excluding.
     fixed_boxes = {}
@@ -1896,10 +2006,11 @@ def _clay_track(boxes_per_frame, frame_w):
         for i, b in c["items"]:
             fixed_boxes.setdefault(i, []).append(b)
     _clay_track.last_fixtures = fixed_boxes
+    fixture_ids = {id(c) for c in fixtures}
     live = {}
     for c in clusters:
-        if len(c["frames"]) >= 3:
-            continue   # seen again and again at one spot — a fixture
+        if id(c) in fixture_ids:
+            continue   # a fixture: seen again at one spot, or on the aim point
         for i, b in c["items"]:
             live.setdefault(i, []).append(b)
     if not live:
@@ -2101,6 +2212,335 @@ def _shot_metrics(into_clip, boxes_per_frame, frame_dt, frame_w, outcome):
             if 5 <= mph <= 130:   # outside this is track noise, not a clay
                 out["speed_mph"] = round(mph)
     return out
+
+
+# ---------------------------------------------------------------- ingest
+
+# Borrowed footage. Our own set grows a clip at a time and starts small, and a
+# detector's early problem is not subtlety, it is never having seen a clay
+# against a sky at all. A public clay dataset fixes that cheaply — it is
+# someone else's cameras, someone else's grounds, which is exactly what
+# generalisation needs.
+#
+# It goes into training and nowhere else. The valid and test splits are ours:
+# test is the golden ruler, hand-checked, the number every decision is made
+# against, and the moment a borrowed image lands in it the score stops
+# describing how well the model reads *our* footage. Every image ingested
+# here is marked train, whatever split its author put it in.
+#
+# Class names are mapped, not trusted. Nobody else numbers their classes the
+# way we do, so the map is by name — anything that reads as a clay becomes 0,
+# anything that reads as an aim mark becomes 1, and anything else is dropped
+# with a count in the manifest so a bad guess is visible rather than silently
+# poisoning the labels.
+_CLAY_WORDS = ("clay", "target", "pigeon", "skeet", "trap", "disc", "disk",
+               "bird", "orange")
+_AIM_WORDS = ("reticle", "reticule", "crosshair", "cross-hair", "cross_hair",
+              "dot", "sight", "aim", "pip", "bead")
+
+
+def _class_map(names):
+    """Original class index -> ours (0 clay, 1 reticle), or None to drop."""
+    out = {}
+    for i, raw in enumerate(names):
+        n = str(raw).strip().lower().replace("-", " ").replace("_", " ")
+        if any(w in n for w in _AIM_WORDS):
+            out[i] = 1
+        elif any(w in n for w in _CLAY_WORDS):
+            out[i] = 0
+        else:
+            out[i] = None
+    return out
+
+
+def _yaml_names(text):
+    """The names block out of a data.yaml, in either spelling it comes in:
+    a flat list, or a numbered mapping. Hand-parsed rather than pulling in a
+    YAML dependency for four lines of it."""
+    import re
+    m = re.search(r"^names\s*:\s*\[(.*?)\]", text, re.S | re.M)
+    if m:
+        return [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
+    m = re.search(r"^names\s*:\s*$(.*?)(?=^\S)", text + "\n\x00", re.S | re.M)
+    if not m:
+        return []
+    body, pairs = m.group(1), []
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        mm = re.match(r"^-?\s*(?:(\d+)\s*:)?\s*(.+?)\s*$", line)
+        if mm:
+            pairs.append((int(mm.group(1)) if mm.group(1) else len(pairs),
+                          mm.group(2).strip().strip("'\"")))
+    if not pairs:
+        return []
+    out = [""] * (max(i for i, _ in pairs) + 1)
+    for i, v in pairs:
+        out[i] = v
+    return out
+
+
+@app.function(image=base_image, secrets=[secret], timeout=3600,
+              volumes={MEDIA: volume})
+@web_endpoint(method="POST")
+def ingest(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+
+    import json
+    import os
+    import shutil
+    import urllib.request
+    import zipfile
+    from pathlib import Path
+
+    volume.reload()
+    q = request.query_params
+    url = q.get("url")
+    rf = q.get("rf")            # workspace/project/version, from Universe
+    if not url and not rf:
+        return fastapi.responses.JSONResponse(
+            {"error": "nothing to ingest",
+             "detail": "pass ?url= a zip of a YOLO dataset, or "
+                       "?rf=workspace/project/version for a Roboflow one"},
+            status_code=400)
+    name = "".join(c for c in (q.get("name") or (rf or "borrowed").split("/")[1]
+                               if rf else "borrowed")
+                   if c.isalnum() or c in "-_") or "borrowed"
+
+    staging = Path("/tmp/ingest")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+
+    source = url or f"roboflow:{rf}"
+    try:
+        if rf:
+            from roboflow import Roboflow
+            parts = [p for p in rf.split("/") if p]
+            if len(parts) < 3:
+                return fastapi.responses.JSONResponse(
+                    {"error": "rf must be workspace/project/version"},
+                    status_code=400)
+            ws, pr, ver = parts[0], parts[1], int(parts[2])
+            proj = (Roboflow(api_key=os.environ["ROBOFLOW_API_KEY"])
+                    .workspace(ws).project(pr))
+            last = None
+            for fmt in ("yolov11", "yolov9", "yolov8"):
+                try:
+                    proj.version(ver).download(fmt, location=str(staging))
+                    last = None
+                    break
+                except Exception as e:  # noqa: BLE001 — try the next spelling
+                    last = e
+            if last:
+                raise last
+        else:
+            zp = staging / "src.zip"
+            req = urllib.request.Request(url, headers={"User-Agent": "brace"})
+            with urllib.request.urlopen(req, timeout=600) as r, open(zp, "wb") as f:
+                shutil.copyfileobj(r, f)
+            with zipfile.ZipFile(zp) as z:
+                z.extractall(staging)
+            zp.unlink(missing_ok=True)
+    except Exception as e:  # noqa: BLE001 — the fetch is the likeliest failure
+        return fastapi.responses.JSONResponse(
+            {"error": "could not fetch that dataset", "detail": str(e)[:300]},
+            status_code=502)
+
+    yml = next((p for p in staging.rglob("data.yaml")), None) or \
+          next((p for p in staging.rglob("*.yaml")), None)
+    names = _yaml_names(yml.read_text()) if yml else []
+    if not names:
+        return fastapi.responses.JSONResponse(
+            {"error": "no class list found",
+             "detail": "expected a data.yaml with a names: block"},
+            status_code=400)
+    cmap = _class_map(names)
+    if not any(v == 0 for v in cmap.values()):
+        return fastapi.responses.JSONResponse(
+            {"error": "no class in that dataset reads as a clay",
+             "detail": "classes are: " + ", ".join(names)},
+            status_code=400)
+
+    # Images by stem across the whole tree, so either export layout works:
+    # train/images/x.jpg or images/train/x.jpg, it makes no difference.
+    imgs = {}
+    for ext in ("*.jpg", "*.jpeg", "*.png"):
+        for p in staging.rglob(ext):
+            imgs.setdefault(p.stem, p)
+
+    root = Path(DATASETS) / "_external" / name
+    if root.exists():
+        shutil.rmtree(root)
+    (root / "images").mkdir(parents=True)
+    (root / "labels").mkdir(parents=True)
+
+    kept = boxes = 0
+    per_class = {0: 0, 1: 0}
+    dropped = {}
+    missing = 0
+    for txt in staging.rglob("*.txt"):
+        if "labels" not in {p.name for p in txt.parents}:
+            continue
+        img = imgs.get(txt.stem)
+        if not img:
+            missing += 1
+            continue
+        lines = []
+        for line in txt.read_text().splitlines():
+            bits = line.split()
+            if len(bits) < 5:
+                continue
+            try:
+                c = int(float(bits[0]))
+            except ValueError:
+                continue
+            ours = cmap.get(c)
+            if ours is None:
+                nm = names[c] if 0 <= c < len(names) else str(c)
+                dropped[nm] = dropped.get(nm, 0) + 1
+                continue
+            lines.append(" ".join([str(ours)] + bits[1:5]))
+            per_class[ours] += 1
+        if not lines:
+            continue          # no clay in it: a background-only image teaches
+        stem = f"{name}_{txt.stem}"[:120]
+        shutil.copyfile(img, root / "images" / f"{stem}{img.suffix.lower()}")
+        (root / "labels" / f"{stem}.txt").write_text("\n".join(lines))
+        kept += 1
+        boxes += len(lines)
+
+    manifest = {"name": name, "source": source, "images": kept, "boxes": boxes,
+                "clay_boxes": per_class[0], "reticle_boxes": per_class[1],
+                "original_classes": names,
+                "mapped": {names[i]: ("clay" if v == 0 else "reticle")
+                           for i, v in cmap.items() if v is not None and i < len(names)},
+                "dropped_classes": dropped, "images_without_a_file": missing}
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    volume.commit()
+    shutil.rmtree(staging, ignore_errors=True)
+
+    print(f"[ingest] {name}: {kept} images · {boxes} boxes · "
+          f"dropped {sum(dropped.values())} boxes from {len(dropped)} classes")
+    sb = _sb()
+    return _noted(sb, {"stage": "ingest", **manifest})
+
+
+# ---------------------------------------------------------------- scrub
+
+# Every clip already screened carries boxes filtered by whichever version of
+# the reticle rule was deployed that day. Each time the rule gets sharper,
+# the clips behind it stay wrong — and a red aim dot stored as class 0 is
+# not a cosmetic error, it is a training label that teaches the detector the
+# fixed mark in the middle of every ShotKam frame is a clay.
+#
+# This re-runs the current filter over stored boxes and writes back what it
+# should have been. It re-detects nothing and needs no GPU: the boxes are
+# already on disk, and the filter is pure geometry over them. Boxes it now
+# rejects move to reticle_json rather than being deleted — a mark the
+# detector reliably mistakes for a clay is the most valuable class-1 example
+# there is. Any clip whose labels actually changed is sent back to the
+# upload queue, because the copy sitting in Roboflow is the bad one.
+#
+# ?dry=1 reports what it would change and writes nothing.
+@app.function(image=base_image, secrets=[secret], timeout=3600,
+              volumes={MEDIA: volume})
+@web_endpoint(method="POST")
+def scrub(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+
+    import cv2
+    from pathlib import Path
+
+    volume.reload()
+    dry = request.query_params.get("dry") in ("1", "true", "yes")
+    limit = min(int(request.query_params.get("limit", 2000)), 20000)
+
+    sb = _sb()
+    rows = (sb.table("pipeline_labels")
+            .select("clip_id,boxes_json,reticle_json")
+            .limit(limit).execute().data or [])
+    paths = {}
+    ids = [r["clip_id"] for r in rows]
+    for j in range(0, len(ids), 200):
+        for c in (sb.table("pipeline_clips")
+                  .select("clip_id,file_path,label_status")
+                  .in_("clip_id", ids[j:j + 200]).execute().data or []):
+            paths[c["clip_id"]] = c
+
+    scanned = changed = dropped = emptied = requeued = 0
+    for r in rows:
+      try:
+        boxes = r.get("boxes_json") or {}
+        if not boxes:
+            continue
+        scanned += 1
+        boxes = {int(k): v for k, v in boxes.items()}
+        before = sum(len(v) for v in boxes.values())
+
+        clip = paths.get(r["clip_id"]) or {}
+        w = h = 0
+        fp = clip.get("file_path")
+        if fp and Path(fp).exists():
+            cap = cv2.VideoCapture(fp)
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            cap.release()
+        if not w:
+            # The file has been swept off the volume, but the boxes are in its
+            # pixel coordinates, so the frame it came from is recoverable: the
+            # furthest-right edge any box reached is a floor on the width.
+            # Rounding up to the nearest standard frame keeps the filter's
+            # thresholds — all proportions of frame width — honest.
+            far = max((b["xyxy"][2] for v in boxes.values() for b in v),
+                      default=0)
+            w = next((s for s in (640, 1280, 1920, 2560, 3840) if far <= s), 3840)
+            h = int(round(w * 9 / 16.0))
+
+        clean = _clay_track(boxes, w, h)
+        fixtures = getattr(_clay_track, "last_fixtures", {}) or {}
+        after = sum(len(v) for v in clean.values())
+        if after == before and not fixtures:
+            continue
+
+        changed += 1
+        dropped += before - after
+        reticle = {int(k): v for k, v in (r.get("reticle_json") or {}).items()}
+        for i, bs in fixtures.items():
+            reticle.setdefault(int(i), bs)
+        if dry:
+            if not clean:
+                emptied += 1
+            continue
+
+        sb.table("pipeline_labels").update({
+            "boxes_json": {str(k): v for k, v in clean.items()},
+            "reticle_json": {str(k): v for k, v in reticle.items()} or None,
+        }).eq("clip_id", r["clip_id"]).execute()
+
+        if not clean:
+            # Nothing left that moves. The clip was a reticle and scenery.
+            emptied += 1
+            sb.table("pipeline_clips").update(
+                {"label_status": "rejected"}).eq("clip_id", r["clip_id"]).execute()
+        elif clip.get("label_status") in ("prelabelled", "uploaded"):
+            # A wrong copy is already in Roboflow under this clip. Send it
+            # round again so the corrected boxes replace it.
+            requeued += 1
+            sb.table("pipeline_clips").update(
+                {"label_status": "queued"}).eq("clip_id", r["clip_id"]).execute()
+      except Exception as e:  # noqa: BLE001 — one bad row must not stop the sweep
+        print(f"[scrub] {r.get('clip_id')}: {e}")
+
+    print(f"[scrub] scanned {scanned} · changed {changed} · boxes dropped "
+          f"{dropped} · emptied {emptied} · requeued {requeued}"
+          f"{' (dry run)' if dry else ''}")
+    return {"ok": True, "dry": dry, "scanned": scanned, "changed": changed,
+            "boxes_dropped": dropped, "clips_emptied": emptied,
+            "requeued": requeued}
 
 
 # ---------------------------------------------------------------- rejudge
