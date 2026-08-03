@@ -836,3 +836,8 @@ select.inp { appearance: none; }
 .scoreboard .stat.owner-eddie .num { color: #2F6FEB; }
 .scoreboard .stat.owner-rupert { border-color: rgba(126,155,130,.5); }
 .scoreboard .stat.owner-rupert .num { color: #7E9B82; }
+
+/* The impossible: filed, not binned. Champagne rather than the destructive
+   red — this is the top of the ladder, not the bottom of it. */
+.clipsend.impossible { border-color: rgba(203,190,147,.45); color: var(--champagne); }
+.clipsend.impossible:hover { background: rgba(203,190,147,.10); }

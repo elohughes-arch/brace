@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04c';
+const BUILD = '2026-08-04d';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -467,7 +467,7 @@ async function loadCounts() {
   const [videos, clips, todo] = await Promise.all([
     tally('pipeline_videos', 'video_id', 'status',
       ['discovered', 'downloaded', 'approved', 'clipped', 'rejected', 'binned', 'error']),
-    tally('pipeline_clips', 'clip_id', 'label_status', ['raw', 'pending', 'queued', 'prelabelled']),
+    tally('pipeline_clips', 'clip_id', 'label_status', ['raw', 'pending', 'queued', 'prelabelled', 'impossible']),
     supabase.from('todos').select('id', { count: 'exact', head: true }).eq('done', false),
   ]);
   return { ...videos, ...clips, todo: todo.error ? 0 : (todo.count ?? 0) };
@@ -529,6 +529,73 @@ async function loadFindings() {
     if (rep.error) return null;
     return { ...rep.data, coverage: cov.error ? [] : (cov.data || []) };
   } catch { return null; }
+}
+
+// The impossible: clips no person could call, newest first.
+async function loadImpossible() {
+  const { data, error } = await supabase.from('pipeline_clips')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,n_shots,slo_mo,'
+      + 'preview_path,poster_path,impossible_at,impossible_by,shot_type,'
+      + 'clay_colour,weather,det_conf,label_status')
+    .eq('label_status', 'impossible')
+    .order('impossible_at', { ascending: false }).limit(120);
+  if (error) return [];
+  const rows = data || [];
+  await signClipMedia(rows);
+  await titleClips(rows);
+  return rows;
+}
+
+function impossibleView() {
+  if (state.loading) return '<div class="empty">Loading…</div>';
+  const rows = state.impossible || [];
+  const mine = rows.filter((k) => k.impossible_by === 'eddie').length;
+  const theirs = rows.filter((k) => k.impossible_by === 'rupert').length;
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>The impossible</h1>
+        <p>Clips neither of you could call. Not the bin — the opposite end of it.
+           If a person watching the footage cannot see what happened, that clip is
+           the hardest thing this job contains, and it is worth more standing still
+           as a benchmark than folded into training. Nothing here trains anything:
+           a set you train on cannot also be the set that tells you how good you
+           have become. When a model can call these, it has earned the name.</p>
+      </div>
+    </div>
+
+    <div class="stats scoreboard">
+      <div class="stat"><div class="num">${fmt(rows.length)}</div>
+        <div class="cap">Filed</div><div class="sub">the standing benchmark</div></div>
+      <div class="stat owner-eddie"><div class="num">${fmt(mine)}</div>
+        <div class="cap">Eddie</div><div class="sub">filed by</div></div>
+      <div class="stat owner-rupert"><div class="num">${fmt(theirs)}</div>
+        <div class="cap">Rupert</div><div class="sub">filed by</div></div>
+    </div>
+
+    <section class="panel">
+      <div class="p-head"><span class="p-title">Every one, newest first</span>
+        <span class="s">press one back into the queue if it turns out to be callable</span></div>
+      ${rows.length ? `<div class="clipgrid">${rows.map((k) => `
+      <div class="clipcard" data-id="${esc(k.clip_id)}">
+        <div class="clipmedia">${clipMedia(k)}</div>
+        <div class="clipcap">
+          <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ''}</div>
+          <div class="s">${k.is_pair ? `pair · ${k.n_shots || 2} shots` : 'single'}
+            · ${(k.clip_end - k.clip_start).toFixed(1)}s
+            · det ${k.det_conf == null ? '—' : Math.round(k.det_conf * 100) + '%'}
+            ${k.shot_type ? ` · ${esc(k.shot_type)}` : ''}${k.slo_mo ? ' · slo-mo' : ''}</div>
+          <div class="s">filed by ${esc(who(k.impossible_by === 'eddie' ? 'elohughes@icloud.com'
+    : k.impossible_by === 'rupert' ? 'rupertokelly98@gmail.com' : ''))}
+            ${k.impossible_at ? `· ${ago(k.impossible_at)}` : ''}</div>
+          <div class="clipsend-row">
+            <button class="btn btn-ghost clipsend" data-unimpossible="${esc(k.clip_id)}">Back to triage</button>
+          </div>
+        </div>
+      </div>`).join('')}</div>`
+    : `<div class="empty">Nothing filed yet. When a clip defeats both of you, press
+         Impossible on it in Triage and it lands here.</div>`}
+    </section>`;
 }
 
 // Every detector we have trained, newest first. The row is the whole record
@@ -1920,9 +1987,9 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'findings', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
+const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'impossible', 'findings', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, clipTotal: null, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, impossible: [], clipTotal: null, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -1945,7 +2012,7 @@ let dashEpoch = -1;
 const dashboardIsCurrent = () => dashEpoch === epoch;
 
 const AGENTIC_VIEWS = ['control', 'review', 'sources', 'triage', 'rejected',
-  'labelling', 'mastersheet', 'export', 'health'];
+  'labelling', 'impossible', 'mastersheet', 'export', 'health'];
 
 /* The portal's front door: four rooms, pick one. The wordmark up top
    always leads back here. */
@@ -1987,6 +2054,7 @@ function shell(body) {
           <a href="#rejected" class="sub ${view === 'rejected' ? 'on' : ''}">Rejected pile${(state.pile?.vtotal || 0) + (state.pile?.total || 0) ? ` <b>${fmt((state.pile?.vtotal || 0) + (state.pile?.total || 0))}</b>` : ''}</a>
           ${item('review', 'Review', state.counts?.downloaded)}
           ${item('labelling', 'Labelling', state.counts?.queued)}
+          ${item('impossible', 'The impossible', state.counts?.impossible)}
           ${item('mastersheet', 'Mastersheet')}
           ${item('export', 'Export')}
           ${item('health', 'Health', (state.health || []).filter((h) => healthStatus(h)[0] !== 'ok').length)}
@@ -2631,6 +2699,8 @@ function triageClipsView() {
         ${trimRow(k)}
         <div class="clipsend-row">
           <button class="btn btn-ghost clipsend" data-deleteone="${esc(k.clip_id)}">Delete</button>
+          <button class="btn btn-ghost clipsend impossible" data-impossible="${esc(k.clip_id)}"
+            title="Neither of you can call this one — keep it as a benchmark">Impossible</button>
           <button class="btn clipsend" data-sendone="${esc(k.clip_id)}">Send to AI</button>
         </div>
       </div>
@@ -3396,6 +3466,24 @@ async function queueClips(ids, btn) {
   runStage('prelabel', { limit: 50 }).catch(() => {});
 }
 
+// The far end of the ladder. A clip neither owner can call is not a bad
+// clip — it is the hardest thing the job contains, and it is worth more
+// standing still as a benchmark than folded into training. Held out
+// deliberately: a set you train on cannot also be the set that tells you
+// how good you have become.
+async function markImpossible(ids, btn) {
+  if (!ids.length) return;
+  if (btn) busy(btn, true, 'Filing…');
+  takeOffPage(ids);
+  const { error } = await supabase.from('pipeline_clips').update({
+    label_status: 'impossible',
+    impossible_at: new Date().toISOString(),
+    impossible_by: WHOAMI(),
+  }).in('clip_id', ids).select('clip_id');
+  if (error) { note(`could not file it — ${error.message}`, 'bad'); await refresh(); return; }
+  note(`${ids.length} filed under the impossible — the benchmark, not the bin`, 'good');
+}
+
 async function deleteClips(ids, btn) {
   if (!ids.length) return;
   if (btn) busy(btn, true, 'Deleting…');
@@ -3665,7 +3753,7 @@ function signature() {
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
     clipPage, clipOwner, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
     queuePicked.size, sweeping,
-    lastTouched, ytOpen.size, scoreWindow, JSON.stringify(state.scores || {}),
+    lastTouched, ytOpen.size, scoreWindow, (state.impossible || []).length, JSON.stringify(state.scores || {}),
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.needs_recut ? 'r' : '')
       + k.clip_start + k.clip_end + JSON.stringify(k.presentations || []) + JSON.stringify(k.clay_colours || [])
       + (k.weather || '') + JSON.stringify(k.backgrounds || [])
@@ -4047,6 +4135,7 @@ function paint(force = false) {
     : view === 'sources' ? sourcesView()
     : view === 'triage' ? triageClipsView()
     : view === 'labelling' ? labellingView()
+    : view === 'impossible' ? impossibleView()
     : view === 'findings' ? findingsView()
     : view === 'mastersheet' ? mastersheetView()
     : view === 'strategy' ? strategyView()
@@ -4324,6 +4413,20 @@ function paint(force = false) {
     e.stopPropagation();
     queueClips([b.dataset.sendone], b);
   }));
+  document.querySelectorAll('[data-impossible]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    markImpossible([b.dataset.impossible], b);
+  }));
+  document.querySelectorAll('[data-unimpossible]').forEach((b) => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    busy(b, true, 'Returning…');
+    const { error } = await supabase.from('pipeline_clips')
+      .update({ label_status: 'pending', impossible_at: null, impossible_by: null })
+      .eq('clip_id', b.dataset.unimpossible).select('clip_id');
+    note(error ? `could not return it — ${error.message}` : 'back in the queue',
+      error ? 'bad' : 'good');
+    refresh();
+  }));
   document.querySelectorAll('[data-deleteone]').forEach((b) => b.addEventListener('click', (e) => {
     e.stopPropagation();
     deleteClips([b.dataset.deleteone], b);
@@ -4574,7 +4677,7 @@ async function refresh() {
     const slow = tick % 4 === 1;
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits, models, findings, scores] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits, models, findings, scores, impossible] = await Promise.all([
       settle(loadCounts(), state.counts),
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
@@ -4601,6 +4704,7 @@ async function refresh() {
       view === 'health' ? settle(loadCredits(), state.credits) : Promise.resolve(state.credits),
       view === 'labelling' ? settle(loadModels(), state.models) : Promise.resolve(state.models),
       view === 'findings' ? settle(loadFindings(), state.findings) : Promise.resolve(state.findings),
+      view === 'impossible' ? settle(loadImpossible(), state.impossible) : Promise.resolve(state.impossible),
       view === 'triage' ? settle(loadScores(), state.scores) : Promise.resolve(state.scores),
     ]);
     state.counts = counts;
@@ -4617,6 +4721,7 @@ async function refresh() {
     state.models = models;
     state.findings = findings;
     state.scores = scores;
+    state.impossible = impossible;
     state.trials = trials;
     state.sheet = sheet;
     state.progress = progress;
@@ -4650,7 +4755,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, clipTotal: null, loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, impossible: [], clipTotal: null, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
