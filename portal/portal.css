@@ -740,3 +740,41 @@ select.inp { appearance: none; }
 .clipcard.last-touched .clipcap .t::after {
   content: 'last used'; margin-left: 8px; font-size: 10px;
   letter-spacing: .06em; text-transform: uppercase; color: var(--champagne); }
+
+/* ============================================================================
+   Findings charts. Donuts for part-to-whole at a glance; meters where the
+   point is the gap to a target, which a slice cannot show. Hues come from a
+   fixed categorical order set in portal.js and checked against this surface
+   for colourblind separation — a slice never carries identity alone, so
+   every chart ships its legend and every segment its own title.
+   ========================================================================== */
+.vizgrid { display: grid; gap: 18px 16px; margin-top: 4px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.vizgrid figure { margin: 0; }
+.vizgrid figcaption { font-size: 13px; color: var(--text-1); margin-bottom: 10px; }
+.vizgrid figcaption .s { display: block; font-size: 11.5px; color: var(--text-3); }
+
+.viz { display: flex; align-items: center; gap: 16px; }
+.donut { width: 116px; height: 116px; flex: 0 0 auto; }
+.donut .seg { transition: opacity 140ms var(--ease-out); }
+.viz-pick .seg { cursor: pointer; }
+.viz-pick:hover .seg { opacity: .45; }
+.viz-pick .seg:hover, .viz-pick .seg:focus-visible { opacity: 1; }
+/* Figures wear text tokens, never the series colour. */
+.d-num { fill: var(--text-1); font-size: 21px; font-weight: 600;
+  text-anchor: middle; font-variant-numeric: tabular-nums; }
+.d-cap { fill: var(--text-3); font-size: 8.5px; text-anchor: middle;
+  letter-spacing: .08em; text-transform: uppercase; }
+
+.legend { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 5px; }
+.lg-row { display: flex; align-items: center; gap: 8px; font-size: 12px;
+  min-width: 0; }
+.viz-pick .lg-row { cursor: pointer; }
+.viz-pick .lg-row:hover .lg-k { color: var(--text-1); }
+.sw { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
+.lg-k { color: var(--text-2); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.lg-v { margin-left: auto; color: var(--text-3); white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+
+@media (max-width: 520px) { .viz { flex-direction: column; align-items: flex-start; } }

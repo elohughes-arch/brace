@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03i';
+const BUILD = '2026-08-03j';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2506,6 +2506,68 @@ function modelsPanel() {
 
 /* ---------- findings ---------- */
 
+// The categorical order for every chart on this page. Fixed, never cycled:
+// a slice keeps its hue whatever else is on screen, so "orange" means the
+// same thing in two charts side by side.
+//
+// These are not picked by eye. The brand's own extras — champagne against
+// the positive green — collapse to a colour difference of 4.6 under
+// protanopia, which is invisible; this order was checked against this
+// portal's charcoal surface and clears every gate, worst adjacent pair 8.4
+// colourblind and 19.8 in normal vision. Clay orange survives as slot two,
+// which is where the eye expects it.
+const VIZ = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9'];
+const VIZ_MUTED = '#7c8078';    // "unknown" is absence, not a category
+
+// A donut, for part-to-whole at a glance. Deliberately not used for
+// everything: two slices is a statistic, not a chart, and progress towards
+// a target is a meter — a pie cannot show the part that is missing.
+function donut(entries, opts = {}) {
+  const rows = entries.filter(([, v]) => Number(v) > 0);
+  const total = rows.reduce((a, [, v]) => a + Number(v), 0);
+  if (!total) return '<div class="empty">Nothing recorded yet.</div>';
+  const R = 54, C = 2 * Math.PI * R;
+  const colour = (k, i) => (/^(unknown|unplaced|not called)/i.test(k) ? VIZ_MUTED : VIZ[i % VIZ.length]);
+  let at = 0;
+  const arcs = rows.map(([k, v], i) => {
+    const frac = Number(v) / total;
+    // A 2px gap between fills, so neighbouring slices never touch — but
+    // never below a sliver: one clip out of four hundred came out as a
+    // zero-length arc and vanished, which reads as "none" when it is not.
+    const len = Math.max(1.5, C * frac - 2);
+    const seg = `<circle class="seg" r="${R}" cx="60" cy="60" fill="none"
+      stroke="${colour(k, i)}" stroke-width="15"
+      stroke-dasharray="${len} ${C - len}"
+      stroke-dashoffset="${-C * at}"
+      ${opts.pick ? `data-verdict="${esc(k)}" tabindex="0" role="button"` : ''}>
+      <title>${esc(k)} — ${fmt(v)} of ${fmt(total)} (${(100 * frac).toFixed(1)}%)</title></circle>`;
+    at += frac;
+    return seg;
+  }).join('');
+  const legend = rows.map(([k, v], i) => `
+    <div class="lg-row"${opts.pick ? ` data-verdict="${esc(k)}"` : ''}>
+      <span class="sw" style="background:${colour(k, i)}"></span>
+      <span class="lg-k">${esc(k)}</span>
+      <span class="lg-v">${fmt(v)} · ${(100 * Number(v) / total).toFixed(0)}%</span>
+    </div>`).join('');
+  return `
+    <div class="viz${opts.pick ? ' viz-pick' : ''}">
+      <svg viewBox="0 0 120 120" class="donut" role="img"
+           aria-label="${esc(opts.label || '')}: ${rows.map(([k, v]) => `${k} ${v}`).join(', ')}">
+        <g transform="rotate(-90 60 60)">${arcs}</g>
+        <text x="60" y="57" class="d-num">${fmt(total)}</text>
+        <text x="60" y="72" class="d-cap">${esc(opts.unit || 'total')}</text>
+      </svg>
+      <div class="legend">${legend}</div>
+    </div>`;
+}
+
+// A ratio against a limit is a meter, not a slice: the point is the gap.
+function meter(have, target) {
+  const pct = Math.min(100, 100 * have / Math.max(1, target));
+  return `<div class="bar"><span style="width:${pct.toFixed(1)}%"></span></div>`;
+}
+
 // Opening a verdict shows the shots behind it, every variable beside each
 // one, and a tally of those variables across the whole group. A count tells
 // you there is a problem; this is for finding out what the problem is.
@@ -2657,10 +2719,16 @@ function findingsView() {
     </div>
 
     <div class="stats">
+      ${stat(num(ds.boxed_frames), 'Frames boxed', `the training set · ${num(ds.label_rows)} clips`)}
+      ${stat(pctOf(cl.call_pct), 'Checked by a person', `${num(cl.called)} of ${num(cl.total)} clips`, (cl.call_pct ?? 0) < 25)}
+      ${stat(pctOf(ag.pct), 'Machine agrees with us', `${num(ag.compared)} clips called by both`, (ag.pct ?? 0) < 70)}
+      ${stat(models.length && models[0].map50 != null ? `${(models[0].map50 * 100).toFixed(0)}%` : '—',
+    'Detector mAP50', models.length ? esc(models[0].name) : 'no detector trained yet', !models.length)}
       ${stat(num(s.videos), 'Videos seen', `${num(s.channels)} channels · ${num(s.hours)} hours`)}
-      ${stat(pctOf(s.kept_pct), 'Survived triage', `${num(s.rejected)} refused · mean score ${s.avg_score ?? '—'}`)}
+      ${stat(pctOf(s.kept_pct), 'Survived triage', `${num(s.rejected)} refused · mean ${s.avg_score ?? '—'}`)}
       ${stat(num(cl.total), 'Clips cut', `${num(cl.pairs)} pairs · ${num(cl.slo_mo)} slow-motion`)}
-      ${stat(num(ds.boxed_frames), 'Frames boxed', `${num(ds.label_rows)} clips · ~${num(ds.avg_frames_per_clip)} a clip`)}
+      ${stat((f.splits || {}).test ? num((f.splits || {}).test) : 'none',
+    'Held-out test clips', (f.splits || {}).test ? 'the honest ruler' : 'the model is unmeasured', !(f.splits || {}).test)}
     </div>
 
     <section class="panel">
@@ -2675,24 +2743,22 @@ function findingsView() {
     </section>
 
     <section class="panel" style="margin-top:18px">
-      <div class="p-head"><span class="p-title">Our calls — the ground truth</span>
-        <span class="s">${num(cl.called)} of ${num(cl.total)} clips called · ${pctOf(cl.call_pct)}</span></div>
-      ${dist(f.owner_calls || {}, CALLS)}
-      <p class="foot-note">These are the only calls in the system made by a person, and
-         the only thing any model is ultimately scored against. Up to
-         ${num(cl.max_clays)} clays have been called on a single clip.</p>
-    </section>
-
-    <section class="panel" style="margin-top:18px">
-      <div class="p-head"><span class="p-title">The machine's calls</span>
-        <span class="s">agreement with us on the first clay: <b>${pctOf(ag.pct)}</b>
+      <div class="p-head"><span class="p-title">The calls — ours against the machine's</span>
+        <span class="s">agreement on the first clay <b>${pctOf(ag.pct)}</b>
           (${num(ag.agreed)} of ${num(ag.compared)})</span></div>
-      ${dist(f.ai_calls || {}, CALLS, true)}
+      <div class="vizgrid">
+        <figure><figcaption>Ours — the ground truth
+          <span class="s">${num(cl.called)} of ${num(cl.total)} clips called</span></figcaption>
+          ${donut(CALLS.map((k) => [k, (f.owner_calls || {})[k] || 0]), { label: 'Our calls', unit: 'calls' })}</figure>
+        <figure><figcaption>The machine's
+          <span class="s">press a slice to see the shots behind it</span></figcaption>
+          ${donut(CALLS.map((k) => [k, (f.ai_calls || {})[k] || 0]), { label: "The machine's calls", unit: 'calls', pick: true })}</figure>
+      </div>
       ${verdictDrill()}
-      <p class="foot-note">Agreement is measured only where both a person and the
-         machine have called the same clip, so it moves as more are called. It is the
-         honest read on whether the verdict model can be trusted — and on this
-         sample it cannot yet.</p>
+      <p class="foot-note">Ours are the only calls made by a person and the only thing a
+         model is ultimately scored against. Agreement counts only clips where both have
+         called, so it moves as more are called. Up to ${num(cl.max_clays)} clays have
+         been called on one clip.</p>
     </section>
 
     <section class="panel" style="margin-top:18px">
@@ -2729,55 +2795,67 @@ function findingsView() {
     </section>
 
     <section class="panel" style="margin-top:18px">
-      <div class="p-head"><span class="p-title">The curriculum — what complexity we have, and what is missing</span></div>
+      <div class="p-head"><span class="p-title">The phases — how much of each complexity we hold</span>
+        <span class="s">one phase per clip, read from the footage</span></div>
       ${DS_LADDER.map((l) => {
-    const have = Number((f.levels || {})[String(l.n)] || 0);
-    const pct = Math.min(100, 100 * have / l.target);
+    const ph = (f.phases || {})[String(l.n)] || { clips: 0, called: 0 };
+    const have = Number(ph.clips || 0);
+    const derivable = ![5, 8].includes(l.n);
     const short = Math.max(0, l.target - have);
     return `
       <div class="row">
         <span class="dot ${have >= l.target ? 'on' : ''}"></span>
         <div class="main">
           <div class="t">L${l.n} · ${esc(l.name)}
-            ${short ? `<span class="s">— ${fmt(short)} short</span>` : '<span class="s">— met</span>'}</div>
+            ${have >= l.target ? '<span class="s">— met</span>'
+    : derivable ? `<span class="s">— ${fmt(short)} short</span>`
+      : '<span class="s">— cannot be read from the footage; stamp by hand</span>'}</div>
           <div class="s">${esc(l.sub)}</div>
-          <div class="bar"><span style="width:${pct.toFixed(1)}%"></span></div>
+          ${meter(have, l.target)}
+          <div class="s">${fmt(ph.called || 0)} of ${fmt(have)} checked by a person</div>
         </div>
         <div class="end"><span class="s">${fmt(have)} / ${fmt(l.target)}</span></div>
       </div>`;
   }).join('')}
-      ${(f.levels || {})['0'] ? `
+      ${(f.phases || {})['0'] ? `
       <div class="row">
         <span class="dot"></span>
         <div class="main"><div class="t">Unplaced</div>
-          <div class="s">clipped before the ladder was stamped, or found by a plain
-             search rather than a level's own queries — these count towards nothing
-             until they are placed, from the Mastersheet or as they are sourced.</div></div>
-        <div class="end"><b>${fmt((f.levels || {})['0'])}</b></div>
+          <div class="s">nothing about these clips says which phase they belong to —
+             usually an unread clay colour or unknown weather. Reading those is what
+             moves them onto a rung.</div></div>
+        <div class="end"><b>${fmt((f.phases || {})['0'].clips)}</b></div>
       </div>` : ''}
-      <p class="foot-note">The ladder is the whole training strategy: the model earns
-         each rung before the next is poured in, so it learns what a clay is on slow
-         orange discs against clear sky before it is asked to find a grey one against
-         a treeline. A rung far short of its target is the next filming day, and the
-         bar above it is the argument for going. Source a rung from Dataset strategy,
-         which searches that rung's own queries and stamps what it finds.</p>
+      <p class="foot-note">A phase is worked out from the clip itself — its clay colour,
+         the weather, whether it is slow motion, how far and how fast — so this counts
+         the footage we actually hold rather than a label nobody applied. One phase per
+         clip, hardest thing in the frame wins: a black clay in fog counts as hard
+         light, not as dark clays. Phases 5 and 8 have no field that could tell us, so
+         they read nought until stamped by hand.
+         <br><br><b>On having enough:</b> a count reaching its target is not proof that
+         more would not help, and this page cannot tell you that on its own — only a
+         trained model can. The honest test is to train, read the per-phase accuracy,
+         add footage to the weakest phase, and train again: if the score stops moving,
+         that phase is full and the next one is where the effort belongs. The targets
+         here are a starting estimate, not a finding.</p>
     </section>
 
     <section class="panel" style="margin-top:18px">
       <div class="p-head"><span class="p-title">Conditions covered</span></div>
-      <div class="p-head"><span class="p-title" style="font-size:12px">Camera — what the footage was shot on</span></div>
-      ${dist(f.camera || {})}
-      <p class="foot-note" style="margin:6px 0 14px">What gets deployed is a camera on a
-         gun or a face, so barrel, gopro and pov_glasses are the footage that matches
-         the job. Broadcast and third_person teach the model a view no customer will
-         ever wear.</p>
-      <div class="p-head"><span class="p-title" style="font-size:12px">Weather</span></div>
-      ${dist(f.weather || {})}
-      <div class="p-head" style="margin-top:14px"><span class="p-title" style="font-size:12px">Clay colour</span></div>
-      ${dist(f.clay_colour || {})}
-      <div class="p-head" style="margin-top:14px"><span class="p-title" style="font-size:12px">Ladder level</span></div>
-      ${dist(f.levels || {})}
-      <p class="foot-note">A thin row is not a statistic, it is the next filming day.
+      <div class="vizgrid">
+        <figure><figcaption>Camera <span class="s">what it was shot on</span></figcaption>
+          ${donut(Object.entries(f.camera || {}).sort((a, b) => b[1] - a[1]), { label: 'Camera', unit: 'clips' })}</figure>
+        <figure><figcaption>Clay colour</figcaption>
+          ${donut(Object.entries(f.clay_colour || {}).sort((a, b) => b[1] - a[1]), { label: 'Clay colour', unit: 'clips' })}</figure>
+        <figure><figcaption>Weather</figcaption>
+          ${donut(Object.entries(f.weather || {}).sort((a, b) => b[1] - a[1]), { label: 'Weather', unit: 'clips' })}</figure>
+        <figure><figcaption>Split <span class="s">train · valid · test</span></figcaption>
+          ${donut(['train', 'valid', 'test'].map((k) => [k, (f.splits || {})[k] || 0]), { label: 'Split', unit: 'clips' })}</figure>
+      </div>
+      <p class="foot-note">What gets deployed is a camera on a gun or a face, so barrel,
+         gopro and pov_glasses are the footage that matches the job — broadcast and
+         third_person teach a view no customer will ever wear. A thin slice is not a
+         statistic, it is the next filming day.
          A detector taught only on clear sky is a detector that fails on the first
          overcast morning, and "unknown" is the largest weather slice here because
          triage could not read the conditions from the frames it sampled.</p>
