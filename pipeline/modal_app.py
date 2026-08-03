@@ -635,16 +635,92 @@ def discover(request: fastapi.Request):
     return _discover_impl.local()
 
 
+def _coverage(sb):
+    """What the dataset actually holds, by axis — the input to the hunt.
+
+    Counted over clips rather than videos: one video of forty crossers is
+    forty crossers' worth of training data and one video's worth of weather,
+    and the thing being measured is how much the model has seen.
+
+    Only what a person or the machine has actually recorded counts. A clip
+    whose background nobody has entered is not evidence of anything, so it is
+    absent rather than counted as a zero — otherwise every unfilled cell would
+    look full of clips that simply have not been looked at.
+    """
+    cov: dict[str, dict[str, int]] = {}
+
+    def tally(axis, rows, key):
+        d = cov.setdefault(axis, {})
+        for r in rows:
+            v = (r.get(key) or "").strip().lower()
+            if v and v not in ("unknown", "unclear", "none"):
+                d[v] = d.get(v, 0) + 1
+
+    try:
+        clips = (sb.table("pipeline_clips")
+                 .select("clip_id,video_id,clay_colour,background,presentation,"
+                         "range_m,speed_mph")
+                 .in_("label_status", ["pending", "queued", "prelabelled"])
+                 .limit(5000).execute().data or [])
+        tally("clay", clips, "clay_colour")
+        tally("background", clips, "background")
+        tally("presentation", clips, "presentation")
+
+        # Range is a measurement, not a label, so it is bucketed here to the
+        # same words the hunt searches by.
+        rng = cov.setdefault("range", {})
+        for c in clips:
+            m, mph = c.get("range_m") or 0, c.get("speed_mph") or 0
+            if m:
+                b = "close" if m < 20 else "mid" if m < 35 else "long"
+                rng[b] = rng.get(b, 0) + 1
+            if mph and mph >= 60:
+                rng["fast"] = rng.get("fast", 0) + 1
+
+        # Light rides on the video, so it is counted per clip that came from
+        # one — a wet day is worth as many clips as it produced.
+        vids: dict[str, dict] = {}
+        ids = list({c["video_id"] for c in clips})
+        for i in range(0, len(ids), 200):
+            for v in (sb.table("pipeline_videos").select("video_id,weather,criteria")
+                      .in_("video_id", ids[i:i + 200]).execute().data or []):
+                vids[v["video_id"]] = v
+        light = cov.setdefault("light", {})
+        for c in clips:
+            w = ((vids.get(c["video_id"]) or {}).get("weather") or "").strip().lower()
+            if w and w != "unknown":
+                light[w] = light.get(w, 0) + 1
+    except Exception as e:  # noqa: BLE001 — an unmeasurable axis is a gap, not a crash
+        print(f"[discover] could not read coverage: {e}")
+    return cov
+
+
 @app.function(image=base_image, secrets=[secret], timeout=300,
               schedule=modal.Cron("0 2 * * *"))  # nightly 02:00 UTC
 def _discover_impl():
     import os
-    from discover import DEFAULT_QUERIES, DEFAULT_CHANNELS, search, channel_uploads
+    from discover import (DEFAULT_CHANNELS, search, channel_uploads,
+                          hunt_queries)
     sb = _sb()
     key = os.environ["YOUTUBE_API_KEY"]
     total = 0
-    for q in DEFAULT_QUERIES:
+
+    # Aim at the holes. With nothing held yet every cell reads as empty and
+    # the hunt spreads evenly, which is the right opening move; as the set
+    # fills it narrows onto whatever is still missing — the rain and the dusk
+    # and the long birds that nobody enjoys filming.
+    cov = _coverage(sb)
+    plan = hunt_queries(cov)
+    thin = ", ".join(f"{a}/{v}" for a, v, _ in plan[:8])
+    print(f"[discover] {len(plan)} searches, thinnest first: {thin}")
+
+    for axis, value, q in plan:
         rows = search(key, q)
+        for r in rows:
+            # What hole this was dug for, so a video arrives knowing why it
+            # was wanted — and so a search that keeps returning nothing
+            # useful can be told apart from one nobody ran.
+            r["criteria"] = f"hunt:{axis}={value}"
         if rows:
             sb.table("pipeline_videos").upsert(
                 rows, on_conflict="video_id", ignore_duplicates=True
