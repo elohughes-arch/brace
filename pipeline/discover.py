@@ -21,18 +21,194 @@ from supabase import create_client
 
 load_dotenv()
 
-DEFAULT_QUERIES = [
-    '"clay shooting" POV camera',
-    '"sporting clays" first person camera',
-    "shotkam clay pigeon",
-    '"clay pigeon shooting" gopro',
-    "simulated game shooting day gun camera",
-    '"skeet shooting" POV camera',
-    '"compak sporting" POV',
-    "shooting ground POV chest cam",
-    '"down the line" shooting POV',
-    "clay shooting school lesson POV",
-]
+# ---------------------------------------------------------------- the matrix
+#
+# Difficulty is not one dimension, and the phase ladder is the wrong shape for
+# deciding what to go and find. The ladder answers "what order do we teach
+# this in" — one number per clip, hardest thing wins. That is right for
+# curriculum and useless for coverage, because it cannot tell you that we hold
+# four hundred crossers and no teal, or a thousand clear-sky clips and nothing
+# in rain. Collapsed to one number, a gap is invisible.
+#
+# So there are two structures. The ladder (in modal_app._phase_of) orders
+# training. This matrix orders collection: several independent axes, each with
+# the values that actually occur on a British shooting ground, and a bank of
+# searches aimed at each value. Discovery reads what we hold, finds the
+# thinnest cells, and spends its quota there — so the dataset fills its own
+# holes instead of deepening the pile it already has.
+#
+# Every query carries POV terms. A ground's promo reel is beautifully shot
+# from a tripod and worth nothing to us: the detector watches through a camera
+# carried by the shooter, and footage from anywhere else teaches a view it
+# will never be given.
+#
+# The axes are ordered by how much they change what a clay looks like in
+# frame. Light and background change the pixels most; discipline changes them
+# least but reliably drags the others along with it — nobody films FITASC on a
+# clear day at twenty yards.
+
+_POV = '(POV OR "point of view" OR gopro OR shotkam OR "gun camera" OR "barrel cam")'
+
+# axis -> value -> the searches that go looking for it
+HUNT: dict[str, dict[str, list[str]]] = {
+    # What the light is doing. Britain's default is overcast, and the whole
+    # back half of this axis is where the dataset is thinnest by nature: it
+    # rains on the days people leave the camera at home.
+    "light": {
+        "bright":    [f'clay shooting sunny day {_POV}'],
+        "overcast":  [f'clay shooting overcast {_POV}',
+                      f'"sporting clays" grey day {_POV}'],
+        "rain":      [f'clay shooting in the rain {_POV}',
+                      f'"clay pigeon shooting" wet weather {_POV}',
+                      f'shooting ground rain {_POV} camera'],
+        "drizzle":   [f'clay shooting drizzle damp {_POV}'],
+        "fog":       [f'clay shooting fog mist {_POV}',
+                      f'"clay pigeon" misty morning {_POV}'],
+        "low_sun":   [f'clay shooting low sun glare {_POV}',
+                      f'clay shooting winter sun {_POV}'],
+        "dusk":      [f'clay shooting dusk evening light {_POV}',
+                      f'"clay pigeon shooting" late evening {_POV}',
+                      f'flighted clays dusk {_POV}'],
+        "floodlit":  [f'clay shooting under floodlights night {_POV}'],
+    },
+    # What the clay is seen against. A clay on sky is a silhouette; a clay on
+    # a treeline is a texture problem, and it is where most real sporting
+    # targets actually live.
+    "background": {
+        "sky":       [f'clay shooting against sky {_POV}'],
+        "cloud":     [f'clay shooting cloudy background {_POV}'],
+        "treeline":  [f'sporting clays woodland treeline {_POV}',
+                      f'clay shooting through the trees {_POV}'],
+        "hillside":  [f'clay shooting valley hillside {_POV}',
+                      f'quarry clay shooting {_POV}'],
+        "ground":    [f'rabbit clay ground level {_POV}',
+                      f'clay shooting stubble field {_POV}'],
+        "water":     [f'clay shooting over water lake {_POV}'],
+        "buildings": [f'clay shooting stands buildings {_POV}'],
+    },
+    # Colour and size. Anything that is not a standard orange is a different
+    # detection problem, and the small ones are a different problem again.
+    "clay": {
+        "orange":    [f'orange clay targets {_POV} shooting'],
+        "black":     [f'black clay targets {_POV} shooting'],
+        "white":     [f'white clay targets {_POV} shooting'],
+        "blaze":     [f'blaze flash clay targets {_POV}'],
+        "midi":      [f'midi clay targets {_POV} sporting'],
+        "mini":      [f'mini clay targets {_POV} sporting'],
+        "battue":    [f'battue clay targets {_POV}'],
+        "rabbit":    [f'rabbit clay target {_POV} shooting'],
+    },
+    # How the clay moves. The model has to survive all of these, and they are
+    # not interchangeable: a dropper and a teal are opposite problems.
+    "presentation": {
+        "driven":    [f'driven clays overhead {_POV} shooting'],
+        "crosser":   [f'crossing clay targets {_POV} sporting'],
+        "going_away":[f'going away clay targets {_POV}'],
+        "incomer":   [f'incoming clay targets {_POV} shooting'],
+        "teal":      [f'springing teal clay {_POV} shooting'],
+        "dropper":   [f'dropping clay target {_POV} sporting'],
+        "looper":    [f'looping clay target {_POV} sporting'],
+        "quartering":[f'quartering clay target {_POV}'],
+        "pairs":     [f'simultaneous pair clays {_POV}',
+                      f'report pair sporting clays {_POV}'],
+        "flush":     [f'clay flush multiple targets {_POV}'],
+    },
+    # Distance and speed. Long birds are the hardest detection problem we
+    # have — a few grey pixels — and the least represented, because they are
+    # the least satisfying to film.
+    "range": {
+        "close":     [f'close range clay targets {_POV}'],
+        "mid":       [f'sporting clays {_POV} camera'],
+        "long":      [f'long range clay targets {_POV} shooting',
+                      f'extreme distance clay shooting {_POV}',
+                      f'high tower clays {_POV} shooting'],
+        "fast":      [f'fast clay targets {_POV} sporting'],
+    },
+    # British disciplines. Each one drags a whole cluster of conditions along
+    # with it, which makes this the cheapest axis to search on: one query for
+    # FITASC brings back distance, awkward angles and mixed light together.
+    "discipline": {
+        "sporting":  [f'english sporting clays {_POV} shooting'],
+        "compak":    [f'compak sporting {_POV} shooting'],
+        "fitasc":    [f'FITASC sporting {_POV} shooting'],
+        "dtl":       [f'"down the line" DTL shooting {_POV}'],
+        "abt":       [f'automatic ball trap ABT {_POV} shooting'],
+        "olympic":   [f'olympic trap bunker {_POV} shooting'],
+        "skeet":     [f'english skeet {_POV} shooting',
+                      f'olympic skeet {_POV} shooting'],
+        "helice":    [f'helice ZZ shooting {_POV}'],
+        "simulated": [f'simulated game day {_POV} gun camera',
+                      f'simulated driven grouse {_POV} camera',
+                      f'simulated high pheasant {_POV} camera'],
+        "school":    [f'clay shooting lesson {_POV} instructor',
+                      f'shooting school coaching {_POV} camera'],
+    },
+}
+
+# Flattened, for a plain run with nothing to aim at.
+DEFAULT_QUERIES = [q for axis in HUNT.values() for qs in axis.values() for q in qs]
+
+# What to chase first when everything is equally empty, hardest and rarest
+# leading. Two things put a cell high on this list: the clay is hard to see
+# (a long bird, a black clay on a treeline, anything at dusk), or the footage
+# is scarce because it is unpleasant to film — nobody takes a camera out in
+# the rain for fun, which is precisely why a wet-weather detector has to be
+# built on purpose rather than waited for.
+#
+# Everything absent from this list sorts after everything in it. Standard
+# orange clays on a clear day against open sky need no help arriving.
+WANTED = (
+    # light nobody films in
+    "rain", "fog", "dusk", "low_sun", "drizzle",
+    # the birds that are a handful of grey pixels
+    "long", "fast",
+    # anything that is not a silhouette on sky
+    "treeline", "hillside", "ground", "water",
+    # clays that do not look like a clay is supposed to look
+    "black", "battue", "mini", "midi", "white",
+    # presentations that break a tracker rather than a shooter
+    "teal", "dropper", "quartering", "looper", "flush",
+    # disciplines that drag distance and awkward light along with them
+    "fitasc", "helice", "olympic", "abt",
+)
+
+
+def hunt_queries(coverage: dict[str, dict[str, int]] | None = None,
+                 per_axis: int = 3, floor: int = 25) -> list[tuple[str, str, str]]:
+    """The searches worth running next, thinnest cell first.
+
+    `coverage` is {axis: {value: how many clips we hold}}. Values missing from
+    it count as zero, which is the point — a cell nobody has ever filled is
+    the one most worth filling.
+
+    Returns (axis, value, query) so what comes back can be attributed to the
+    hole it was dug for, rather than vanishing into an undifferentiated pile.
+
+    `floor` is where a cell stops being a gap. Above it the axis has enough to
+    teach from and the quota is better spent elsewhere; there is no gain in
+    hunting a value we already hold four hundred of.
+    """
+    coverage = coverage or {}
+    out: list[tuple[str, str, str]] = []
+    for axis, values in HUNT.items():
+        have = coverage.get(axis, {})
+        # Thinnest first — but on a cold start every cell reads zero and the
+        # tie has to be broken by something. Alphabet would spend the opening
+        # quota on bright days and drizzle; WANTED spends it on the footage
+        # that is hard to detect and rarely filmed, which is the footage that
+        # will still be missing a month from now if nobody goes after it
+        # deliberately. Name breaks the remaining ties so a run repeats.
+        ranked = sorted(values, key=lambda v: (
+            have.get(v, 0),
+            WANTED.index(v) if v in WANTED else len(WANTED),
+            v))
+        for value in ranked[:per_axis]:
+            if have.get(value, 0) >= floor:
+                continue          # this cell is fed; spend the quota elsewhere
+            for q in values[value]:
+                out.append((axis, value, q))
+    return out
+
 
 # Channels worth crawling in full rather than hoping a keyword search
 # surfaces them: camera makers and shooting schools whose uploads are
