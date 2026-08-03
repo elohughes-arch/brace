@@ -1913,6 +1913,30 @@ def _clay_track(boxes_per_frame, frame_w, frame_h=None):
     import math
 
     _clay_track.last_fixtures = {}
+
+    # Check 0 — a clay is small. Measured across 69 clips and 66,895 stored
+    # detections, a quarter of every box the detector produced covered half
+    # the frame or more, in 68 of the 69 clips: Grounding DINO answering "where
+    # is the small orange disc" with the whole picture. The size distribution
+    # is not a spectrum but two populations — a real one with a median of
+    # 0.041 of frame width, and a junk one bunched at 0.995 — with almost
+    # nothing between 0.07 and 0.6. The cut goes in that empty ground, far
+    # above any real clay at any range, so it costs nothing and takes the
+    # whole junk population with it.
+    #
+    # It runs first for a reason beyond tidiness: a whole-frame box repeats on
+    # the same pixel every time it appears, so it forms tracks, and those
+    # tracks vote in the camera-motion median. Junk that fills the frame was
+    # steering the estimate of how the camera moved, and a wrong estimate
+    # there deletes real clays.
+    big = frame_w * 0.4
+    boxes_per_frame = {
+        i: [b for b in bs
+            if (b["xyxy"][2] - b["xyxy"][0]) <= big
+            and (b["xyxy"][3] - b["xyxy"][1]) <= big]
+        for i, bs in boxes_per_frame.items()}
+    boxes_per_frame = {i: bs for i, bs in boxes_per_frame.items() if bs}
+
     idxs = sorted(boxes_per_frame)
     if not idxs:
         return {}
