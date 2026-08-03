@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03p';
+const BUILD = '2026-08-03q';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2333,6 +2333,41 @@ function trimRow(k) {
     </div>`;
 }
 
+// What to put in a clip card's media box.
+//
+// A rendered preview is best: it is the exact cut, it scrubs, and it is the
+// thing the trim controls talk to. But a clip only gets one once screening
+// has run, and until then the card was a black rectangle promising a preview
+// "within the hour" — which is useless when the job in front of you is to
+// watch that clip now.
+//
+// The source is on YouTube and we know the clip's window in it, so the
+// fallback plays the real footage between those two timestamps. Not loaded
+// until asked: forty iframes on one page would be slower than the problem
+// it solves, so the thumbnail stands in and the embed replaces it on press.
+const ytOpen = new Set();
+
+function clipMedia(k) {
+  if (k.preview_url) {
+    return `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`;
+  }
+  if (ytOpen.has(k.clip_id)) {
+    const a = Math.max(0, Math.floor(k.clip_start || 0));
+    const b = Math.ceil(k.clip_end || (a + 10));
+    return `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(k.video_id)}?start=${a}&end=${b}&autoplay=1&rel=0"
+      title="Source footage for this clip" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe>`;
+  }
+  const poster = k.poster_url
+    ? `<img src="${esc(k.poster_url)}" alt="" loading="lazy" />`
+    : `<img src="https://i.ytimg.com/vi/${esc(k.video_id)}/mqdefault.jpg" alt="" loading="lazy" onerror="this.remove()" />`;
+  return `${poster}
+    <button class="ytplay" data-ytplay="${esc(k.clip_id)}"
+      title="No rendered preview yet — play the source at this clip's timestamps">
+      <span class="ytplay-i">▶</span>
+      <span class="ytplay-t">Play from source${k.poster_url ? '' : ' · preview not rendered'}</span>
+    </button>`;
+}
+
 function triageClipsView() {
   if (state.loading) return '<div class="empty">Loading clips…</div>';
   const c = state.counts || {};
@@ -2348,13 +2383,7 @@ function triageClipsView() {
   // a brand-new cut holds the space with a note.
   const pendingCard = (k) => `
     <div class="clipcard ${picked.has(k.clip_id) ? 'picked' : ''} ${lastTouched === k.clip_id ? 'last-touched' : ''}" data-id="${esc(k.clip_id)}" data-clip="${esc(k.clip_id)}" data-owner="${esc(k.sorter)}" data-src="${esc(k.preview_url)}">
-      <div class="clipmedia">
-        ${k.preview_url
-    ? `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
-    : k.poster_url
-      ? `<img src="${esc(k.poster_url)}" alt="" /><span class="rendering badge">rendering…</span>`
-      : '<span class="rendering">Preview rendering — plays here within the hour</span>'}
-      </div>
+      <div class="clipmedia">${clipMedia(k)}</div>
       <div class="clipcap">
         <div class="t">Shot ${k.shot_no || '?'} · ${mmss(k.shot_ts)}
           · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
@@ -3345,7 +3374,7 @@ function signature() {
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
     clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
     queuePicked.size, sweeping,
-    lastTouched,
+    lastTouched, ytOpen.size,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.needs_recut ? 'r' : '')
       + k.clip_start + k.clip_end + (k.presentation || '') + (k.weather || '')
       + JSON.stringify(k.owner_outcomes || [])),
@@ -3450,6 +3479,19 @@ function wireCalls() {
     });
   });
   // Presentation and weather: what the clay did and what the sky was.
+  document.querySelectorAll('[data-ytplay]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = b.dataset.ytplay;
+      ytOpen.add(id);
+      touchCard(id);
+      const k = [...state.clips, ...state.ai].find((x) => x.clip_id === id);
+      const box = b.closest('.clipmedia');
+      // Swap in place: a repaint would restart every other card on the page.
+      if (box && k) { box.innerHTML = clipMedia(k); wireCalls(); } else paint(true);
+    });
+  });
   document.querySelectorAll('[data-tag]:not([data-wired])').forEach((sel) => {
     sel.dataset.wired = '1';
     sel.addEventListener('change', async () => {

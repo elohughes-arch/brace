@@ -787,3 +787,17 @@ select.inp { appearance: none; }
 /* The machine's own read of the presentation, shown beside the dropdown that
    overrides it: geometry proposes, the eye disposes. */
 .tagrow .mach { text-transform: none; letter-spacing: 0; color: var(--text-2); }
+
+/* No rendered preview yet: the source plays at the clip's own timestamps
+   rather than the card sitting black promising one "within the hour". */
+.clipmedia iframe { position: absolute; inset: 0; width: 100%; height: 100%;
+  border: 0; display: block; }
+.ytplay { position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 8px;
+  background: rgba(31,33,32,.55); color: var(--text-1); }
+.ytplay:hover { background: rgba(31,33,32,.35); }
+.ytplay-i { width: 42px; height: 42px; border-radius: 50%;
+  background: rgba(0,0,0,.6); display: grid; place-items: center;
+  font-size: 15px; padding-left: 3px; }
+.ytplay-t { font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--text-2); text-align: center; padding: 0 10px; }

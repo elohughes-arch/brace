@@ -57,7 +57,7 @@
   function onPointerDown(event) {
     if (event.button !== 0) return;
     if (document.getElementById("viewer")) return;
-    if (event.target.closest("button, a, input, select, textarea, video")) return;
+    if (event.target.closest("button, a, input, select, textarea, video, iframe")) return;
     const root = CONFIG.gridSelector ? document.querySelector(CONFIG.gridSelector) : document.body;
     if (!root || !root.contains(event.target)) return;
 
@@ -267,7 +267,7 @@
     // below and opened the fullscreen viewer instead of pausing, which is
     // why pause "sometimes didn't work". The player owns its own clicks;
     // so does anything with a control in it.
-    if (event.target.closest("button, a, input, select, textarea, label, video, .trim, .yourcall")) return;
+    if (event.target.closest("button, a, input, select, textarea, label, video, iframe, .trim, .yourcall, .tagrow")) return;
     const index = visible().indexOf(card);
     if (index > -1) openViewer(index);
   }
