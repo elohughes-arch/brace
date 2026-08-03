@@ -38,7 +38,7 @@ const WAIT_MS = Number(process.env.PIPELINE_WAIT_MS) || 25_000;
 
 // Only these reach Modal; everything else in the query string is dropped.
 const PASSTHROUGH = ['limit', 'unreviewed', 'name', 'every', 'conf',
-  'epochs', 'imgsz', 'base'];
+  'epochs', 'imgsz', 'base', 'phases'];
 
 /* ---------------------------------------------------------------- discover */
 // Candidates come from pipeline_sources, which the portal edits. Three kinds:

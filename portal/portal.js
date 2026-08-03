@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03u';
+const BUILD = '2026-08-03v';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2576,7 +2576,14 @@ function modelsPanel() {
     <section class="panel" style="margin-bottom:18px">
       <div class="p-head"><span class="p-title">Our detector${rows.length === 1 ? '' : 's'}${rows.length ? ` — ${rows.length}` : ''}</span>
         <span>
-          <button class="linky" data-run="dataset">Build set</button>
+          <select id="phasepick" class="mini" title="Which rungs go into the training set">
+            <option value="">every phase</option>
+            <option value="1">phase 1 only — foundation</option>
+            <option value="1,2">phases 1–2</option>
+            <option value="1,2,3">phases 1–3</option>
+            <option value="1,2,3,4">phases 1–4</option>
+          </select>
+          <button class="linky" data-run="dataset" style="margin-left:10px">Build set</button>
           <button class="linky" data-run="train" style="margin-left:10px">Train</button>
         </span></div>
       ${rows.length ? rows.map((m, i) => `
@@ -3827,7 +3834,14 @@ function paint(force = false) {
   // Build set and Train take no batch size — they work on the whole set —
   // and both outlive the proxy's wait, so the 202 is the expected answer.
   document.querySelectorAll('[data-run]').forEach((b) =>
-    b.addEventListener('click', () => runStage(b.dataset.run, {})));
+    b.addEventListener('click', () => {
+      // The rung choice names the set as well as filtering it, so phase 1's
+      // weights and phase 1–2's weights never overwrite one another and can
+      // be compared afterwards.
+      const phases = document.getElementById('phasepick')?.value || '';
+      const name = phases ? `p${phases.replace(/,/g, '')}` : 'brace';
+      runStage(b.dataset.run, phases ? { phases, name } : { name });
+    }));
   // Criteria discovery from the Dataset strategy page: search the phrases
   // written for that ladder rung and stamp what's found with its level.
   document.querySelectorAll('[data-dsfind]').forEach((b) =>

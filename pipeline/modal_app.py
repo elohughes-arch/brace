@@ -236,12 +236,35 @@ def _advance():
         return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
                 .eq("label_status", status).execute().count or 0)
 
-    if videos_in("approved") or clips_unpreviewed():
-        hit("clip")   # cuts approved videos and backfills missing previews
-    if clips_in("raw"):
-        hit("screen")
-    if clips_queued():
-        hit("prelabel")
+    def clips_to_recut():
+        return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
+                .eq("needs_recut", True).execute().count or 0)
+
+    # One pass an hour was the reason the machine kept needing to be pushed
+    # by hand: screening takes ten clips a call, so a backlog of seven
+    # hundred would have taken seventy hours of beats to clear while the
+    # queue only grew. Each stage now keeps going while it still has work
+    # and there is time left in the hour, so the beat drains a backlog
+    # instead of nibbling at it.
+    import time
+    started = time.time()
+    BUDGET = 45 * 60          # stop well inside the hour, whatever is left
+
+    def drain(stage, work, query="", passes=12):
+        for _ in range(passes):
+            if time.time() - started > BUDGET:
+                print(f"[advance] out of time before {stage}")
+                return
+            if not work():
+                return
+            hit(stage, query)
+
+    # Order matters: a re-cut clip goes back to raw, so cut before screening
+    # and it is boxed on the same beat rather than waiting for the next.
+    drain("recut", clips_to_recut, "?limit=25", passes=4)
+    drain("clip", lambda: videos_in("approved") or clips_unpreviewed(), "", passes=4)
+    drain("screen", lambda: clips_in("raw"), "?limit=20")
+    drain("prelabel", clips_queued, "?limit=50", passes=6)
 
     # The pulse: every beat stamps the clock, so the Health page can tell a
     # quiet machine from a dead one.
@@ -1294,12 +1317,37 @@ def dataset(request: fastapi.Request):
     every = max(1, int(q.get("every", 15) or 15))
     # Only boxes the detector was reasonably sure of become ground truth.
     floor = float(q.get("conf", 0.35) or 0.35)
+    # ?phases=1 builds the set from the foundation rung alone; ?phases=1,2
+    # adds the next layer. This is how the ladder is actually climbed —
+    # train on the easy footage, measure, add a rung, measure again, and
+    # watch whether the score moved. Absent, everything is included.
+    want = {int(x) for x in (q.get("phases") or "").replace(" ", "").split(",") if x.isdigit()}
 
     sb = _sb()
     rows = (sb.table("pipeline_clips")
-            .select("clip_id,video_id,file_path,rf_split,holdout,label_status")
+            .select("clip_id,video_id,file_path,rf_split,holdout,label_status,"
+                    "clay_colour,weather,slo_mo,range_m,speed_mph,background")
             .in_("label_status", ["pending", "queued", "prelabelled"])
             .limit(5000).execute().data or [])
+    if want:
+        # The same rule the portal counts by, so a set built for phase 1 holds
+        # exactly the clips Findings calls phase 1 — no second definition to
+        # drift out of step with the first.
+        vids = {}
+        try:
+            ids = list({r["video_id"] for r in rows})
+            for i in range(0, len(ids), 200):
+                for v in (sb.table("pipeline_videos")
+                          .select("video_id,weather,ds_level")
+                          .in_("video_id", ids[i:i + 200]).execute().data or []):
+                    vids[v["video_id"]] = v
+        except Exception as e:  # noqa: BLE001
+            print(f"[dataset] could not read video conditions: {e}")
+        rows = [r for r in rows if _phase_of(r, vids.get(r["video_id"]) or {}) in want]
+        if not rows:
+            return {"stage": "dataset", "clips": 0, "images": 0,
+                    "detail": f"no clips on phase{'s' if len(want) > 1 else ''} "
+                              + ",".join(str(x) for x in sorted(want))}
     if not rows:
         return {"stage": "dataset", "clips": 0, "images": 0}
 
@@ -1455,6 +1503,44 @@ def train(request: fastapi.Request):
 
 
 MAX_CLAYS = 8   # a flush, not a pair — mirrored in portal/portal.js
+
+
+def _phase_of(clip, video):
+    """Which rung of the ladder a clip sits on.
+
+    The same rule as clip_phase() in the database, kept in step by hand
+    because the dataset builder cannot call it: one phase per clip, first
+    match wins, hardest first — the hardest thing in the frame is what the
+    model has to survive, so a black clay in fog is hard light rather than
+    dark clays. Phases 5 and 8 need a person's word; 5 arrives once a
+    background is recorded, 8 only ever by stamping.
+    """
+    stamped = video.get("ds_level")
+    if isinstance(stamped, int) and 1 <= stamped <= 8:
+        return stamped
+    clay = clip.get("clay_colour")
+    wx = clip.get("weather") or video.get("weather")
+    rng, mph = clip.get("range_m"), clip.get("speed_mph")
+    bg = clip.get("background")
+    if wx in ("rain", "dusk", "fog", "low_light", "low light"):
+        return 7
+    if (rng or 0) >= 35 or (mph or 0) >= 60:
+        return 6
+    if bg in ("treeline", "hillside", "valley", "ground", "cluttered", "buildings", "mixed"):
+        return 5
+    if wx == "overcast":
+        return 4
+    if clay in ("black", "blaze", "white", "midi"):
+        return 3
+    if clip.get("slo_mo"):
+        return 1
+    if clay == "orange" and wx == "clear" and (rng or 0) < 25:
+        return 1
+    if clay == "orange":
+        return 2
+    if wx == "clear":
+        return 2
+    return 0
 
 
 def _shot_track(boxes_per_frame, shot_i, frame_w, frame_dt):
