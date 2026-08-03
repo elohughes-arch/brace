@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03t';
+const BUILD = '2026-08-03u';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -732,9 +732,12 @@ const WEATHERS = ['clear', 'light cloud', 'overcast', 'bright sun', 'rain',
   'fog', 'dusk', 'low light'];
 // Colour is per clay — a pair can be an orange and a black. Background is
 // per clip and is the only thing that can place a clip on phase 5.
-const CLAY_COLOURS = ['orange', 'black', 'blaze', 'white', 'midi', 'yellow'];
-const BACKGROUNDS = ['open sky', 'treeline', 'hillside', 'valley', 'ground',
-  'buildings', 'mixed'];
+const CLAY_COLOURS = ['orange', 'black', 'midi'];
+// Clouds are their own background, not a kind of open sky: a clay against
+// broken cloud is a far harder find than one against flat blue, and it is
+// the single most common British sky.
+const BACKGROUNDS = ['open sky', 'clouds', 'treeline', 'hillside', 'valley',
+  'ground', 'buildings', 'mixed'];
 
 // A clip's calls, newest storage first: the array if it has been written,
 // the three legacy columns if this row predates it.
