@@ -1066,20 +1066,31 @@ def _ask_gemini(model, system, blocks):
 
 
 def _clay_track(boxes_per_frame, frame_w):
-    """Separates the moving clay from anything nailed to the same spot.
+    """Enforces one rule: only a moving clay may reach the trim, the metrics
+    or a Roboflow annotation. Nothing fixed in the frame — a reticle, a red
+    dot, any burned-in overlay — gets to call itself a clay.
 
     Grounding DINO runs blind, frame by frame — it has no memory that a red
-    crosshair dead-centre of every single frame is a ShotKam reticle burned
-    into the footage, not a clay, and "small orange disc. small black disc"
-    matches both once the reticle's centre dot is on-target. A clay in
-    flight crosses a real slice of the frame in well under a second; a HUD
-    element does not move a pixel. Boxes are linked frame-to-frame into
-    tracks by nearest centroid, anything that barely drifts across its
-    whole life is dropped outright — before it can stretch the trim, warp
-    det_conf, or go to Roboflow as a labelled clay — and what survives has
-    its confidence lifted by how fast it moved. That is the strongest signal
-    this detector has for which box is the real clay, and it only pays off
-    more as a clip fills with birds, wad and a second bird to confuse it.
+    crosshair dead-centre of the picture is a ShotKam reticle, not a clay,
+    and "small orange disc. small black disc" matches both once the
+    reticle's centre dot is on-target. Two independent checks enforce the
+    rule, because a short clip may not hand the second one enough frames to
+    work with:
+
+    1. A burned-in graphic redraws at the exact same pixel spot every time
+       it appears — no optical read on a moving clay is ever that precise
+       twice, even between two frames far apart in the clip. Every box is
+       clustered against the others sitting within a couple of pixels of
+       it; a cluster a second frame lands in is the graphic, and every box
+       in it is discarded outright, before tracking ever runs.
+    2. What is left is linked frame-to-frame into tracks by nearest
+       centroid, and any track that sits across a real stretch of the clip
+       while barely drifting is dropped too — the same signature with more
+       frames to see it in.
+
+    What survives has its confidence lifted by how fast it moved — the
+    strongest tell this detector has for which box is the real clay, and it
+    keeps paying off as a clip fills with birds, wad or a second distractor.
     """
     import math
 
@@ -1091,15 +1102,45 @@ def _clay_track(boxes_per_frame, frame_w):
         x1, y1, x2, y2 = b["xyxy"]
         return (x1 + x2) / 2.0, (y1 + y2) / 2.0
 
-    # Nearest-centroid tracking: a gap of a frame or two (a missed
-    # detection) keeps a track alive, but a jump too big to be the same
-    # object starts a new one. max_jump scales with frame width so the same
-    # numbers hold at any resolution.
+    # Check 1 — exact-repeat: cluster every box centre against the *first*
+    # point seen at that spot (a running average would drift along with a
+    # slow-moving real object and wrongly chain its whole path into one
+    # "fixture"; anchoring to the original point lets real motion, however
+    # slow, walk clear of the tolerance within a couple of frames). The
+    # tolerance is deliberately tight — a couple of pixels, generous only
+    # for video-compression jitter on an otherwise static graphic — because
+    # anything actually moving covers far more ground than that per frame.
+    tol = max(1.5, frame_w * 0.0015)
+    clusters = []   # each: {"cx", "cy" (anchor), "frames": set(), "items": [(i, b)]}
+    for i in idxs:
+        for b in boxes_per_frame[i]:
+            cx, cy = centroid(b)
+            match = next((c for c in clusters
+                          if math.hypot(cx - c["cx"], cy - c["cy"]) <= tol), None)
+            if match is None:
+                match = {"cx": cx, "cy": cy, "frames": set(), "items": []}
+                clusters.append(match)
+            match["items"].append((i, b))
+            match["frames"].add(i)
+
+    live = {}
+    for c in clusters:
+        if len(c["frames"]) >= 2:
+            continue   # seen more than once at the same spot — a fixture
+        for i, b in c["items"]:
+            live.setdefault(i, []).append(b)
+    if not live:
+        return {}
+
+    # Check 2 — nearest-centroid tracking over what survived check 1: a gap
+    # of a frame or two (a missed detection) keeps a track alive, but a
+    # jump too big to be the same object starts a new one. max_jump scales
+    # with frame width so the same numbers hold at any resolution.
     max_jump = frame_w * 0.12
     max_gap = 3
     tracks = []
-    for i in idxs:
-        for b in boxes_per_frame[i]:
+    for i in sorted(live):
+        for b in live[i]:
             cx, cy = centroid(b)
             best_t, best_d = None, None
             for t in tracks:
