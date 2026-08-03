@@ -759,7 +759,7 @@ def triage(request: fastapi.Request):
     import tempfile
 
     from pathlib import Path
-    from triage import sample_frames, score_frames, KEEP_THRESHOLD
+    from triage import sample_frames, score_frames, KEEP_THRESHOLD, POV_CAMERAS
 
     limit = min(int(request.query_params.get("limit", 10) or 10), 500)
 
@@ -831,7 +831,13 @@ def triage(request: fastapi.Request):
                 r = score_frames(frames)
             # A passing score without a clay in sight keeps nothing: the
             # judge is asked both questions, and the whole dataset is clays.
-            keep = r["score"] >= KEEP_THRESHOLD and bool(r.get("clays_visible"))
+            # And point of view is not a preference but a gate — footage shot
+            # from beside or behind the shooter shows the right clays from a
+            # place the deployed camera will never stand, so it is refused on
+            # the camera alone however well it scores.
+            keep = (r["score"] >= KEEP_THRESHOLD
+                    and bool(r.get("clays_visible"))
+                    and (r.get("camera") or "unknown") in POV_CAMERAS)
             # 'downloaded' means triaged and waiting on a human in the review
             # queue. Only 'approved' reaches the clip stage.
             sb.table("pipeline_videos").update({
@@ -1612,6 +1618,29 @@ def dataset(request: fastapi.Request):
                     "clay_colour,weather,slo_mo,range_m,speed_mph,background")
             .in_("label_status", ["pending", "queued", "prelabelled"])
             .limit(5000).execute().data or [])
+
+    # Point of view only, applied to the back catalogue as well as to new
+    # footage. Clips shot from beside or behind the shooter were let through
+    # before the gate existed, and leaving them in would train the detector on
+    # a view the deployed camera never has. The rule lives here as well as at
+    # triage because triage cannot reach what it already passed.
+    try:
+        from triage import POV_CAMERAS
+        cams = {}
+        vids_all = list({r["video_id"] for r in rows})
+        for i in range(0, len(vids_all), 200):
+            for v in (sb.table("pipeline_videos").select("video_id,camera")
+                      .in_("video_id", vids_all[i:i + 200]).execute().data or []):
+                cams[v["video_id"]] = v.get("camera") or "unknown"
+        before = len(rows)
+        rows = [r for r in rows
+                if cams.get(r["video_id"], "unknown") in POV_CAMERAS]
+        if before != len(rows):
+            print(f"[dataset] dropped {before - len(rows)} clips shot from "
+                  f"somewhere other than the shooter's point of view")
+    except Exception as e:  # noqa: BLE001 — never sink a build over the filter
+        print(f"[dataset] could not apply the point-of-view filter: {e}")
+
     if want:
         # The same rule the portal counts by, so a set built for phase 1 holds
         # exactly the clips Findings calls phase 1 — no second definition to
