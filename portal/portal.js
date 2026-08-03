@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03y';
+const BUILD = '2026-08-03z';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1553,15 +1553,14 @@ function pie(slices, title) {
 }
 
 async function loadProd() {
-  const [logs, tasks] = await Promise.all([
-    supabase.from('work_log').select('*')
-      .order('worked_on', { ascending: false }).order('id', { ascending: false }).limit(200),
+  const [tasks, rep] = await Promise.all([
     supabase.from('todos').select('*')
       .order('created_at', { ascending: false }).limit(200),
+    supabase.rpc('productivity_report', { since: windowStart(scoreWindow) }),
   ]);
   return {
-    logs: logs.data || [], tasks: tasks.data || [],
-    err: logs.error?.message || tasks.error?.message || '',
+    tasks: tasks.data || [], report: rep.error ? null : rep.data,
+    err: tasks.error?.message || rep.error?.message || '',
   };
 }
 
@@ -1588,47 +1587,66 @@ const KANBAN = [
 
 function productivityView() {
   if (state.loading) return '<div class="empty">Loading…</div>';
-  const { logs = [], tasks = [], err = '' } = state.prod || {};
+  const { tasks = [], report, err = '' } = state.prod || {};
+  const hours = (report && report.hours) || {};
+  const calls = (report && report.calls) || {};
+  const mach = (report && report.machine) || {};
+  const hrs = (secs) => `${Math.round((Number(secs) || 0) / 360) / 10}h`;
+  const label = ((SCOREBOARDS.find((w) => w[0] === scoreWindow) || [])[1] || '').toLowerCase();
 
-  const byPerson = new Map();
-  logs.forEach((l) => byPerson.set(l.email, (byPerson.get(l.email) || 0) + Number(l.hours)));
-  const slices = [...byPerson.entries()].map(([e, v]) =>
-    ({ label: who(e), v, text: `${Math.round(v * 10) / 10}h` }));
-  const totalH = logs.reduce((a, l) => a + Number(l.hours), 0);
-
-  const personCard = (email) => {
-    const mine = logs.filter((l) => l.email === email);
-    const h = mine.reduce((a, l) => a + Number(l.hours), 0);
-    const week = mine.filter((l) => (Date.now() - new Date(l.worked_on)) < 7 * 864e5)
-      .reduce((a, l) => a + Number(l.hours), 0);
-    return `
-      <div class="stat">
-        <div class="num">${Math.round(h * 10) / 10}h</div>
-        <div class="cap">${esc(who(email))}</div>
-        <div class="sub">${Math.round(week * 10) / 10}h in the last 7 days · ${fmt(mine.length)} entries</div>
-      </div>`;
-  };
-
-  const logRow = (l) => `
-    <div class="row">
-      <span class="dot on"></span>
-      <div class="main">
-        <div class="t">${esc(l.task)}</div>
-        <div class="s">${esc(who(l.email))} · ${Number(l.hours)}h · ${dateFmt(l.worked_on)}</div>
-      </div>
-      <div class="end">${l.email === state.email
-    ? `<button class="linky bad" data-logdel="${l.id}">Remove</button>` : ''}</div>
+  const person = (email, key) => `
+    <div class="stat owner-${key}">
+      <div class="num">${hrs(hours[email])}</div>
+      <div class="cap">${esc(who(email))}</div>
+      <div class="sub">${fmt(calls[key] || 0)} clips called</div>
     </div>`;
+
+  const machRow = (t, v, sub) => `
+    <div class="row"><div class="main"><div class="t">${t}</div>
+      <div class="s">${sub}</div></div>
+      <div class="end"><b>${fmt(v || 0)}</b></div></div>`;
 
   return `
     <div class="crm-head">
       <div>
         <h1>Productivity</h1>
-        <p>The company's hours and its task list. Log what you did and how long it
-           took — each of you writes your own ledger, both of you see the whole.</p>
+        <p>Measured, not entered. Time banks while the portal is in front of you and
+           you are working in it, and stops when you go idle or look away — so what
+           is here is time at the work rather than time with the tab open. The
+           machine's own output is counted the same way, from what it actually
+           produced.</p>
       </div>
+      <select id="scorewin" class="mini" title="The window everything here counts over">
+        ${SCOREBOARDS.map(([v, l]) => `<option value="${v}" ${scoreWindow === v ? 'selected' : ''}>${l}</option>`).join('')}
+      </select>
     </div>
     ${err ? `<div class="err" style="margin-bottom:14px">${esc(err)}</div>` : ''}
+
+    <div class="p-head" style="margin-bottom:10px">
+      <span class="p-title">At the work — ${esc(label)}</span></div>
+    <div class="stats scoreboard">
+      ${person('elohughes@icloud.com', 'eddie')}
+      ${person('rupertokelly98@gmail.com', 'rupert')}
+      <div class="stat">
+        <div class="num">${hrs(Object.values(hours).reduce((a, v) => a + Number(v || 0), 0))}</div>
+        <div class="cap">Between you</div>
+        <div class="sub">${fmt(Object.values(calls).reduce((a, v) => a + Number(v || 0), 0))} clips called</div>
+      </div>
+    </div>
+
+    <section class="panel" style="margin-bottom:18px">
+      <div class="p-head"><span class="p-title">What the machine did — ${esc(label)}</span></div>
+      ${machRow('Videos triaged', mach.triaged, 'downloaded, listened to and scored')}
+      ${machRow('Videos judged', mach.judged, 'approved by you and cut, or waiting to be')}
+      ${machRow('Clips cut', mach.clipped, 'one per shot the ears found')}
+      ${machRow('Clips screened', mach.screened, 'a clay found, trimmed to the flight')}
+      ${machRow('Clips boxed', mach.boxed, 'first-pass boxes drawn and uploaded')}
+      <p class="foot-note">Every figure on this page is read from what happened —
+         hours from time actually spent in the portal, calls from the clips you
+         called, the rest from what the pipeline produced. There is nothing to fill
+         in, and nothing that can be filled in: an hour cannot be added by hand
+         because an hour nobody worked is worse than no figure at all.</p>
+    </section>
 
     <section class="panel" style="margin-bottom:18px">
       <div class="p-head"><span class="p-title">The board — drag a task between lanes</span></div>
@@ -1651,35 +1669,6 @@ function productivityView() {
         </div>`;
   }).join('')}
       </div>
-    </section>
-
-    <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
-      ${personCard('elohughes@icloud.com')}
-      ${personCard('rupertokelly98@gmail.com')}
-      <div class="stat"><div class="num">${Math.round(totalH * 10) / 10}h</div>
-        <div class="cap">Together</div><div class="sub">all time, on the record</div></div>
-    </div>
-
-    <div class="grid">
-      <section class="panel">
-        <div class="p-head"><span class="p-title">Log hours</span></div>
-        <form id="loghours" class="formcol">
-          <input class="inp" type="number" id="lh-hours" min="0.25" max="24" step="0.25" placeholder="Hours (e.g. 2.5)" required />
-          <input class="inp" type="text" id="lh-task" placeholder="What did you get done?" required />
-          <input class="inp" type="date" id="lh-date" value="${today()}" required />
-          <button class="btn" type="submit">Log hours</button>
-        </form>
-      </section>
-      <section class="panel">
-        <div class="p-head"><span class="p-title">Whose hours</span></div>
-        ${pie(slices, `${Math.round(totalH)}h`)}
-      </section>
-    </div>
-
-    <section class="panel" style="margin-top:18px">
-      <div class="p-head"><span class="p-title">The ledger — newest first</span></div>
-      ${logs.length ? logs.slice(0, 30).map(logRow).join('')
-    : '<div class="empty">No hours logged yet.</div>'}
     </section>`;
 }
 
@@ -2363,6 +2352,31 @@ function touchCard(id) {
     ?.classList.add('last-touched');
 }
 
+// The clock that measures work instead of asking for it.
+//
+// Time only banks while the page is in front of you and you are doing
+// something with it: a pointer move, a key, a scroll, a call saved. Go idle
+// for two minutes, switch tab, or lock the screen and it stops — so what
+// lands in Productivity is time at the work, not time with the tab open.
+// Banked in half-minutes through a function that can only ever add a small
+// amount to your own row, never set a total.
+const IDLE_AFTER = 120_000;      // two minutes without a sign of life
+let lastSeen = Date.now();
+let unbanked = 0;                // active milliseconds not yet written
+
+function stirred() { lastSeen = Date.now(); }
+
+async function bankTime() {
+  const now = Date.now();
+  const awake = !document.hidden && (now - lastSeen) < IDLE_AFTER;
+  if (awake) unbanked += 15_000;      // the tick we just lived through
+  if (unbanked < 30_000) return;
+  const seconds = Math.round(unbanked / 1000);
+  unbanked = 0;
+  try { await supabase.rpc('log_activity', { seconds }); }
+  catch { unbanked += seconds * 1000; }   // keep it for the next tick
+}
+
 // Wired once against the document, not per repaint: these must survive the
 // markup being replaced, and re-binding them each time would stack handlers.
 let globalsWired = false;
@@ -2385,6 +2399,20 @@ function wireGlobals() {
     const card = e.target.closest?.('.clipcard[data-clip]');
     if (card) touchCard(card.dataset.clip);
   }, true);
+
+  ['pointermove', 'pointerdown', 'keydown', 'wheel', 'scroll'].forEach((ev) =>
+    document.addEventListener(ev, stirred, { passive: true, capture: true }));
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) stirred();
+  });
+  setInterval(bankTime, 15_000);
+  // Do not lose the last half-minute to closing the tab.
+  window.addEventListener('pagehide', () => {
+    if (unbanked >= 10_000) {
+      supabase.rpc('log_activity', { seconds: Math.round(unbanked / 1000) });
+      unbanked = 0;
+    }
+  });
 }
 
 const trimEdits = new Map();     // clip_id -> { start, end }
@@ -3973,25 +4001,8 @@ function paint(force = false) {
       if (error) note(`could not delete the task — ${error.message}`, 'bad');
       refresh();
     }));
-  document.getElementById('loghours')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const { error } = await supabase.from('work_log').insert({
-      email: state.email,
-      hours: Number(document.getElementById('lh-hours').value),
-      task: document.getElementById('lh-task').value.trim(),
-      worked_on: document.getElementById('lh-date').value,
-    }).select('id');
-    note(error ? `could not log hours — ${error.message}` : 'hours logged', error ? 'bad' : 'good');
-    if (!error) { document.getElementById('lh-hours').value = ''; document.getElementById('lh-task').value = ''; }
-    refresh();
-  });
-  document.querySelectorAll('[data-logdel]').forEach((b) =>
-    b.addEventListener('click', async () => {
-      await supabase.from('work_log').delete().eq('id', Number(b.dataset.logdel));
-      refresh();
-    }));
-  // One time / Recurring pills, DOM-only so a click never wipes a half-typed
-  // form: the choice lives in a hidden input until submit.
+  // Hours are measured, never entered: there is nothing here to submit and
+  // nothing to delete. bankTime() writes them from time actually spent.
   document.querySelectorAll('[data-costkind]').forEach((b) =>
     b.addEventListener('click', () => {
       const rec = b.dataset.costkind === 'rec';
@@ -4286,7 +4297,10 @@ function paint(force = false) {
   });
   document.getElementById('scorewin')?.addEventListener('change', async (e) => {
     scoreWindow = e.target.value;
-    state.scores = await loadScores();
+    state.loading = true; paint(true);
+    // Both pages count over this window, so both reload behind it.
+    const [sc, pr] = await Promise.all([loadScores(), loadProd()]);
+    state.scores = sc; state.prod = pr; state.loading = false;
     paint(true);
   });
   document.getElementById('rejsort')?.addEventListener('change', (e) => {
