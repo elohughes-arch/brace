@@ -801,3 +801,17 @@ select.inp { appearance: none; }
   font-size: 15px; padding-left: 3px; }
 .ytplay-t { font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
   color: var(--text-2); text-align: center; padding: 0 10px; }
+
+/* Full screen, and the fallback for a browser that refuses the API. */
+.expand { position: absolute; top: 8px; right: 8px; z-index: 3;
+  width: 28px; height: 28px; border-radius: var(--r-sm);
+  background: rgba(0,0,0,.6); color: var(--text-1); font-size: 14px;
+  display: grid; place-items: center; opacity: 0;
+  transition: opacity .12s var(--ease-out); }
+.clipcard:hover .expand, .expand:focus-visible { opacity: 1; }
+.expand:hover { background: rgba(0,0,0,.85); }
+.clipmedia.blown { position: fixed; inset: 0; z-index: 10002;
+  aspect-ratio: auto; background: #000; }
+.clipmedia.blown .expand { opacity: 1; }
+/* A clay's own presentation, on its own row beside its verdict. */
+.claypres { margin-left: 8px; max-width: 150px; }

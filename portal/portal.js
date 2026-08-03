@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03q';
+const BUILD = '2026-08-03s';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -553,7 +553,7 @@ async function loadCoverage() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,presentation,weather,shot_type,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,presentation,presentations,clay_colour,clay_colours,weather,background,shot_type,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
@@ -631,7 +631,7 @@ async function titleClips(rows) {
 async function loadAiClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,is_pair,clay_colour,presentation,weather,det_conf,range_m,speed_mph,created_at')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,is_pair,clay_colour,presentation,presentations,weather,det_conf,range_m,speed_mph,created_at')
     .in('label_status', ['queued', 'prelabelled'])
     .order(aiSort === 'new' ? 'created_at' : 'outcome_conf',
       { ascending: aiSort === 'lo', nullsFirst: false })
@@ -730,6 +730,11 @@ const PRESENTATIONS = ['crosser L→R', 'crosser R→L', 'going away', 'incoming
   'simultaneous pair', 'on report'];
 const WEATHERS = ['clear', 'light cloud', 'overcast', 'bright sun', 'rain',
   'fog', 'dusk', 'low light'];
+// Colour is per clay — a pair can be an orange and a black. Background is
+// per clip and is the only thing that can place a clip on phase 5.
+const CLAY_COLOURS = ['orange', 'black', 'blaze', 'white', 'midi', 'yellow'];
+const BACKGROUNDS = ['open sky', 'treeline', 'hillside', 'valley', 'ground',
+  'buildings', 'mixed'];
 
 // A clip's calls, newest storage first: the array if it has been written,
 // the three legacy columns if this row predates it.
@@ -737,6 +742,16 @@ const ownerCalls = (k) => {
   const arr = Array.isArray(k.owner_outcomes) ? [...k.owner_outcomes] : [];
   if (arr.length) return arr;
   return OWNER_SLOTS.map((f) => k[f] ?? null);
+};
+const clayColours = (k) => {
+  const arr = Array.isArray(k.clay_colours) ? [...k.clay_colours] : [];
+  if (arr.length) return arr;
+  return k.clay_colour && k.clay_colour !== 'unknown' ? [k.clay_colour] : [];
+};
+const clayPresentations = (k) => {
+  const arr = Array.isArray(k.presentations) ? [...k.presentations] : [];
+  if (arr.length) return arr;
+  return k.presentation ? [k.presentation] : [];
 };
 const aiCalls = (k) => {
   const arr = Array.isArray(k.outcomes) ? k.outcomes : [];
@@ -760,12 +775,24 @@ function callRows(k) {
   // the case the button exists for.
   const manual = clayRows.get(k.clip_id);
   const shown = Math.min(MAX_CLAYS, manual != null ? Math.max(1, manual) : auto);
+  const pres = clayPresentations(k);
+  const cols = clayColours(k);
   const slot = (n) => `
     <div class="calls">
       ${shown > 1 ? `<span class="clayno">clay ${n}</span>` : ''}
       ${['hit', 'chipped', 'miss', 'unclear'].map((o) => `
         <button class="callbtn ${mine[n - 1] === o ? 'on' : ''}"
           data-call="${esc(k.clip_id)}" data-slot="${n}" data-out="${o}">${o}</button>`).join('')}
+      <select class="mini claypres" data-pres="${esc(k.clip_id)}" data-slot="${n}"
+        title="What this clay did">
+        <option value="">${n === 1 && k.shot_type ? `— ${esc(k.shot_type)}?` : '— presentation'}</option>
+        ${PRESENTATIONS.map((o) => `<option ${pres[n - 1] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+      </select>
+      <select class="mini claypres" data-colour="${esc(k.clip_id)}" data-slot="${n}"
+        title="What colour this clay was">
+        <option value="">${n === 1 && k.clay_colour && k.clay_colour !== 'unknown' ? `— ${esc(k.clay_colour)}?` : '— colour'}</option>
+        ${CLAY_COLOURS.map((o) => `<option ${cols[n - 1] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+      </select>
     </div>`;
   return `
     <div class="yourcall">
@@ -776,15 +803,15 @@ function callRows(k) {
         ${shown > 1 ? `<button class="linky addclay" data-dropclay="${esc(k.clip_id)}" data-next="${shown - 1}">− one fewer</button>` : ''}
       </div>
       <div class="tagrow">
-        <label>Presentation${k.shot_type ? ` <span class="mach">machine: ${esc(k.shot_type)}</span>` : ''}
-          <select class="mini" data-tag="presentation" data-clip="${esc(k.clip_id)}">
-            <option value="">${k.shot_type ? `— leave as ${esc(k.shot_type)}` : '—'}</option>
-            ${PRESENTATIONS.map((o) => `<option ${k.presentation === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
-          </select></label>
         <label>Weather
           <select class="mini" data-tag="weather" data-clip="${esc(k.clip_id)}">
             <option value="">—</option>
             ${WEATHERS.map((o) => `<option ${k.weather === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+          </select></label>
+        <label>Background
+          <select class="mini" data-tag="background" data-clip="${esc(k.clip_id)}">
+            <option value="">—</option>
+            ${BACKGROUNDS.map((o) => `<option ${k.background === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
           </select></label>
       </div>
     </div>`;
@@ -2348,14 +2375,15 @@ function trimRow(k) {
 const ytOpen = new Set();
 
 function clipMedia(k) {
+  const fs = `<button class="expand" data-expand="${esc(k.clip_id)}" title="Full screen">⤢</button>`;
   if (k.preview_url) {
-    return `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`;
+    return `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>${fs}`;
   }
   if (ytOpen.has(k.clip_id)) {
     const a = Math.max(0, Math.floor(k.clip_start || 0));
     const b = Math.ceil(k.clip_end || (a + 10));
     return `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(k.video_id)}?start=${a}&end=${b}&autoplay=1&rel=0"
-      title="Source footage for this clip" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe>`;
+      title="Source footage for this clip" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe>${fs}`;
   }
   const poster = k.poster_url
     ? `<img src="${esc(k.poster_url)}" alt="" loading="lazy" />`
@@ -3376,7 +3404,8 @@ function signature() {
     queuePicked.size, sweeping,
     lastTouched, ytOpen.size,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.needs_recut ? 'r' : '')
-      + k.clip_start + k.clip_end + (k.presentation || '') + (k.weather || '')
+      + k.clip_start + k.clip_end + JSON.stringify(k.presentations || []) + JSON.stringify(k.clay_colours || [])
+      + (k.weather || '') + (k.background || '')
       + JSON.stringify(k.owner_outcomes || [])),
     [...clayRows.entries()].map(([k, v]) => k + v).join(),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
@@ -3402,6 +3431,15 @@ function signature() {
   ]);
 }
 let painted = '';
+
+// After a change is applied to the DOM in place, tell the repaint it has
+// nothing left to do. Without this an edit is drawn twice: once by hand,
+// then again wholesale by the next poll, because state moved and the
+// signature no longer matched. That second draw is what the lag after
+// saving a length was — the whole grid rebuilt, every preview and every
+// embed on the page thrown away and started again, to show a change that
+// was already on screen.
+function settled() { painted = signature(); }
 
 // When a repaint really is needed, focus survives it by name, not by node.
 function focusKey() {
@@ -3449,6 +3487,7 @@ function wireCalls() {
       if (error) note(`could not save your call — ${error.message}`, 'bad');
       if (row) Object.assign(row, patch);
       touchCard(id);
+      settled();
     });
   });
   document.querySelectorAll('[data-dropclay]:not([data-wired])').forEach((b) => {
@@ -3479,6 +3518,68 @@ function wireCalls() {
     });
   });
   // Presentation and weather: what the clay did and what the sky was.
+  document.querySelectorAll('[data-pres]:not([data-wired])').forEach((sel) => {
+    sel.dataset.wired = '1';
+    sel.addEventListener('change', async () => {
+      const id = sel.dataset.pres;
+      const n = Number(sel.dataset.slot || 1);
+      const row = [...state.clips, ...state.ai].find((x) => x.clip_id === id);
+      const arr = row ? clayPresentations(row) : [];
+      while (arr.length < n) arr.push(null);
+      arr[n - 1] = sel.value || null;
+      while (arr.length && arr[arr.length - 1] == null) arr.pop();
+      // The first clay's word also fills the old single column, so anything
+      // still reading that sees the clip's opening target rather than null.
+      const patch = { presentations: arr, presentation: arr[0] ?? null };
+      const { error } = await supabase.from('pipeline_clips')
+        .update(patch).eq('clip_id', id).select('clip_id');
+      if (error) return note(`could not save the presentation — ${error.message}`, 'bad');
+      if (row) Object.assign(row, patch);
+      touchCard(id);
+      settled();
+    });
+  });
+  document.querySelectorAll('[data-expand]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const box = b.closest('.clipmedia');
+      // The media itself, so a video keeps its own controls full screen and
+      // an embed keeps the player's. Nothing here ever called the Fullscreen
+      // API — the old "viewer" was a fixed-position overlay, which is not the
+      // same thing and is not what the button promises.
+      const target = box?.querySelector('video, iframe') || box;
+      if (!target) return;
+      const go = target.requestFullscreen || target.webkitRequestFullscreen
+        || target.webkitEnterFullscreen || target.msRequestFullscreen;
+      if (go) {
+        Promise.resolve(go.call(target)).catch(() => box?.classList.add('blown'));
+      } else {
+        box?.classList.toggle('blown');   // no API: fill the window instead
+      }
+    });
+  });
+  document.querySelectorAll('[data-colour]:not([data-wired])').forEach((sel) => {
+    sel.dataset.wired = '1';
+    sel.addEventListener('change', async () => {
+      const id = sel.dataset.colour;
+      const n = Number(sel.dataset.slot || 1);
+      const row = [...state.clips, ...state.ai].find((x) => x.clip_id === id);
+      const arr = row ? clayColours(row) : [];
+      while (arr.length < n) arr.push(null);
+      arr[n - 1] = sel.value || null;
+      while (arr.length && arr[arr.length - 1] == null) arr.pop();
+      // The first clay's colour also fills the single column the phases and
+      // the Roboflow tags still read.
+      const patch = { clay_colours: arr, clay_colour: arr[0] ?? null };
+      const { error } = await supabase.from('pipeline_clips')
+        .update(patch).eq('clip_id', id).select('clip_id');
+      if (error) return note(`could not save the colour — ${error.message}`, 'bad');
+      if (row) Object.assign(row, patch);
+      touchCard(id);
+      settled();
+    });
+  });
   document.querySelectorAll('[data-ytplay]:not([data-wired])').forEach((b) => {
     b.dataset.wired = '1';
     b.addEventListener('click', (e) => {
@@ -3489,7 +3590,7 @@ function wireCalls() {
       const k = [...state.clips, ...state.ai].find((x) => x.clip_id === id);
       const box = b.closest('.clipmedia');
       // Swap in place: a repaint would restart every other card on the page.
-      if (box && k) { box.innerHTML = clipMedia(k); wireCalls(); } else paint(true);
+      if (box && k) { box.innerHTML = clipMedia(k); wireCalls(); settled(); } else paint(true);
     });
   });
   document.querySelectorAll('[data-tag]:not([data-wired])').forEach((sel) => {
@@ -3504,6 +3605,7 @@ function wireCalls() {
       const row = [...state.clips, ...state.ai].find((x) => x.clip_id === id);
       if (row) row[field] = value;
       touchCard(id);
+      settled();
     });
   });
   document.querySelectorAll('[data-addclay]:not([data-wired])').forEach((b) => {
@@ -3619,6 +3721,7 @@ function wireTrim() {
       if (k) Object.assign(k, { clip_start: e.start, clip_end: e.end, needs_recut: true });
       trimOpen.delete(id); trimEdits.delete(id);
       redraw(id);
+      settled();
       // The saved edit starts the cut itself — no second button to remember.
       // If a run is already going, the edit waits and the next run takes it.
       if (!running) {
