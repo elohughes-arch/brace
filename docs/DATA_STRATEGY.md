@@ -78,6 +78,27 @@ Targets are **distinct shots** — the strategy's currency — and sum to
 A rung is *done* when its slice holds target on the golden set — then stop
 buying it and fund the thinnest rung instead.
 
+## The recorded axes
+
+Every clip carries the axes the strategy is built from, so coverage is
+always measurable rather than remembered:
+
+| Axis | Where it comes from | Values |
+|---|---|---|
+| Clay colour | the verdict judge, per clip | orange, black, white, pink, unknown |
+| Weather | triage, per video | clear, overcast, rain, unknown |
+| Camera | triage, per video | barrel (ShotKam), gopro, pov_glasses, third_person, broadcast |
+| Shot type | pure geometry on the tracked flight, per clip | crosser-lr, crosser-rl, rising, dropping, incomer, going-away, quartering |
+| Speed / range | bang-to-break ballistics, per clip | mph / metres |
+| Ladder rung | ds_level from criteria discovery + clip_phase() from the footage itself | L1–L8 |
+
+All of them ride to Roboflow as tags (`camera-gopro`, `shot-crosser-lr`,
+`weather-overcast`…), so per-condition accuracy can be read off the trained
+model — 94% on clear-sky crossers and 68% on droppers is a sourcing
+instruction; one blended average is not. The Findings page charts every
+axis over the surviving dataset: a thin slice there is the next thing to
+go and film or discover.
+
 ## The split doctrine
 
 The split is where everything can silently fail, so it is held to the

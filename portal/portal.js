@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03l';
+const BUILD = '2026-08-03m';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2850,6 +2850,8 @@ function findingsView() {
           ${donut(Object.entries(f.clay_colour || {}).sort((a, b) => b[1] - a[1]), { label: 'Clay colour', unit: 'clips' })}</figure>
         <figure><figcaption>Weather</figcaption>
           ${donut(Object.entries(f.weather || {}).sort((a, b) => b[1] - a[1]), { label: 'Weather', unit: 'clips' })}</figure>
+        <figure><figcaption>Shot type <span class="s">read from the tracked flight</span></figcaption>
+          ${donut(Object.entries(f.shot_type || {}).sort((a, b) => b[1] - a[1]), { label: 'Shot type', unit: 'clips' })}</figure>
         <figure><figcaption>Split <span class="s">train · valid · test</span></figcaption>
           ${donut(['train', 'valid', 'test'].map((k) => [k, (f.splits || {})[k] || 0]), { label: 'Split', unit: 'clips' })}</figure>
       </div>

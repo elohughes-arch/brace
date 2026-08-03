@@ -961,6 +961,10 @@ def screen(request: fastapi.Request):
 
           update = {"label_status": "pending",
                     "clip_start": new_start, "clip_end": new_end,
+                    "shot_type": _shot_type(
+                        boxes_per_frame,
+                        frames[0].shape[1] if frames else 0,
+                        frames[0].shape[0] if frames else 0),
                     **verdicts, **metrics}
           # Only claim a preview that was actually rendered. Stamping the path
           # without the file behind it is how 143 clips once became unwatchable:
@@ -1023,7 +1027,7 @@ def prelabel(request: fastapi.Request):
     try:
         ids = list({r["video_id"] for r in rows})
         vids = {v["video_id"]: v for v in
-                (sb.table("pipeline_videos").select("video_id,weather,ds_level")
+                (sb.table("pipeline_videos").select("video_id,weather,ds_level,camera")
                  .in_("video_id", ids).execute().data or [])}
     except Exception as e:  # noqa: BLE001 — tags are a nicety, never a blocker
         print(f"[prelabel] could not read video conditions: {e}")
@@ -1087,6 +1091,10 @@ def prelabel(request: fastapi.Request):
                 tags.append(f"level-{vid['ds_level']}")
             if row.get("clay_colour") and row["clay_colour"] != "unknown":
                 tags.append(f"clay-{row['clay_colour']}")
+            if vid.get("camera"):
+                tags.append(f"camera-{vid['camera']}")
+            if row.get("shot_type"):
+                tags.append(f"shot-{row['shot_type']}")
             project.upload(str(fp), annotation_path=str(ann),
                            split=split,
                            batch_name=("golden-holdout" if golden
@@ -1618,6 +1626,49 @@ def _ask_gemini(model, system, blocks):
     return "".join(p.get("text", "")
                    for c in data.get("candidates", [])[:1]
                    for p in c.get("content", {}).get("parts", []))
+
+
+def _shot_type(boxes_per_frame, frame_w, frame_h):
+    """Name the presentation from the tracked flight: what a coach would
+    call it. Pure geometry on boxes the screen already drew — no model,
+    no tokens. Horizontal travel makes a crosser (and its direction),
+    vertical makes a riser or a dropper, and when the clay barely moves
+    across the frame its size change tells incomer from going-away.
+    """
+    if not boxes_per_frame or not frame_w or not frame_h:
+        return None
+    pts = []
+    for i in sorted(boxes_per_frame):
+        bs = boxes_per_frame[i]
+        if not bs:
+            continue
+        b = max(bs, key=lambda x: x.get("conf", 0))["xyxy"]
+        pts.append(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2,
+                    max(1.0, (b[2] - b[0]) * (b[3] - b[1]))))
+    if len(pts) < 3:
+        return None
+    (x0, y0, a0), (x1, y1, a1) = pts[0], pts[-1]
+    # Ends can be noisy single detections; average a small head and tail.
+    head = pts[:max(1, len(pts) // 4)]
+    tail = pts[-max(1, len(pts) // 4):]
+    x0 = sum(p[0] for p in head) / len(head); y0 = sum(p[1] for p in head) / len(head)
+    a0 = sum(p[2] for p in head) / len(head)
+    x1 = sum(p[0] for p in tail) / len(tail); y1 = sum(p[1] for p in tail) / len(tail)
+    a1 = sum(p[2] for p in tail) / len(tail)
+    dx = (x1 - x0) / frame_w
+    dy = (y1 - y0) / frame_h          # screen y grows downward
+    grow = a1 / a0 if a0 else 1.0
+    if abs(dx) > 0.22:
+        return "crosser-lr" if dx > 0 else "crosser-rl"
+    if dy < -0.18:
+        return "rising"
+    if dy > 0.18:
+        return "dropping"
+    if grow > 1.7:
+        return "incomer"
+    if grow < 0.55:
+        return "going-away"
+    return "quartering"
 
 
 def _clay_track(boxes_per_frame, frame_w):
