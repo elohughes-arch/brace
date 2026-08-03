@@ -364,7 +364,24 @@
     document.querySelectorAll("[data-filter]").forEach((b) => {
       b.addEventListener("click", () => filterTo(b.dataset.filter || null));
     });
-    new MutationObserver(decorate).observe(document.body, { childList: true, subtree: true });
+    // decorate() writes to the DOM — it appends a delete button and sets a
+    // custom property per card — so an observer watching the whole body was
+    // re-triggered by its own work, every time, on top of a portal that
+    // replaces its entire markup on each repaint. Disconnect while it runs
+    // and coalesce bursts into one pass on the next frame.
+    let queued = false;
+    const observer = new MutationObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        observer.disconnect();
+        try { decorate(); } finally {
+          observer.observe(document.body, { childList: true, subtree: true });
+        }
+      });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   window.BracePortal = { select, clearSelection, filterTo, sendToAI, deleteClip, openViewer, selected, CONFIG };

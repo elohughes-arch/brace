@@ -534,7 +534,7 @@ async function loadCoverage() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
@@ -556,18 +556,43 @@ async function loadClips() {
 
 // Previews and posters live in a private bucket; signed URLs are the only
 // way a browser can fetch them, and signing is gated by is_portal_owner().
+// Signed URLs are cached until they are nearly spent. Re-signing on every
+// eight-second poll minted a fresh URL for the same file each time, which
+// changed every <video src> on the page: the browser dropped what it had
+// buffered and started the download again, so a preview could never finish
+// loading between polls. Same URL, same buffer, no reload.
+const signedUrls = new Map();   // path -> { url, until }
+const SIGN_FOR = 3600;
+
 async function signClipMedia(rows) {
-  const paths = rows.flatMap((k) => [k.preview_path, k.poster_path]).filter(Boolean);
-  if (!paths.length) return;
-  try {
-    const { data: signed } = await supabase.storage.from('clips')
-      .createSignedUrls(paths, 3600);
-    const byPath = new Map((signed || []).map((x) => [x.path, x.signedUrl]));
-    rows.forEach((k) => {
-      k.preview_url = byPath.get(k.preview_path) || null;
-      k.poster_url = byPath.get(k.poster_path) || null;
-    });
-  } catch { /* players fall back to the YouTube link */ }
+  const now = Date.now();
+  const paths = [...new Set(rows.flatMap((k) => [k.preview_path, k.poster_path])
+    .filter(Boolean))];
+  const stale = paths.filter((p) => {
+    const hit = signedUrls.get(p);
+    return !hit || hit.until - now < 300_000;   // re-sign with 5 minutes left
+  });
+  if (stale.length) {
+    try {
+      const { data: signed } = await supabase.storage.from('clips')
+        .createSignedUrls(stale, SIGN_FOR);
+      (signed || []).forEach((x) => {
+        if (x.signedUrl) {
+          signedUrls.set(x.path, { url: x.signedUrl, until: now + SIGN_FOR * 1000 });
+        }
+      });
+    } catch { /* players fall back to the YouTube link */ }
+  }
+  rows.forEach((k) => {
+    k.preview_url = signedUrls.get(k.preview_path)?.url || null;
+    k.poster_url = signedUrls.get(k.poster_path)?.url || null;
+  });
+  // The cache must not grow without bound as pages are flipped through.
+  if (signedUrls.size > 600) {
+    for (const [p, v] of signedUrls) {
+      if (v.until < now) signedUrls.delete(p);
+    }
+  }
 }
 
 async function titleClips(rows) {
@@ -587,7 +612,7 @@ async function titleClips(rows) {
 async function loadAiClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,owner_outcome_2,owner_outcome_3,clay_colour,det_conf,range_m,speed_mph,created_at')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,is_pair,clay_colour,det_conf,range_m,speed_mph,created_at')
     .in('label_status', ['queued', 'prelabelled'])
     .order(aiSort === 'new' ? 'created_at' : 'outcome_conf',
       { ascending: aiSort === 'lo', nullsFirst: false })
@@ -672,23 +697,49 @@ const judged = new Set();   // survives a queue read that overtakes a decision
 // One row of buttons per clay. A pair is two answers and a burst is three —
 // a single call on a two-clay clip teaches the model half the truth.
 const clayRows = new Map();          // clip_id -> rows opened by hand
+// The first three calls still live in their own columns, because the
+// mastersheet, the CSV export and the trials all read them. Past three there
+// is only the array — a flush is however many birds were in the air.
 const OWNER_SLOTS = ['owner_outcome', 'owner_outcome_2', 'owner_outcome_3'];
+const MAX_CLAYS = 8;
+
+// A clip's calls, newest storage first: the array if it has been written,
+// the three legacy columns if this row predates it.
+const ownerCalls = (k) => {
+  const arr = Array.isArray(k.owner_outcomes) ? [...k.owner_outcomes] : [];
+  if (arr.length) return arr;
+  return OWNER_SLOTS.map((f) => k[f] ?? null);
+};
+const aiCalls = (k) => {
+  const arr = Array.isArray(k.outcomes) ? k.outcomes : [];
+  if (arr.length) return arr.map((x) => [x.o, x.c]);
+  return [[k.outcome, k.outcome_conf], [k.outcome_2, k.outcome_2_conf],
+    [k.outcome_3, k.outcome_3_conf]].filter(([o]) => o != null);
+};
 function callRows(k) {
-  const auto = (k.outcome_3 || k.owner_outcome_3) ? 3
-    : (k.is_pair || k.outcome_2 || k.owner_outcome_2) ? 2 : 1;
-  const shown = Math.max(auto, clayRows.get(k.clip_id) || 1);
+  const mine = ownerCalls(k);
+  // However many the shot actually threw: the machine's own count of birds,
+  // the calls already made, and a pair's second bird all open a row, so a
+  // five-bird flush arrives with five rather than being clipped to three.
+  const auto = Math.max(
+    aiCalls(k).length,
+    mine.filter((v) => v != null).length,
+    k.n_shots || 0,
+    k.is_pair ? 2 : 1);
+  const shown = Math.min(MAX_CLAYS,
+    Math.max(auto, clayRows.get(k.clip_id) || 1));
   const slot = (n) => `
     <div class="calls">
       ${shown > 1 ? `<span class="clayno">clay ${n}</span>` : ''}
       ${['hit', 'chipped', 'miss', 'unclear'].map((o) => `
-        <button class="callbtn ${k[OWNER_SLOTS[n - 1]] === o ? 'on' : ''}"
+        <button class="callbtn ${mine[n - 1] === o ? 'on' : ''}"
           data-call="${esc(k.clip_id)}" data-slot="${n}" data-out="${o}">${o}</button>`).join('')}
     </div>`;
   return `
     <div class="yourcall">
       <span class="k">Your call${shown > 1 ? 's — every clay gets one' : ''}</span>
       ${Array.from({ length: shown }, (_, i) => slot(i + 1)).join('')}
-      ${shown < 3 ? `<button class="linky addclay" data-addclay="${esc(k.clip_id)}" data-next="${shown + 1}">+ another clay</button>` : ''}
+      ${shown < MAX_CLAYS ? `<button class="linky addclay" data-addclay="${esc(k.clip_id)}" data-next="${shown + 1}">+ another clay</button>` : ''}
     </div>`;
 }
 
@@ -2361,12 +2412,16 @@ function labellingView() {
   const row = (k) => {
     const vc = (o) => (o === 'hit' ? 'v-hit' : o === 'miss' ? 'v-miss' : o === 'chipped' ? 'v-chip' : '');
     const show = (o, c) => `${esc(o)}${c != null ? ` · ${Math.round(c * 100)}%` : ''}`;
+    // A burst is several shots, so it wears a verdict per clay — as many as
+    // were actually fired, not the three the old columns could hold.
+    const ai = aiCalls(k);
+    const ord = ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth',
+      'Seventh', 'Eighth'];
     const panel = [
-      // A burst is several shots, so it wears a verdict per clay.
-      metric(k.outcome_2 ? 'First clay' : 'Verdict',
-        k.outcome ? show(k.outcome, k.outcome_conf) : '—', vc(k.outcome)),
-      k.outcome_2 ? metric('Second clay', show(k.outcome_2, k.outcome_2_conf), vc(k.outcome_2)) : '',
-      k.outcome_3 ? metric('Third clay', show(k.outcome_3, k.outcome_3_conf), vc(k.outcome_3)) : '',
+      ...(ai.length ? ai.map(([o, c], i) => metric(
+        ai.length > 1 ? `${ord[i] || `Clay ${i + 1}`} clay` : 'Verdict',
+        o ? show(o, c) : '—', vc(o)))
+        : [metric('Verdict', '—')]),
       k.clay_colour && k.clay_colour !== 'unknown' ? metric('Clay', esc(k.clay_colour)) : '',
       metric('Clay detection', k.det_conf != null ? `${Math.round(k.det_conf * 100)}%` : '—'),
       // Speed and distance come from the bang-to-break clock, which only a
@@ -2726,12 +2781,12 @@ function signature() {
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
     clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
     queuePicked.size, sweeping,
-    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.owner_outcome || '') + (k.owner_outcome_2 || '') + (k.owner_outcome_3 || '')),
+    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + JSON.stringify(k.owner_outcomes || [])),
     [...clayRows.entries()].map(([k, v]) => k + v).join(),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     state.rej?.total,
     state.ai.map((k) => k.clip_id + k.label_status + (k.preview_url ? 'v' : '')
-      + (k.outcome || '') + (k.outcome_2 || '') + (k.outcome_3 || '')
+      + JSON.stringify(k.outcomes || []) + JSON.stringify(k.owner_outcomes || [])
       + (k.speed_mph ?? '') + (k.range_m ?? '')),
     state.sheet.map((v) => v.video_id + v.status + (v.used ? 'u' : '') + (v.ds_level ?? '') + (v.called ?? '') + (v.hit ?? '') + (v.miss ?? '')),
     state.progress,
@@ -2764,11 +2819,68 @@ function focusKey() {
   return null;
 }
 
+
+// The owner's per-clay calls. Bound on its own rather than inside the big
+// wire pass, because adding a clay re-renders one card's buttons and they
+// need handlers again without the page being torn down. Idempotent: a
+// button already bound is left alone, so re-running never double-fires.
+function wireCalls() {
+
+  document.querySelectorAll('[data-call]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', async () => {
+      const id = b.dataset.call;
+      const n = Number(b.dataset.slot || 1);
+      const already = b.classList.contains('on');
+      const out = already ? null : b.dataset.out;
+      // paint the choice at once; the refresh confirms it
+      b.closest('.calls').querySelectorAll('.callbtn').forEach((x) => x.classList.remove('on'));
+      if (out) b.classList.add('on');
+      const row = [...state.ai, ...state.clips].find((k) => k.clip_id === id);
+      const calls = row ? ownerCalls(row) : [];
+      while (calls.length < n) calls.push(null);
+      calls[n - 1] = out;
+      // Trailing blanks are noise, not an unanswered clay.
+      while (calls.length && calls[calls.length - 1] == null) calls.pop();
+      const patch = { owner_outcomes: calls };
+      // The first three keep their own columns in step: the mastersheet, the
+      // export and the trials all still read them.
+      OWNER_SLOTS.forEach((f, i) => { patch[f] = calls[i] ?? null; });
+      if (n === 1) patch.owner_outcome_at = out ? new Date().toISOString() : null;
+      const { error } = await supabase.from('pipeline_clips')
+        .update(patch).eq('clip_id', id).select('clip_id');
+      if (error) note(`could not save your call — ${error.message}`, 'bad');
+      if (row) Object.assign(row, patch);
+    });
+  });
+  document.querySelectorAll('[data-addclay]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', () => {
+      clayRows.set(b.dataset.addclay, Math.min(MAX_CLAYS, Number(b.dataset.next)));
+      // Grow the card in place. A full repaint here tore down and rebuilt
+      // every video on the page to add one row of buttons, which is what
+      // made adding a clay feel like the page had stalled.
+      const card = b.closest('.clipcard, .airow, .cardv');
+      const k = [...state.clips, ...state.ai].find((x) => x.clip_id === b.dataset.addclay);
+      const host = card?.querySelector('.yourcall');
+      if (host && k) host.outerHTML = callRows(k);
+      else paint(true);
+      wireCalls();
+    });
+  });
+}
+
 function paint(force = false) {
   // Never redraw over someone who is typing — the poll would eat a half-filled
   // form, and the sources panel is a form.
   const a = document.activeElement;
   if (!force && a && root.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+  // Nor over a preview someone is watching. A repaint rebuilds the page's
+  // markup, so a playing clip was being torn out and restarted mid-flight
+  // every time a count moved — the single worst of the glitches, and on the
+  // one page where the whole job is watching clips. The poll comes round
+  // again in eight seconds; the picture matters more than the freshness.
+  if (!force && [...root.querySelectorAll('video')].some((v) => !v.paused && !v.ended)) return;
 
   const sig = signature();
   if (!force && sig === painted && root.dataset.up) return;
@@ -2821,30 +2933,9 @@ function paint(force = false) {
     b.addEventListener('click', () => runStage('discover', { level: b.dataset.dsfind })));
   // The owner's verdict on a shot — ground truth. Models are scored against
   // these, and one day an outcome model will be trained on them.
-  document.querySelectorAll('[data-call]').forEach((b) =>
-    b.addEventListener('click', async () => {
-      const id = b.dataset.call;
-      const field = OWNER_SLOTS[Number(b.dataset.slot || 1) - 1];
-      const already = b.classList.contains('on');
-      const out = already ? null : b.dataset.out;
-      // paint the choice at once; the refresh confirms it
-      b.closest('.calls').querySelectorAll('.callbtn').forEach((x) => x.classList.remove('on'));
-      if (out) b.classList.add('on');
-      const patch = { [field]: out };
-      if (field === 'owner_outcome') patch.owner_outcome_at = out ? new Date().toISOString() : null;
-      const { error } = await supabase.from('pipeline_clips')
-        .update(patch).eq('clip_id', id).select('clip_id');
-      if (error) note(`could not save your call — ${error.message}`, 'bad');
-      [...state.ai, ...state.clips].forEach((k) => {
-        if (k.clip_id === id) k[field] = out;
-      });
-    }));
-  document.querySelectorAll('[data-addclay]').forEach((b) =>
-    b.addEventListener('click', () => {
-      clayRows.set(b.dataset.addclay, Math.min(3, Number(b.dataset.next)));
-      paint(true);
-    }));
+  wireCalls();
   // ---- the office ----
+
   document.getElementById('addtask')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const title = document.getElementById('task-title').value.trim();
@@ -3116,12 +3207,20 @@ function paint(force = false) {
   wireSweep(document.querySelectorAll('.cardv.rej[data-pileid]'),
     (card) => card.dataset.pileid, pilePicked, syncPile);
   document.getElementById('pileall')?.addEventListener('click', () => {
-    document.querySelectorAll('[data-pilepick]').forEach((cb) => { cb.checked = true; pilePicked.add(cb.dataset.pilepick); });
-    paint(true);
+    document.querySelectorAll('[data-pilepick]').forEach((cb) => {
+      cb.checked = true;
+      pilePicked.add(cb.dataset.pilepick);
+      cb.closest('.cardv')?.classList.add('picked');
+    });
+    syncPile();
   });
   document.getElementById('pilenone')?.addEventListener('click', () => {
     pilePicked.clear();
-    paint(true);
+    document.querySelectorAll('[data-pilepick]').forEach((cb) => {
+      cb.checked = false;
+      cb.closest('.cardv')?.classList.remove('picked');
+    });
+    syncPile();
   });
   document.getElementById('piledel')?.addEventListener('click', async (e) => {
     const ids = [...pilePicked];
@@ -3152,12 +3251,20 @@ function paint(force = false) {
   wireSweep(document.querySelectorAll('.cardv[data-qid]'),
     (card) => card.dataset.qid, queuePicked, syncQueue);
   document.getElementById('qall')?.addEventListener('click', () => {
-    document.querySelectorAll('[data-qpick]').forEach((cb) => { cb.checked = true; queuePicked.add(cb.dataset.qpick); });
-    paint(true);
+    document.querySelectorAll('[data-qpick]').forEach((cb) => {
+      cb.checked = true;
+      queuePicked.add(cb.dataset.qpick);
+      cb.closest('.cardv')?.classList.add('picked');
+    });
+    syncQueue();
   });
   document.getElementById('qnone')?.addEventListener('click', () => {
     queuePicked.clear();
-    paint(true);
+    document.querySelectorAll('[data-qpick]').forEach((cb) => {
+      cb.checked = false;
+      cb.closest('.cardv')?.classList.remove('picked');
+    });
+    syncQueue();
   });
   document.getElementById('qdel')?.addEventListener('click', async (e) => {
     const ids = [...queuePicked];
@@ -3241,7 +3348,9 @@ function paint(force = false) {
     syncPick();
   });
   document.getElementById('picknone')?.addEventListener('click', () => {
-    picked.clear(); paint(true);
+    picked.clear();
+    document.querySelectorAll('.clipcard[data-clip]').forEach((c) => c.classList.remove('picked'));
+    syncPick();
   });
   document.getElementById('sendsel')?.addEventListener('click', (e) =>
     queueClips([...picked], e.target));

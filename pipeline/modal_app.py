@@ -1294,12 +1294,20 @@ def train(request: fastapi.Request):
     return _noted(sb, {"stage": "train", **row})
 
 
+MAX_CLAYS = 8   # a flush, not a pair — mirrored in portal/portal.js
+
+
 def _judge_burst(row, frames, fps, step, boxes_per_frame):
-    """One verdict per bang in the burst, up to three.
+    """One verdict per bang in the burst.
 
     The bangs' distances from the first ride on the clip as shot_offsets;
     older rows fall back to pair_gap_s, and a single is just offset zero.
     Each bang gets its own impact window and its own crop aim.
+
+    Every verdict goes into the outcomes array, however many there are — a
+    five-bird flush was being judged three times and the rest thrown away.
+    The first three are copied into their own columns as well, because the
+    mastersheet, the CSV export and the trials all still read them.
     """
     offsets = row.get("shot_offsets") or (
         [0.0, float(row["pair_gap_s"])]
@@ -1310,13 +1318,18 @@ def _judge_burst(row, frames, fps, step, boxes_per_frame):
             "clay_colour": None}
     names = [("outcome", "outcome_conf"), ("outcome_2", "outcome_2_conf"),
              ("outcome_3", "outcome_3_conf")]
-    for (oc, cc), off in zip(names, offsets[:3]):
+    verdicts = []
+    for n, off in enumerate(offsets[:MAX_CLAYS]):
         o, c, colour = _judge_shot(row, frames, fps, step, boxes_per_frame,
                                    extra_offset=float(off))
-        cols[oc], cols[cc] = o, c
+        verdicts.append({"o": o, "c": c})
+        if n < len(names):
+            oc, cc = names[n]
+            cols[oc], cols[cc] = o, c
         # the first confident read of the disc's colour names the clip
         if colour and colour != "unknown" and not cols["clay_colour"]:
             cols["clay_colour"] = colour
+    cols["outcomes"] = verdicts
     return cols
 
 
