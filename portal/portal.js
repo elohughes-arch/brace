@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03n';
+const BUILD = '2026-08-03o';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -549,7 +549,7 @@ async function loadCoverage() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,presentation,weather,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,presentation,weather,shot_type,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
@@ -772,9 +772,9 @@ function callRows(k) {
         ${shown > 1 ? `<button class="linky addclay" data-dropclay="${esc(k.clip_id)}" data-next="${shown - 1}">− one fewer</button>` : ''}
       </div>
       <div class="tagrow">
-        <label>Presentation
+        <label>Presentation${k.shot_type ? ` <span class="mach">machine: ${esc(k.shot_type)}</span>` : ''}
           <select class="mini" data-tag="presentation" data-clip="${esc(k.clip_id)}">
-            <option value="">—</option>
+            <option value="">${k.shot_type ? `— leave as ${esc(k.shot_type)}` : '—'}</option>
             ${PRESENTATIONS.map((o) => `<option ${k.presentation === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
           </select></label>
         <label>Weather
@@ -1230,7 +1230,7 @@ function rejectedView() {
         ${v.triage_notes ? `<p class="notes">${esc(v.triage_notes)}</p>` : ''}
         <div class="judge">
           <button class="btn btn-ghost" data-watch="${esc(v.video_id)}">${watching === v.video_id ? 'Close' : 'Watch here'}</button>
-          <button class="btn btn-ghost" data-retriage="${esc(v.video_id)}">Re-triage</button>
+          <button class="btn btn-ghost bad" data-bin="${esc(v.video_id)}">Delete</button>
           <button class="btn btn-ghost" data-force="${esc(v.video_id)}"
             title="You have watched it — fetch it and clip it, whatever triage scored">Force in</button>
         </div>
@@ -1442,9 +1442,10 @@ const PIE = ['#F05A28', '#4ECDC4', '#CBBE93', '#6FBE72', '#E0705F', '#8f9bff'];
 const today = () => new Date().toISOString().slice(0, 10);
 const gbp = (n) => `£${Number(n).toFixed(2)}`;
 
-// A donut with no chart library: conic-gradient does the slicing, a hole
-// punched by a pseudo-element, and a legend that carries the numbers.
-function donut(slices, title) {
+// The office pie: conic-gradient does the slicing, a hole punched by a
+// pseudo-element, a legend carrying the numbers. Named pie because the
+// findings section has its own donut() and Safari refuses two of a name.
+function pie(slices, title) {
   const total = slices.reduce((a, x) => a + x.v, 0);
   if (!total) return '<div class="empty">Nothing logged yet.</div>';
   let acc = 0;
@@ -1455,9 +1456,9 @@ function donut(slices, title) {
   const leg = slices.map((x, i) =>
     `<span><i style="background:${PIE[i % PIE.length]}"></i>${esc(x.label)} — ${x.text}</span>`).join('');
   return `
-    <div class="donutwrap">
-      <div class="donut" style="background:conic-gradient(${stops})"><span>${esc(title)}</span></div>
-      <div class="legend">${leg}</div>
+    <div class="piewrap">
+      <div class="pie" style="background:conic-gradient(${stops})"><span>${esc(title)}</span></div>
+      <div class="pielegend">${leg}</div>
     </div>`;
 }
 
@@ -1581,7 +1582,7 @@ function productivityView() {
       </section>
       <section class="panel">
         <div class="p-head"><span class="p-title">Whose hours</span></div>
-        ${donut(slices, `${Math.round(totalH)}h`)}
+        ${pie(slices, `${Math.round(totalH)}h`)}
       </section>
     </div>
 
@@ -1677,9 +1678,9 @@ function costsView() {
       </section>
       <section class="panel">
         <div class="p-head"><span class="p-title">Where it goes</span></div>
-        ${donut(catSlices, gbp(total))}
+        ${pie(catSlices, gbp(total))}
         <div style="height:18px"></div>
-        ${perSlices.length > 1 ? donut(perSlices, 'who') : ''}
+        ${perSlices.length > 1 ? pie(perSlices, 'who') : ''}
       </section>
     </div>
 
@@ -2877,7 +2878,9 @@ function findingsView() {
           ${donut(Object.entries(f.clay_colour || {}).sort((a, b) => b[1] - a[1]), { label: 'Clay colour', unit: 'clips' })}</figure>
         <figure><figcaption>Weather</figcaption>
           ${donut(Object.entries(f.weather || {}).sort((a, b) => b[1] - a[1]), { label: 'Weather', unit: 'clips' })}</figure>
-        <figure><figcaption>Presentation <span class="s">what the clay did</span></figcaption>
+        <figure><figcaption>Shot type <span class="s">read from the tracked flight</span></figcaption>
+          ${donut(Object.entries(f.shot_type || {}).sort((a, b) => b[1] - a[1]), { label: 'Shot type', unit: 'clips' })}</figure>
+        <figure><figcaption>Presentation <span class="s">as called by hand, where it was</span></figcaption>
           ${donut(Object.entries(f.presentation || {}).sort((a, b) => b[1] - a[1]).slice(0, 6), { label: 'Presentation', unit: 'clips' })}</figure>
         <figure><figcaption>Split <span class="s">train · valid · test</span></figcaption>
           ${donut(['train', 'valid', 'test'].map((k) => [k, (f.splits || {})[k] || 0]), { label: 'Split', unit: 'clips' })}</figure>
@@ -3538,12 +3541,19 @@ function wireTrim() {
         recut_note: null,
       }).eq('clip_id', id).select('clip_id');
       if (error) { note(`could not save the length — ${error.message}`, 'bad'); busy(b, false, 'Save length'); return; }
-      note(`${mmss(e.start)}–${mmss(e.end)} saved — press Re-cut to make the cut`, 'good');
       touchCard(id);
       const k = rowFor(id);
       if (k) Object.assign(k, { clip_start: e.start, clip_end: e.end, needs_recut: true });
       trimOpen.delete(id); trimEdits.delete(id);
       redraw(id);
+      // The saved edit starts the cut itself — no second button to remember.
+      // If a run is already going, the edit waits and the next run takes it.
+      if (!running) {
+        note(`${mmss(e.start)}–${mmss(e.end)} saved — re-cutting now`, 'good');
+        runStage('recut');
+      } else {
+        note(`${mmss(e.start)}–${mmss(e.end)} saved — a run is going; the next re-cut takes it`, 'good');
+      }
     });
   });
 }
@@ -3902,6 +3912,18 @@ function paint(force = false) {
     });
     syncPile();
   });
+  document.querySelectorAll('[data-bin]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      busy(b, true, 'Deleting…');
+      // 'binned', not deleted: the row survives so discovery's dedupe
+      // still knows this video and can never re-collect it.
+      const { error } = await supabase.from('pipeline_videos')
+        .update({ status: 'binned' }).eq('video_id', b.dataset.bin).select('video_id');
+      note(error ? `could not delete — ${error.message}`
+        : 'removed from the pile — the sheet still remembers it', error ? 'bad' : 'good');
+      pilePicked.delete(b.dataset.bin);
+      state.loading = true; paint(true); refresh();
+    }));
   document.getElementById('piledel')?.addEventListener('click', async (e) => {
     const ids = [...pilePicked];
     if (!ids.length) return;
