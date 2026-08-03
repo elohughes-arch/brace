@@ -948,6 +948,7 @@ def screen(request: fastapi.Request):
           # Roboflow as ground truth. What survives is scored up by speed.
           boxes_per_frame = _clay_track(
               boxes_per_frame, frames[0].shape[1] if frames else 0)
+          reticle = getattr(_clay_track, "last_fixtures", {}) or {}
 
           # The clipper cuts by sound, which cannot know whether a clay is in
           # view. This is the first stage that can see — a clip with no clay
@@ -1013,6 +1014,7 @@ def screen(request: fastapi.Request):
               "clip_id": row["clip_id"],
               "n_clays": max((len(v) for v in boxes_per_frame.values()), default=0),
               "boxes_json": boxes_per_frame,
+              "reticle_json": reticle or None,
               "frame_dt": step / fps,
               "t_offset": t0 if trimmed_now else 0.0,
           }).execute()
@@ -1104,7 +1106,8 @@ def prelabel(request: fastapi.Request):
     done = uploaded = failed = 0
     for row in rows:
       try:
-        lab = (sb.table("pipeline_labels").select("boxes_json,frame_dt,t_offset")
+        lab = (sb.table("pipeline_labels")
+               .select("boxes_json,reticle_json,frame_dt,t_offset")
                .eq("clip_id", row["clip_id"]).execute().data)
         boxes = lab[0].get("boxes_json") if lab else None
         if not boxes or not Path(row["file_path"]).exists():
@@ -1113,6 +1116,7 @@ def prelabel(request: fastapi.Request):
             continue
         frame_dt = float(lab[0].get("frame_dt") or 0.2)
         t_off = float(lab[0].get("t_offset") or 0.0)
+        reticle = lab[0].get("reticle_json") or {}
         cap = cv2.VideoCapture(row["file_path"])
         tmp = Path("/tmp/frames")
         tmp.mkdir(parents=True, exist_ok=True)
@@ -1143,12 +1147,23 @@ def prelabel(request: fastapi.Request):
                 x1, y1, x2, y2 = b["xyxy"]
                 lines.append(f"0 {(x1+x2)/2/w:.6f} {(y1+y2)/2/h:.6f} "
                              f"{(x2-x1)/w:.6f} {(y2-y1)/h:.6f}")
+            # Class 1 is the reticle. Naming the thing the detector keeps
+            # mistaking for a clay teaches the difference far harder than
+            # leaving it as unlabelled background — and once the model can
+            # find the aim point, the gap between it and the clay is the
+            # lead, which is the number a coach actually cares about.
+            for b in (reticle.get(str(i)) or reticle.get(i) or []):
+                x1, y1, x2, y2 = b["xyxy"]
+                lines.append(f"1 {(x1+x2)/2/w:.6f} {(y1+y2)/2/h:.6f} "
+                             f"{(x2-x1)/w:.6f} {(y2-y1)/h:.6f}")
             ann = fp.with_suffix(".txt")
             ann.write_text("\n".join(lines))
             confident = (split == "train") and (
                 all(b["conf"] >= sure for b in bxs) if bxs else False)
             all_confident = all_confident and confident
             tags = ["prelabel", "confident" if confident else "doubtful", split]
+            if reticle:
+                tags.append("has-reticle")
             if golden:
                 tags.append("golden")
             if row.get("slo_mo"):
@@ -1403,13 +1418,15 @@ def dataset(request: fastapi.Request):
         src = Path(row["file_path"] or "")
         if not src.exists():
             continue
-        lab = (sb.table("pipeline_labels").select("boxes_json,frame_dt,t_offset")
+        lab = (sb.table("pipeline_labels")
+               .select("boxes_json,reticle_json,frame_dt,t_offset")
                .eq("clip_id", row["clip_id"]).execute().data)
         if not lab or not lab[0].get("boxes_json"):
             continue
         frame_dt = float(lab[0].get("frame_dt") or 0.2)
         t_off = float(lab[0].get("t_offset") or 0.0)
         boxes = {int(k): v for k, v in lab[0]["boxes_json"].items()}
+        reticle = {int(k): v for k, v in (lab[0].get("reticle_json") or {}).items()}
 
         cap = cv2.VideoCapture(str(src))
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
@@ -1437,13 +1454,14 @@ def dataset(request: fastapi.Request):
                 continue
             h, w = frame.shape[:2]
             lines = []
-            for b in keep:
-                x1, y1, x2, y2 = b["xyxy"]
-                cx, cy = (x1 + x2) / 2 / w, (y1 + y2) / 2 / h
-                bw, bh = (x2 - x1) / w, (y2 - y1) / h
-                if bw <= 0 or bh <= 0:
-                    continue
-                lines.append(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+            for cls, group in ((0, keep), (1, reticle.get(i) or [])):
+                for b in group:
+                    x1, y1, x2, y2 = b["xyxy"]
+                    cx, cy = (x1 + x2) / 2 / w, (y1 + y2) / 2 / h
+                    bw, bh = (x2 - x1) / w, (y2 - y1) / h
+                    if bw <= 0 or bh <= 0:
+                        continue
+                    lines.append(f"{cls} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
             if not lines:
                 empties += 1
                 continue
@@ -1458,7 +1476,7 @@ def dataset(request: fastapi.Request):
 
     (root / "data.yaml").write_text(
         f"path: {root}\ntrain: images/train\nval: images/valid\n"
-        f"test: images/test\nnames:\n  0: clay\n")
+        f"test: images/test\nnames:\n  0: clay\n  1: reticle\n")
     volume.commit()
     return _noted(sb, {"stage": "dataset", "name": name, "clips": clips_used,
                        "train": counts["train"], "valid": counts["valid"],
@@ -1832,6 +1850,7 @@ def _clay_track(boxes_per_frame, frame_w):
     """
     import math
 
+    _clay_track.last_fixtures = {}
     idxs = sorted(boxes_per_frame)
     if not idxs:
         return {}
@@ -1870,6 +1889,13 @@ def _clay_track(boxes_per_frame, frame_w):
     # the training image, which teaches the detector that a clay is
     # background.
     fixtures = [c for c in clusters if len(c["frames"]) >= 3]
+    # What the fixtures actually are, frame by frame, for whoever wants them:
+    # a reticle is worth keeping, not merely worth excluding.
+    fixed_boxes = {}
+    for c in fixtures:
+        for i, b in c["items"]:
+            fixed_boxes.setdefault(i, []).append(b)
+    _clay_track.last_fixtures = fixed_boxes
     live = {}
     for c in clusters:
         if len(c["frames"]) >= 3:
