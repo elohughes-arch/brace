@@ -1940,9 +1940,54 @@ def _clay_track(boxes_per_frame, frame_w):
             best_t["boxes"].append((i, b))
             best_t["last_idx"] = i
 
+    # Camera motion, and what moves against it.
+    #
+    # The fixture check above only catches things painted onto the frame. A
+    # wheelbarrow, a rock, a tree is fixed in the world but slides across the
+    # picture as the gun swings, so it survives that check and gets labelled
+    # as a clay. What separates them is that scenery all slides *together*:
+    # take the median step across every track as the camera's own movement,
+    # and whatever is left for each track is its motion through the world. A
+    # clay has plenty. A wheelbarrow has almost none.
+    #
+    # Three tracks at least before trusting the estimate — with fewer, the
+    # median is as likely to be the clay as the background, and subtracting
+    # the clay's own motion from itself would delete it.
+    pan = {}
+    if len(tracks) >= 3:
+        steps_at = {}
+        for t in tracks:
+            for (ia, ax, ay), (ib, bx, by) in zip(t["pts"], t["pts"][1:]):
+                if ib - ia != 1:
+                    continue
+                steps_at.setdefault(ia, []).append((bx - ax, by - ay))
+        for i, v in steps_at.items():
+            if len(v) < 3:
+                continue
+            xs2 = sorted(d[0] for d in v)
+            ys2 = sorted(d[1] for d in v)
+            pan[i] = (xs2[len(xs2) // 2], ys2[len(ys2) // 2])
+
+    def world_motion(t):
+        """How far this track moved once the camera's swing is taken out."""
+        if not pan:
+            return None
+        total, n = 0.0, 0
+        for (ia, ax, ay), (ib, bx, by) in zip(t["pts"], t["pts"][1:]):
+            if ib - ia != 1 or ia not in pan:
+                continue
+            gx, gy = pan[ia]
+            total += math.hypot((bx - ax) - gx, (by - ay) - gy)
+            n += 1
+        return None if n < 3 else total / n
+
     span = idxs[-1] - idxs[0] + 1
     out = {}
     for t in tracks:
+        # Scenery: carried along by the camera and going nowhere itself.
+        rel = world_motion(t)
+        if rel is not None and len(t["pts"]) >= 4 and rel < frame_w * 0.004:
+            continue
         xs = [p[1] for p in t["pts"]]
         ys = [p[2] for p in t["pts"]]
         spread = max(max(xs) - min(xs), max(ys) - min(ys))
