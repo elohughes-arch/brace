@@ -413,7 +413,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04g';
+const BUILD = '2026-08-04h';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
