@@ -15,6 +15,11 @@ create table if not exists pipeline_videos (
     triage_score  real,                       -- 0-10 from vision model
     triage_notes  text,
     local_path    text,
+    -- The owner has watched this one and wants it in whatever triage scored:
+    -- the fetch still happens, the silence gate and the scoring call do not,
+    -- and it goes straight to approved. Overruling a rejection without this
+    -- only ever fed the video back to the judge that already refused it.
+    forced        boolean not null default false,
     discovered_at timestamptz default now(),
     updated_at    timestamptz default now()
 );

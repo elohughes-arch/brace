@@ -468,6 +468,20 @@ def triage(request: fastapi.Request):
             out.parent.mkdir(parents=True, exist_ok=True)
             download(row["url"], out)
 
+            # Forced: the owner has watched this one and wants it in, whatever
+            # the machine thinks. Fetch the file, then hand it straight to the
+            # clipper — no silence gate, no scoring call. Sending it back
+            # through the same judge that already refused it would only reject
+            # it a second time, which is the whole reason this flag exists.
+            if row.get("forced"):
+                sb.table("pipeline_videos").update({
+                    "status": "approved",
+                    "local_path": str(out),
+                    "triage_notes": "forced in by the owner — triage bypassed",
+                }).eq("video_id", vid).execute()
+                kept += 1
+                continue
+
             # The ears go first, and they are free. A video with no
             # gunshot-shaped sound in it cannot be shooting footage —
             # whatever its thumbnails look like — and it dies here without

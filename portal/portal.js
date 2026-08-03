@@ -1126,8 +1126,8 @@ function rejectedView() {
         <div class="judge">
           <button class="btn btn-ghost" data-watch="${esc(v.video_id)}">${watching === v.video_id ? 'Close' : 'Watch here'}</button>
           <button class="btn btn-ghost" data-retriage="${esc(v.video_id)}">Re-triage</button>
-          <button class="btn btn-ghost" data-addreview="${esc(v.video_id)}"
-            title="Skip scoring — put it straight in the Review queue">Add to review</button>
+          <button class="btn btn-ghost" data-force="${esc(v.video_id)}"
+            title="You have watched it — fetch it and clip it, whatever triage scored">Force in</button>
         </div>
       </div>
     </article>`;
@@ -1706,6 +1706,7 @@ let rejPage = 0;    // the rejected pile pages the same way
 let rejSort = 'new';   // new | hi | lo — the pile's sort order
 let aiSort = 'new';    // new | hi | lo — labelling, by verdict confidence
 const pilePicked = new Set();   // rejected videos ticked for binning
+const queuePicked = new Set();  // review-queue videos ticked for binning
 let aiPage = 0;
 let batch = 10;   // videos per press — survives repaints, resets with the tab
 let poll = null;
@@ -2014,7 +2015,17 @@ function reviewView() {
          shots; reject it and it goes no further.${total > q.length
     ? ` Showing the ${fmt(q.length)} highest-scored — judging these pulls the rest through.` : ''}</p>
     </div>
-    ${q.length ? `<div class="queue">${q.map(card).join('')}</div>`
+    ${q.length ? `
+    <div class="p-head" style="margin-bottom:14px">
+      <span class="p-title">Tick to clear several at once</span>
+      <span>
+        <button class="linky" id="qall">Select all shown</button>
+        <button class="linky" id="qnone" style="margin-left:10px">Clear</button>
+        <button class="btn btn-ghost mini-btn" id="qdel" style="margin-left:14px"
+          ${queuePicked.size ? '' : 'disabled'}>Delete <span id="qn">${queuePicked.size}</span></button>
+      </span>
+    </div>
+    <div class="queue">${q.map(card).join('')}</div>`
       : `<div class="panel"><div class="empty">The queue is clear. Run triage to bring
            more through, or discover to widen the net.</div></div>`}`;
 }
@@ -2027,6 +2038,9 @@ function card(v) {
     ? v.url : `https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}`;
   return `
     <article class="cardv" data-id="${esc(v.video_id)}">
+      <label class="clippick pilebox" title="Select for deletion">
+        <input type="checkbox" class="tick" data-qpick="${esc(v.video_id)}" ${queuePicked.has(v.video_id) ? 'checked' : ''} />
+      </label>
       <a class="thumb" href="${esc(href)}" target="_blank" rel="noopener">
         <img src="https://i.ytimg.com/vi/${esc(v.video_id)}/mqdefault.jpg" alt="" loading="lazy"
              onerror="this.remove()" />
@@ -2629,7 +2643,8 @@ function signature() {
     state.queue.map((v) => v.video_id), log.length, log[0]?.line,
     (state.activity || []).length, state.activity?.[0]?.at,
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
-    clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size, sweeping,
+    clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
+    queuePicked.size, sweeping,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.owner_outcome || '') + (k.owner_outcome_2 || '') + (k.owner_outcome_3 || '')),
     [...clayRows.entries()].map(([k, v]) => k + v).join(),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
@@ -2941,18 +2956,21 @@ function paint(force = false) {
         : `${b.dataset.retriage} sent back — the next triage run rescores it`, error ? 'bad' : 'good');
       refresh();
     }));
-  // The eye overruling the machine outright: skip scoring and put the video
-  // straight in the Review queue, for the rare good one triage got wrong —
-  // re-triage alone would just risk the same automated call twice.
-  document.querySelectorAll('[data-addreview]').forEach((b) =>
+  // The eye overruling the machine outright. Re-triage only offers the video
+  // to the same judge that already refused it, and the rejected pile keeps
+  // no file, so nothing can be clipped from where it stands: this sends it
+  // back to be fetched with 'forced' set, and triage hands it to the clipper
+  // without scoring it at all.
+  document.querySelectorAll('[data-force]').forEach((b) =>
     b.addEventListener('click', async () => {
       b.disabled = true;
       const { error } = await supabase.from('pipeline_videos')
-        .update({ status: 'downloaded',
-                  triage_notes: 'added to review by hand, overruling triage' })
-        .eq('video_id', b.dataset.addreview).select('video_id');
-      note(error ? `could not add it — ${error.message}`
-        : `${b.dataset.addreview} added to the review queue`, error ? 'bad' : 'good');
+        .update({ status: 'discovered', forced: true, local_path: null,
+                  triage_notes: 'forced in by the owner — queued to fetch' })
+        .eq('video_id', b.dataset.force).select('video_id');
+      note(error ? `could not force it in — ${error.message}`
+        : `${b.dataset.force} forced in — the next triage run fetches it and sends it straight to the clipper`,
+      error ? 'bad' : 'good');
       refresh();
     }));
   // Placing a video on the ladder by hand, from the Mastersheet.
@@ -3025,6 +3043,36 @@ function paint(force = false) {
     note(error ? `could not delete — ${error.message}`
       : `${ids.length} removed from the pile — the sheet still remembers them`, error ? 'bad' : 'good');
     if (!error) pilePicked.clear();
+    state.loading = true; paint(true); refresh();
+  });
+  // The same sweep for the review queue: judging 83 videos one card at a
+  // time when most are obvious noes is the slow way round.
+  document.querySelectorAll('[data-qpick]').forEach((cb) => cb.addEventListener('change', () => {
+    cb.checked ? queuePicked.add(cb.dataset.qpick) : queuePicked.delete(cb.dataset.qpick);
+    const n = document.getElementById('qn');
+    if (n) n.textContent = queuePicked.size;
+    const del = document.getElementById('qdel');
+    if (del) del.disabled = !queuePicked.size;
+  }));
+  document.getElementById('qall')?.addEventListener('click', () => {
+    document.querySelectorAll('[data-qpick]').forEach((cb) => { cb.checked = true; queuePicked.add(cb.dataset.qpick); });
+    paint(true);
+  });
+  document.getElementById('qnone')?.addEventListener('click', () => {
+    queuePicked.clear();
+    paint(true);
+  });
+  document.getElementById('qdel')?.addEventListener('click', async (e) => {
+    const ids = [...queuePicked];
+    if (!ids.length) return;
+    busy(e.target, true, 'Deleting…');
+    // 'binned' for the same reason the pile uses it: the row must survive so
+    // discovery's dedupe still knows this video and never re-collects it.
+    const { error } = await supabase.from('pipeline_videos')
+      .update({ status: 'binned', local_path: null }).in('video_id', ids).select('video_id');
+    note(error ? `could not delete — ${error.message}`
+      : `${ids.length} removed from the queue — the sheet still remembers them`, error ? 'bad' : 'good');
+    if (!error) queuePicked.clear();
     state.loading = true; paint(true); refresh();
   });
   document.getElementById('rejsort')?.addEventListener('change', (e) => {
