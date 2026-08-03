@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03o';
+const BUILD = '2026-08-03p';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -522,8 +522,12 @@ async function loadCredits() {
 // the object where the data already is.
 async function loadFindings() {
   try {
-    const { data, error } = await supabase.rpc('findings_report');
-    return error ? null : data;
+    const [rep, cov] = await Promise.all([
+      supabase.rpc('findings_report'),
+      supabase.rpc('clip_coverage'),
+    ]);
+    if (rep.error) return null;
+    return { ...rep.data, coverage: cov.error ? [] : (cov.data || []) };
   } catch { return null; }
 }
 
@@ -2821,6 +2825,33 @@ function findingsView() {
          ${fmt(state.counts?.downloaded ?? 0)} videos waiting in Review — and until it
          does the only honest reading is that the model is <b>unmeasured</b>. Validation
          tunes the model, so a score against it is not evidence.`}</p>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Coverage — was the whole film cut, or only the start of it?</span>
+        <span class="s">${(() => {
+    const cv = f.coverage || [];
+    const thin = cv.filter((r) => (r.reached ?? 0) < 80).length;
+    return cv.length ? `${fmt(cv.length)} films · ${thin ? `<b>${fmt(thin)} cut short</b>` : 'none cut short'}` : '';
+  })()}</span></div>
+      ${(f.coverage || []).length ? [...(f.coverage || [])]
+    .sort((a, b) => (a.reached ?? 0) - (b.reached ?? 0)).slice(0, 12).map((r) => `
+      <div class="row">
+        <span class="dot ${(r.reached ?? 0) >= 80 ? 'on' : ''}"></span>
+        <div class="main">
+          <div class="t">${esc(r.title || r.video_id)}</div>
+          <div class="s">${fmt(r.clips)} clips · first at ${mmss(r.first_s)} · last ends ${mmss(r.last_s)} of ${mmss(r.duration_s)}</div>
+          ${meter(r.reached ?? 0, 100)}
+        </div>
+        <div class="end"><b>${r.reached ?? '—'}%</b></div>
+      </div>`).join('')
+    : '<div class="empty">Nothing clipped yet.</div>'}
+      <p class="foot-note">The clipper cuts on sound, so the only honest test of whether
+         it worked the whole film is where its last cut lands against how long the video
+         ran — a five-minute film whose last clip ends at ninety seconds was abandoned,
+         however many clips it made. Anything under 80% is worth opening: it is usually a
+         quiet passage the ears missed rather than a fault, but it is also exactly what a
+         broken run looks like. Worst twelve shown, thinnest first.</p>
     </section>
 
     <section class="panel" style="margin-top:18px">
