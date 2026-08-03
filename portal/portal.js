@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04a';
+const BUILD = '2026-08-04b';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2416,6 +2416,69 @@ function wireGlobals() {
     const card = e.target.closest?.('.clipcard[data-clip]');
     if (card) touchCard(card.dataset.clip);
   }, true);
+
+  // Space rewatches the clip under the cursor, full screen, from the top.
+  //
+  // Pressing space used to scroll the page, which on a grid of forty cards
+  // means losing the clip you were looking at — the one key you reach for
+  // to see a shot again was the one that took you away from it. It now
+  // replays whatever is under the pointer, or the last card worked on if
+  // the pointer is elsewhere, and Escape comes back out.
+  let hoverCard = null;
+  document.addEventListener('pointerover', (e) => {
+    const c = e.target.closest?.('.clipcard[data-clip]');
+    if (c) hoverCard = c.dataset.clip;
+  }, true);
+
+  const goFullscreen = (el) => {
+    const go = el.requestFullscreen || el.webkitRequestFullscreen
+      || el.webkitEnterFullscreen || el.msRequestFullscreen;
+    if (go) Promise.resolve(go.call(el)).catch(() => el.closest('.clipmedia')?.classList.add('blown'));
+    else el.closest('.clipmedia')?.classList.add('blown');
+  };
+
+  const replay = (card) => {
+    const box = card.querySelector('.clipmedia');
+    if (!box) return;
+    const video = box.querySelector('video');
+    if (video) {
+      video.currentTime = 0;
+      video.play().catch(() => {});
+      goFullscreen(video);
+      return;
+    }
+    const frame = box.querySelector('iframe');
+    if (frame) return goFullscreen(frame);
+    // Nothing rendered yet: open the source embed, which starts at the
+    // clip's own timestamps, then take that full screen.
+    const play = box.querySelector('[data-ytplay]');
+    if (play) {
+      play.click();
+      requestAnimationFrame(() => {
+        const f = box.querySelector('iframe');
+        if (f) goFullscreen(f);
+      });
+    }
+  };
+
+  document.addEventListener('keydown', (e) => {
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    if (e.key === ' ' || e.code === 'Space') {
+      const id = hoverCard || lastTouched;
+      const card = id && document.querySelector(`.clipcard[data-clip="${CSS.escape(id)}"]`);
+      if (!card) return;
+      e.preventDefault();          // the page must not scroll out from under it
+      touchCard(id);
+      replay(card);
+    } else if (e.key === 'Escape') {
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
+      }
+      document.querySelectorAll('.clipmedia.blown')
+        .forEach((el) => el.classList.remove('blown'));
+    }
+  });
 
   ['pointermove', 'pointerdown', 'keydown', 'wheel', 'scroll'].forEach((ev) =>
     document.addEventListener(ev, stirred, { passive: true, capture: true }));

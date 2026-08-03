@@ -275,7 +275,12 @@
   function onKeyDown(event) {
     if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
     const inViewer = !!document.getElementById("viewer");
-    if (event.key === "Escape") { inViewer ? closeViewer() : clearSelection(); }
+    // Escape leaving full screen must not also throw away a selection: one
+    // key, one meaning at a time. The browser fires it here on the way out.
+    if (event.key === "Escape") {
+      if (document.fullscreenElement || document.webkitFullscreenElement) return;
+      inViewer ? closeViewer() : clearSelection();
+    }
     else if (inViewer && event.key === "ArrowRight") { event.preventDefault(); step(1); }
     else if (inViewer && event.key === "ArrowLeft") { event.preventDefault(); step(-1); }
     else if (inViewer && (event.key === "Delete" || event.key === "Backspace")) {
