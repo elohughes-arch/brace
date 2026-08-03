@@ -1436,6 +1436,111 @@ def train(request: fastapi.Request):
 MAX_CLAYS = 8   # a flush, not a pair — mirrored in portal/portal.js
 
 
+def _shot_track(boxes_per_frame, shot_i, frame_w, frame_dt):
+    """The one clay this bang was aimed at, followed across the whole burst.
+
+    The judge used to crop each frame around whatever box scored highest in
+    that frame alone. With a single clay in the sky that is the clay. With a
+    pair or a flush it is whichever bird happened to read strongest at that
+    instant, so the crop jumped from one clay to another between frames, the
+    model was shown A, then B, then A, and it answered — correctly — that it
+    could not follow the clay. Pairs were coming back unclear three-fifths of
+    the time against a third for singles, on identical detection confidence:
+    the eye was being thrown, not the detector.
+
+    So boxes are linked into tracks and one track is chosen for this bang.
+    Alive at the moment of the shot beats everything, because that is the
+    clay being fired at; among those, the one covering the most ground wins,
+    a clay outrunning anything static that survived the overlay filter.
+    Gaps inside the chosen track are filled by interpolation, so a frame the
+    detector missed still crops to where the clay must have been rather than
+    falling back to the full picture.
+
+    Returns {frame index: (cx, cy, size)} for the chosen clay alone.
+    """
+    import math
+
+    idxs = sorted(boxes_per_frame)
+    if not idxs:
+        return {}
+    cen = lambda b: ((b["xyxy"][0] + b["xyxy"][2]) / 2.0,
+                     (b["xyxy"][1] + b["xyxy"][3]) / 2.0)
+    size = lambda b: max(b["xyxy"][2] - b["xyxy"][0], b["xyxy"][3] - b["xyxy"][1])
+
+    # A more forgiving gap than the screening tracker uses. There the point
+    # is a precise flight boundary; here it is keeping one clay together
+    # across the frames the detector happened to miss, and splitting it in
+    # two would put the crop back to guessing.
+    max_gap = max(3, int(round(0.4 / max(frame_dt, 1e-6))))
+    max_jump, tracks = frame_w * 0.12, []
+    for i in idxs:
+        for b in boxes_per_frame[i]:
+            cx, cy = cen(b)
+            best_t, best_d = None, None
+            for t in tracks:
+                if i - t["last"] > max_gap:
+                    continue
+                lx, ly = t["pts"][-1][1], t["pts"][-1][2]
+                d = math.hypot(cx - lx, cy - ly)
+                if d <= max_jump and (best_d is None or d < best_d):
+                    best_t, best_d = t, d
+            if best_t is None:
+                best_t = {"last": i, "pts": []}
+                tracks.append(best_t)
+            best_t["pts"].append((i, cx, cy, size(b)))
+            best_t["last"] = i
+    if not tracks:
+        return {}
+
+    # The impact window: the bang, then the tenth to quarter second the
+    # pellets take to arrive and the moment of the break.
+    lo, hi = shot_i - int(round(0.3 / frame_dt)), shot_i + int(round(0.9 / frame_dt))
+
+    def score(t):
+        pts = t["pts"]
+        # Weighted by nearness to the bang, not merely counted inside the
+        # window. A clay that happens to be in the sky for the whole clip
+        # would otherwise out-vote the one actually being fired at simply by
+        # lasting longer — which is how the first barrel of a pair ended up
+        # judged on the second bird.
+        near = sum(1.0 / (1.0 + abs(p[0] - shot_i) * frame_dt / 0.2)
+                   for p in pts if lo <= p[0] <= hi)
+        # The strongest tell of which clay this barrel was for: a clay that
+        # was hit stops existing. A track that ends inside the impact window
+        # died there, and a bird still sailing at the end of the clip did
+        # not. With two clays in the sky at the same instant nothing else
+        # separates them — both are simply present — so this is what decides
+        # it, and density only breaks the tie.
+        died_here = bool(pts) and lo <= pts[-1][0] <= hi
+        travel = 0.0
+        for a, b in zip(pts, pts[1:]):
+            travel += math.hypot(b[1] - a[1], b[2] - a[2])
+        return (died_here, round(near, 3), travel)
+
+    best = max(tracks, key=score)
+    # Presence decides whether there is anything to aim at, not whether it
+    # died: a missed clay sails on to the end of the clip and is exactly the
+    # thing the judge most needs to see.
+    if not score(best)[1]:
+        return {}          # nothing alive at this bang — let the judge see wide
+
+    known = {p[0]: (p[1], p[2], p[3]) for p in best["pts"]}
+    if len(known) < 2:
+        return known
+    # Fill the gaps the detector left, so a missed frame still crops to the
+    # clay's path instead of throwing the whole frame at the model.
+    have = sorted(known)
+    out = dict(known)
+    for a, b in zip(have, have[1:]):
+        if b - a < 2:
+            continue
+        (ax, ay, asz), (bx, by, bsz) = known[a], known[b]
+        for i in range(a + 1, b):
+            f = (i - a) / (b - a)
+            out[i] = (ax + (bx - ax) * f, ay + (by - ay) * f, asz + (bsz - asz) * f)
+    return out
+
+
 def _judge_burst(row, frames, fps, step, boxes_per_frame):
     """One verdict per bang in the burst.
 
@@ -1907,18 +2012,22 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
         if len(picks) < 2:
             return None, None, None
 
+        # One clay for the whole burst, chosen for this bang, rather than
+        # whatever read strongest frame by frame.
+        aim = _shot_track(boxes_per_frame or {}, shot_i,
+                          frames[0].shape[1] if frames else 0, frame_dt)
+
         def eye(i):
-            """The frame at i, cropped to the clay the detector tracked."""
+            """The frame at i, cropped to the clay this bang was aimed at."""
             frame = frames[i]
-            if not boxes_per_frame:
+            if not aim:
                 return frame, False
-            near = min(boxes_per_frame, key=lambda j: abs(j - i), default=None)
+            near = min(aim, key=lambda j: abs(j - i), default=None)
             if near is None or abs(near - i) * frame_dt > 0.7:
                 return frame, False   # track lost around this moment
-            best = max(boxes_per_frame[near], key=lambda b: b["conf"])
-            x1, y1, x2, y2 = best["xyxy"]
+            cx, cy, sz = aim[near]
             h, w = frame.shape[:2]
-            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            x1, y1, x2, y2 = cx - sz / 2, cy - sz / 2, cx + sz / 2, cy + sz / 2
             # Enough sky around the disc to show fragments flying or the
             # clay sailing on — a tight crop would hide the very evidence.
             half = max(x2 - x1, y2 - y1, 110.0) * 2.2

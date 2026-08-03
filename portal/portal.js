@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03e';
+const BUILD = '2026-08-03f';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2465,6 +2465,95 @@ function modelsPanel() {
 
 /* ---------- findings ---------- */
 
+// Opening a verdict shows the shots behind it, every variable beside each
+// one, and a tally of those variables across the whole group. A count tells
+// you there is a problem; this is for finding out what the problem is.
+let drillOn = null;          // which verdict is open
+let drillRows = [];
+
+async function loadDrill(verdict) {
+  const { data, error } = await supabase.from('pipeline_clips')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,n_shots,slo_mo,outcome,outcome_conf,owner_outcome,det_conf,speed_mph,range_m,clay_colour,preview_path,poster_path')
+    .eq('outcome', verdict).order('created_at', { ascending: false }).limit(60);
+  if (error) return [];
+  const rows = data || [];
+  await signClipMedia(rows);
+  const vids = [...new Set(rows.map((k) => k.video_id))];
+  if (vids.length) {
+    const { data: tv } = await supabase.from('pipeline_videos')
+      .select('video_id,title,channel,weather,ds_level,duration_s').in('video_id', vids);
+    const by = new Map((tv || []).map((v) => [v.video_id, v]));
+    rows.forEach((k) => Object.assign(k, {
+      title: by.get(k.video_id)?.title || k.video_id,
+      channel: by.get(k.video_id)?.channel || '',
+      weather: by.get(k.video_id)?.weather || 'unknown',
+      ds_level: by.get(k.video_id)?.ds_level || null,
+    }));
+  }
+  return rows;
+}
+
+function verdictDrill() {
+  if (!drillOn) return '';
+  const rows = drillRows;
+  if (!rows.length) {
+    return `<div class="empty">Loading the ${esc(drillOn)} shots…</div>`;
+  }
+  // The tally is the point: if one variable dominates a bad verdict, it is
+  // the cause, and it shows up here as a lopsided row.
+  const tally = (get) => {
+    const m = {};
+    rows.forEach((k) => { const v = get(k); m[v] = (m[v] || 0) + 1; });
+    return Object.entries(m).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `${esc(k)} <b>${n}</b>`).join(' · ');
+  };
+  const band = (v, lo, hi) => (v == null ? 'unknown' : v < lo ? `under ${lo}` : v > hi ? `over ${hi}` : `${lo}–${hi}`);
+
+  return `
+    <div class="drill">
+      <div class="p-head"><span class="p-title">${fmt(rows.length)} ${esc(drillOn)} shots — what they have in common</span>
+        <button class="linky" data-verdictclose="1">Close</button></div>
+      <div class="row"><div class="main"><div class="t">Shot type</div>
+        <div class="s">${tally((k) => (k.is_pair ? `pair or burst (${k.n_shots || 2} shots)` : 'single shot'))}</div></div></div>
+      <div class="row"><div class="main"><div class="t">Weather</div>
+        <div class="s">${tally((k) => k.weather || 'unknown')}</div></div></div>
+      <div class="row"><div class="main"><div class="t">Clay colour</div>
+        <div class="s">${tally((k) => k.clay_colour || 'unknown')}</div></div></div>
+      <div class="row"><div class="main"><div class="t">Detection confidence</div>
+        <div class="s">${tally((k) => band(k.det_conf == null ? null : Math.round(k.det_conf * 10) / 10, 0.4, 0.6))}</div></div></div>
+      <div class="row"><div class="main"><div class="t">Clip length</div>
+        <div class="s">${tally((k) => band(Math.round(k.clip_end - k.clip_start), 6, 12) + 's')}</div></div></div>
+      <div class="row"><div class="main"><div class="t">Slow motion</div>
+        <div class="s">${tally((k) => (k.slo_mo ? 'slow motion' : 'real speed'))}</div></div></div>
+      <div class="row"><div class="main"><div class="t">Channel</div>
+        <div class="s">${tally((k) => k.channel || 'unknown')}</div></div></div>
+      <div class="row"><div class="main"><div class="t">Where we disagreed</div>
+        <div class="s">${tally((k) => (k.owner_outcome ? `we said ${k.owner_outcome}` : 'not called by hand yet'))}</div></div></div>
+
+      <div class="p-head" style="margin-top:14px"><span class="p-title">The shots themselves</span></div>
+      <div class="clipgrid">
+        ${rows.slice(0, 24).map((k) => `
+        <div class="clipcard">
+          <div class="clipmedia">
+            ${k.preview_url
+    ? `<video controls preload="none" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    : k.poster_url ? `<img src="${esc(k.poster_url)}" alt="" loading="lazy" />`
+      : '<span class="rendering">no preview</span>'}
+          </div>
+          <div class="clipcap">
+            <div class="t">${esc(k.title)}</div>
+            <div class="s">${k.is_pair ? `pair · ${k.n_shots || 2} shots` : 'single'}
+              · ${(k.clip_end - k.clip_start).toFixed(1)}s
+              · det ${k.det_conf == null ? '—' : Math.round(k.det_conf * 100) + '%'}
+              · ${esc(k.weather || 'unknown')}${k.slo_mo ? ' · slo-mo' : ''}</div>
+            <div class="s">verdict ${esc(k.outcome)}${k.outcome_conf != null ? ` · ${Math.round(k.outcome_conf * 100)}%` : ''}${k.owner_outcome ? ` · we said <b>${esc(k.owner_outcome)}</b>` : ''}</div>
+          </div>
+        </div>`).join('')}
+      </div>
+      ${rows.length > 24 ? `<p class="foot-note">Newest 24 shown of ${fmt(rows.length)}.</p>` : ''}
+    </div>`;
+}
+
 // Everything the pipeline knows about itself, on one page: what was
 // sourced, what survived, what we called, what the machine called, what the
 // dataset is made of and what any of it is worth. The numbers are stated
@@ -2493,14 +2582,14 @@ function findingsView() {
 
   // A dictionary of counts as a proportioned bar — the shape of a
   // distribution reads faster than a column of numbers.
-  const dist = (obj, order) => {
+  const dist = (obj, order, pick) => {
     const keys = order ? order.filter((k) => obj[k] != null) : Object.keys(obj || {});
     const total = keys.reduce((a, k) => a + Number(obj[k] || 0), 0) || 1;
     if (!keys.length) return '<div class="empty">Nothing recorded yet.</div>';
     return keys.map((k) => `
-      <div class="row">
+      <div class="row${pick ? ' pickable' : ''}"${pick ? ` data-verdict="${esc(k)}"` : ''}>
         <div class="main">
-          <div class="t">${esc(k)}</div>
+          <div class="t">${esc(k)}${pick ? ' <span class="s">— open</span>' : ''}</div>
           <div class="bar"><span style="width:${(100 * obj[k] / total).toFixed(1)}%"></span></div>
         </div>
         <div class="end"><span class="s">${fmt(obj[k])} · ${(100 * obj[k] / total).toFixed(1)}%</span></div>
@@ -2552,7 +2641,8 @@ function findingsView() {
       <div class="p-head"><span class="p-title">The machine's calls</span>
         <span class="s">agreement with us on the first clay: <b>${pctOf(ag.pct)}</b>
           (${num(ag.agreed)} of ${num(ag.compared)})</span></div>
-      ${dist(f.ai_calls || {}, CALLS)}
+      ${dist(f.ai_calls || {}, CALLS, true)}
+      ${verdictDrill()}
       <p class="foot-note">Agreement is measured only where both a person and the
          machine have called the same clip, so it moves as more are called. It is the
          honest read on whether the verdict model can be trusted — and on this
@@ -3030,7 +3120,8 @@ function signature() {
     (state.disc || []).map((v) => v.video_id),
     (state.credits?.rows || []).length, state.spend?.usd,
     (state.pile?.vids || []).map((v) => v.video_id), state.pile?.vtotal,
-    (state.models || []).map((m) => m.id), state.findings && 1, state.coverage,
+    (state.models || []).map((m) => m.id), state.findings && 1, drillOn,
+    drillRows.length, state.coverage,
   ]);
 }
 let painted = '';
@@ -3117,6 +3208,21 @@ function wireTrim() {
     return trimEdits.get(id);
   };
 
+  document.querySelectorAll('[data-verdict]:not([data-wired])').forEach((el) => {
+    el.dataset.wired = '1';
+    el.addEventListener('click', async () => {
+      const v = el.dataset.verdict;
+      if (drillOn === v) { drillOn = null; drillRows = []; return paint(true); }
+      drillOn = v; drillRows = [];
+      paint(true);
+      drillRows = await loadDrill(v);
+      paint(true);
+    });
+  });
+  document.querySelectorAll('[data-verdictclose]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', () => { drillOn = null; drillRows = []; paint(true); });
+  });
   document.querySelectorAll('[data-trimopen]:not([data-wired])').forEach((b) => {
     b.dataset.wired = '1';
     b.addEventListener('click', () => { trimOpen.add(b.dataset.trimopen); redraw(b.dataset.trimopen); });

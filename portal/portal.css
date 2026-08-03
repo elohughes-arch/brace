@@ -719,3 +719,10 @@ select.inp { appearance: none; }
 
 /* The owner's calls on the mastersheet row */
 .verdictline { color: var(--champagne); }
+
+/* Findings drill-down: a verdict opens into the shots behind it. */
+.row.pickable { cursor: pointer; }
+.row.pickable:hover .t { color: var(--clay); }
+.drill { margin-top: 12px; padding: 12px; border-radius: var(--r-md);
+  background: rgba(0,0,0,.16); border: 1px solid var(--line); }
+.drill .clipgrid { margin-top: 10px; }
