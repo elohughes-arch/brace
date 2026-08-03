@@ -402,9 +402,14 @@ const RUNS = [
   { stage: 'clip', label: 'Clip', busy: 'Clipping', desc: 'Find the shots in everything you have approved and cut a clip around each one. Needs Modal.' },
   { stage: 'screen', label: 'Screen', busy: 'Screening', desc: 'Detect clays in every raw cut: no clay rejects it, a clay trims it to the flight and sends it for your check. Needs Modal.' },
   { stage: 'prelabel', label: 'Pre-label', busy: 'Pre-labelling', desc: 'Draw the first pass of boxes on the clays and push the frames to Roboflow for checking. Needs Modal.', primary: true },
+  { stage: 'recut', label: 'Re-cut', busy: 'Re-cutting', desc: 'Cut again the clips whose start and end you have edited by hand, then send them back through screening. Needs Modal.' },
   { stage: 'dataset', label: 'Build set', busy: 'Building', desc: 'Assemble a training set from the boxes we already hold — no Roboflow involved. The overlay filter runs on the way out, so the reticle never reaches the model. Needs Modal.' },
   { stage: 'train', label: 'Train', busy: 'Training', desc: 'Fine-tune our own clay detector on that set. Once one exists, screening uses it instead of Grounding DINO — better on this subject and far cheaper per frame. Needs Modal.' },
 ];
+
+// Bumped with every deploy. It is here for one reason: from the browser
+// there is otherwise no way to tell a missing feature from a stale cache.
+const BUILD = '2026-08-03e';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -544,7 +549,7 @@ async function loadCoverage() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
@@ -1848,6 +1853,7 @@ function shell(body) {
         <div class="side-foot">
           ${state.spend && state.spend.usd
     ? `<div class="side-line">~$${state.spend.usd.toFixed(2)} spent on AI</div>` : ''}
+          <div class="side-line" title="The build this page was served from. If this is not the newest, the deploy has not landed and a hard refresh is the first thing to try.">build ${BUILD}</div>
           <div class="side-line who" title="${esc(state.email)}">${esc(state.email)}</div>
           <button class="signout" id="changepw">${ic('lock', 14)} Password</button>
           <button class="signout" id="signout">${ic('signout', 14)} Sign out</button>
@@ -2203,6 +2209,56 @@ function wireSweep(cards, idOf, pickedSet, sync) {
   });
 }
 
+// Trimming a clip by hand. The clipper cuts on sound, so it cannot know
+// that a clay flew out of frame and the same clay was shot ten seconds
+// later — it hears two bangs and cuts around both, or around the wrong one.
+// The eye can see it in a moment, so the eye gets the controls.
+//
+// Every edit is in absolute seconds into the source video, which is what
+// clip_start and clip_end mean. The preview plays the cut as it stands, so
+// the playhead maps straight across: absolute = clip_start + currentTime.
+// That makes "start here" and "end here" exact rather than a guess.
+const trimEdits = new Map();     // clip_id -> { start, end }
+const trimOpen = new Set();
+
+function trimRow(k) {
+  const id = k.clip_id;
+  const e = trimEdits.get(id) || { start: Number(k.clip_start), end: Number(k.clip_end) };
+  const dirty = Math.abs(e.start - Number(k.clip_start)) > 0.01
+    || Math.abs(e.end - Number(k.clip_end)) > 0.01;
+  if (!trimOpen.has(id)) {
+    return `<div class="trim">
+      <button class="linky" data-trimopen="${esc(id)}">Adjust length</button>
+      ${k.needs_recut ? '<span class="s trim-wait">edit saved — re-cuts on the next run</span>' : ''}
+    </div>`;
+  }
+  const nudge = (which, by) => `
+    <button class="callbtn tiny" data-trim="${esc(id)}" data-which="${which}" data-by="${by}">${by > 0 ? '+' : ''}${by}s</button>`;
+  return `
+    <div class="trim open" data-trimrow="${esc(id)}">
+      <div class="s">Length ${(e.end - e.start).toFixed(1)}s
+        <span class="tm">${mmss(e.start)} → ${mmss(e.end)}</span></div>
+      <div class="calls">
+        <span class="clayno">start</span>
+        ${nudge('start', -2)}${nudge('start', -0.5)}${nudge('start', 0.5)}${nudge('start', 2)}
+        <button class="callbtn tiny" data-trimhere="${esc(id)}" data-which="start">here</button>
+      </div>
+      <div class="calls">
+        <span class="clayno">end</span>
+        ${nudge('end', -2)}${nudge('end', -0.5)}${nudge('end', 0.5)}${nudge('end', 2)}
+        <button class="callbtn tiny" data-trimhere="${esc(id)}" data-which="end">here</button>
+      </div>
+      <div class="clipsend-row">
+        <button class="linky" data-trimcancel="${esc(id)}">Cancel</button>
+        <button class="btn clipsend" data-trimsave="${esc(id)}" ${dirty ? '' : 'disabled'}>Save length</button>
+      </div>
+      <p class="foot-note" style="margin:6px 0 0;padding:0;border:none">"here" takes the
+         playhead where the preview is paused. Saving re-cuts from the source and sends
+         the clip back through screening, so its boxes and verdict are drawn again on
+         the footage that then exists — press Re-cut on Home, or wait for the beat.</p>
+    </div>`;
+}
+
 function triageClipsView() {
   if (state.loading) return '<div class="empty">Loading clips…</div>';
   const c = state.counts || {};
@@ -2230,6 +2286,7 @@ function triageClipsView() {
           · <a href="${esc(yt(k))}" target="_blank" rel="noopener">source ↗</a></div>
         <div class="s">clip ${mmss(k.clip_start)}–${mmss(k.clip_end)}${k.is_pair ? ' · pair' : ''}</div>
         ${callRows(k)}
+        ${trimRow(k)}
         <div class="clipsend-row">
           <button class="btn btn-ghost clipsend" data-deleteone="${esc(k.clip_id)}">Delete</button>
           <button class="btn clipsend" data-sendone="${esc(k.clip_id)}">Send to AI</button>
@@ -2952,7 +3009,8 @@ function signature() {
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
     clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
     queuePicked.size, sweeping,
-    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + JSON.stringify(k.owner_outcomes || [])),
+    state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.needs_recut ? 'r' : '')
+      + k.clip_start + k.clip_end + JSON.stringify(k.owner_outcomes || [])),
     [...clayRows.entries()].map(([k, v]) => k + v).join(),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     state.rej?.total,
@@ -3037,6 +3095,91 @@ function wireCalls() {
       if (host && k) host.outerHTML = callRows(k);
       else paint(true);
       wireCalls();
+    });
+  });
+  wireTrim();
+}
+
+// The trim controls redraw their own row as they are used, so like the calls
+// they bind on their own and never double-bind.
+function wireTrim() {
+  const rowFor = (id) => [...state.clips, ...state.ai].find((x) => x.clip_id === id);
+  const redraw = (id) => {
+    const k = rowFor(id);
+    const host = document.querySelector(`[data-id="${CSS.escape(id)}"] .trim`);
+    if (host && k) { host.outerHTML = trimRow(k); wireTrim(); } else paint(true);
+  };
+  const edit = (id) => {
+    const k = rowFor(id);
+    if (!trimEdits.has(id) && k) {
+      trimEdits.set(id, { start: Number(k.clip_start), end: Number(k.clip_end) });
+    }
+    return trimEdits.get(id);
+  };
+
+  document.querySelectorAll('[data-trimopen]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', () => { trimOpen.add(b.dataset.trimopen); redraw(b.dataset.trimopen); });
+  });
+  document.querySelectorAll('[data-trimcancel]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', () => {
+      const id = b.dataset.trimcancel;
+      trimOpen.delete(id); trimEdits.delete(id); redraw(id);
+    });
+  });
+  document.querySelectorAll('[data-trim]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', () => {
+      const id = b.dataset.trim;
+      const e = edit(id);
+      if (!e) return;
+      const by = Number(b.dataset.by);
+      if (b.dataset.which === 'start') e.start = Math.max(0, e.start + by);
+      else e.end = e.end + by;
+      // A clip that ends before it starts is not an edit, it is a mistake.
+      if (e.end - e.start < 0.5) {
+        note('a clip has to be at least half a second long', 'bad');
+        if (b.dataset.which === 'start') e.start = e.end - 0.5; else e.end = e.start + 0.5;
+      }
+      redraw(id);
+    });
+  });
+  document.querySelectorAll('[data-trimhere]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', () => {
+      const id = b.dataset.trimhere;
+      const k = rowFor(id);
+      const v = document.querySelector(`[data-id="${CSS.escape(id)}"] video`);
+      if (!k || !v) return note('play the preview first, then pause where you want it', 'bad');
+      // The preview is the cut as it currently stands, so the playhead is an
+      // offset into it — absolute time is the clip's own start plus that.
+      const abs = Number(k.clip_start) + (v.currentTime || 0);
+      const e = edit(id);
+      if (b.dataset.which === 'start') e.start = Math.max(0, Math.min(abs, e.end - 0.5));
+      else e.end = Math.max(e.start + 0.5, abs);
+      redraw(id);
+    });
+  });
+  document.querySelectorAll('[data-trimsave]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', async () => {
+      const id = b.dataset.trimsave;
+      const e = trimEdits.get(id);
+      if (!e) return;
+      busy(b, true, 'Saving…');
+      const { error } = await supabase.from('pipeline_clips').update({
+        clip_start: Number(e.start.toFixed(2)),
+        clip_end: Number(e.end.toFixed(2)),
+        needs_recut: true,
+        recut_note: null,
+      }).eq('clip_id', id).select('clip_id');
+      if (error) { note(`could not save the length — ${error.message}`, 'bad'); busy(b, false, 'Save length'); return; }
+      note(`${mmss(e.start)}–${mmss(e.end)} saved — press Re-cut to make the cut`, 'good');
+      const k = rowFor(id);
+      if (k) Object.assign(k, { clip_start: e.start, clip_end: e.end, needs_recut: true });
+      trimOpen.delete(id); trimEdits.delete(id);
+      redraw(id);
     });
   });
 }

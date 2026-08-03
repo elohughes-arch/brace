@@ -398,6 +398,76 @@ def _discover_impl():
     return {"stage": "discover", "candidates": total}
 
 
+# Fetching a video is needed by two stages now — triage on the way in, and
+# recut when a hand-edited clip needs a source that has since been pruned —
+# so it lives out here rather than inside either one.
+def _fetch_video(url, out):
+    # Imported here, not at the top: the modules live in the container image
+    # rather than wherever this file is being read.
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    # A failed earlier run can leave a partial file under this name, and
+    # yt-dlp treats an existing file as already downloaded — success, on
+    # top of garbage ffprobe then chokes on. Start clean.
+    out.unlink(missing_ok=True)
+    # YouTube refuses anonymous downloads from datacenter addresses
+    # ("Sign in to confirm you're not a bot"), so a signed-in session's
+    # cookies live on the volume, put there by:
+    #   modal volume put brace-media cookies.txt /cookies/cookies.txt
+    # yt-dlp rewrites the file as YouTube rotates the session, hence the
+    # copy to local disk: the mounted original stays as exported.
+    cookies: list[str] = []
+    jar = Path(MEDIA) / "cookies" / "cookies.txt"
+    if jar.exists():
+        local = Path(tempfile.gettempdir()) / "cookies.txt"
+        local.write_bytes(jar.read_bytes())
+        cookies = ["--cookies", str(local)]
+
+    # Preference, not demand: -S sorts what YouTube actually offers,
+    # capped at 720p, where a -f selector errors outright when the named
+    # shapes are withheld — which they now routinely are. Each attempt
+    # asks a different set of player clients, because YouTube gates each
+    # client's formats separately and not every gate wants a proof-of-
+    # trust token from a datacenter address. If all fail, keep yt-dlp's
+    # actual words: "exit status 1" diagnoses nothing.
+    # The fallback clients run WITHOUT cookies, deliberately: android_vr
+    # refuses a cookie jar outright ("skipping client ... does not
+    # support cookies"), and it is exactly the client that skips the
+    # proof-of-trust gate the signed-in web client hits.
+    pot = ["--extractor-args", f"youtubepot-bgutilscript:script_path={POT}"]
+    js = ["--js-runtimes", "node"]   # in the image for the POT server anyway
+    attempts = [
+        ["yt-dlp", *cookies, *pot, *js, "-S", "res:720",
+         "--merge-output-format", "mp4", "--no-playlist", "--retries", "2",
+         "-o", str(out), url],
+        ["yt-dlp", *pot, *js, "-S", "res:720", "--no-playlist",
+         "-o", str(out), url],
+        ["yt-dlp", *js, "-S", "res:720", "--no-playlist",
+         "--extractor-args", "youtube:player_client=android_vr",
+         "-o", str(out), url],
+    ]
+    # Warnings above the final line name the actual gate ("requires a
+    # PO token", "only images are available"), so keep each attempt's
+    # tail, not just the last attempt's last line.
+    saids = []
+    for i, cmd in enumerate(attempts, 1):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode == 0:
+            return
+        # The database note keeps the ERROR lines; the container log gets
+        # everything, because the warnings the note drops are the ones
+        # that say whether the token provider actually engaged.
+        all_said = (r.stderr or r.stdout or "").strip()
+        print(f"[download] attempt {i} failed for {url}\n{all_said[-2500:]}")
+        lines = all_said.splitlines()
+        errors = [l for l in lines if l.startswith("ERROR")]
+        tail = " | ".join((errors or lines)[-2:])
+        saids.append(tail or f"exit {r.returncode}")
+    raise RuntimeError(("yt-dlp: " + " /// ".join(saids))[:490])
+
+
 # ---------------------------------------------------------------- triage
 
 # Six hours of timeout: the whole discovered queue in one press. The caller
@@ -428,65 +498,7 @@ def triage(request: fastapi.Request):
 
     limit = min(int(request.query_params.get("limit", 10) or 10), 500)
 
-    def download(url: str, out: Path) -> None:
-        # A failed earlier run can leave a partial file under this name, and
-        # yt-dlp treats an existing file as already downloaded — success, on
-        # top of garbage ffprobe then chokes on. Start clean.
-        out.unlink(missing_ok=True)
-        # YouTube refuses anonymous downloads from datacenter addresses
-        # ("Sign in to confirm you're not a bot"), so a signed-in session's
-        # cookies live on the volume, put there by:
-        #   modal volume put brace-media cookies.txt /cookies/cookies.txt
-        # yt-dlp rewrites the file as YouTube rotates the session, hence the
-        # copy to local disk: the mounted original stays as exported.
-        cookies: list[str] = []
-        jar = Path(MEDIA) / "cookies" / "cookies.txt"
-        if jar.exists():
-            local = Path(tempfile.gettempdir()) / "cookies.txt"
-            local.write_bytes(jar.read_bytes())
-            cookies = ["--cookies", str(local)]
-
-        # Preference, not demand: -S sorts what YouTube actually offers,
-        # capped at 720p, where a -f selector errors outright when the named
-        # shapes are withheld — which they now routinely are. Each attempt
-        # asks a different set of player clients, because YouTube gates each
-        # client's formats separately and not every gate wants a proof-of-
-        # trust token from a datacenter address. If all fail, keep yt-dlp's
-        # actual words: "exit status 1" diagnoses nothing.
-        # The fallback clients run WITHOUT cookies, deliberately: android_vr
-        # refuses a cookie jar outright ("skipping client ... does not
-        # support cookies"), and it is exactly the client that skips the
-        # proof-of-trust gate the signed-in web client hits.
-        pot = ["--extractor-args", f"youtubepot-bgutilscript:script_path={POT}"]
-        js = ["--js-runtimes", "node"]   # in the image for the POT server anyway
-        attempts = [
-            ["yt-dlp", *cookies, *pot, *js, "-S", "res:720",
-             "--merge-output-format", "mp4", "--no-playlist", "--retries", "2",
-             "-o", str(out), url],
-            ["yt-dlp", *pot, *js, "-S", "res:720", "--no-playlist",
-             "-o", str(out), url],
-            ["yt-dlp", *js, "-S", "res:720", "--no-playlist",
-             "--extractor-args", "youtube:player_client=android_vr",
-             "-o", str(out), url],
-        ]
-        # Warnings above the final line name the actual gate ("requires a
-        # PO token", "only images are available"), so keep each attempt's
-        # tail, not just the last attempt's last line.
-        saids = []
-        for i, cmd in enumerate(attempts, 1):
-            r = subprocess.run(cmd, capture_output=True, text=True)
-            if r.returncode == 0:
-                return
-            # The database note keeps the ERROR lines; the container log gets
-            # everything, because the warnings the note drops are the ones
-            # that say whether the token provider actually engaged.
-            all_said = (r.stderr or r.stdout or "").strip()
-            print(f"[download] attempt {i} failed for {url}\n{all_said[-2500:]}")
-            lines = all_said.splitlines()
-            errors = [l for l in lines if l.startswith("ERROR")]
-            tail = " | ".join((errors or lines)[-2:])
-            saids.append(tail or f"exit {r.returncode}")
-        raise RuntimeError(("yt-dlp: " + " /// ".join(saids))[:490])
+    download = _fetch_video
 
     sb = _sb()
     rows = (sb.table("pipeline_videos").select("*")
@@ -1100,6 +1112,133 @@ def prelabel(request: fastapi.Request):
 
     return _noted(sb, {"stage": "prelabel", "processed": done,
             "frames_uploaded": uploaded, "errors": failed})
+
+
+# ---------------------------------------------------------------- recut
+
+# Cut a clip again between the boundaries a person set by hand.
+#
+# The clipper cuts on sound alone, which cannot know that a clay left the
+# frame and came back, or that the bang it heard belonged to the second of
+# two presentations. When the eye disagrees, the portal writes the new
+# clip_start/clip_end and raises needs_recut; this makes the cut real.
+#
+# The source video is required — the clip file on the volume is already
+# trimmed, so it can be shortened but never lengthened from itself. If the
+# source has been pruned it is fetched again from its URL.
+@app.function(image=base_image, secrets=[secret], timeout=3600,
+              volumes={MEDIA: volume})
+@web_endpoint(method="POST")
+def recut(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+
+    import subprocess as sp
+    import tempfile
+    from pathlib import Path
+
+    volume.reload()
+    sb = _sb()
+    limit = min(int(request.query_params.get("limit", 20) or 20), 100)
+    rows = (sb.table("pipeline_clips").select("*")
+            .eq("needs_recut", True).limit(limit).execute().data or [])
+    if not rows:
+        return {"stage": "recut", "processed": 0}
+
+    vids = {}
+    try:
+        ids = list({r["video_id"] for r in rows})
+        vids = {v["video_id"]: v for v in
+                (sb.table("pipeline_videos").select("video_id,url,local_path")
+                 .in_("video_id", ids).execute().data or [])}
+    except Exception as e:  # noqa: BLE001
+        print(f"[recut] could not read the source list: {e}")
+
+    done = failed = refetched = 0
+    for row in rows:
+      try:
+        vid = vids.get(row["video_id"]) or {}
+        src = Path(vid.get("local_path") or "")
+        if not src.exists():
+            # The source was pruned after clipping. Fetch it again rather
+            # than refuse the edit — the owner has already decided.
+            src = Path(MEDIA) / "videos" / f"{row['video_id']}.mp4"
+            src.parent.mkdir(parents=True, exist_ok=True)
+            if not src.exists():
+                url = vid.get("url") or f"https://www.youtube.com/watch?v={row['video_id']}"
+                _fetch_video(url, src)
+                refetched += 1
+            sb.table("pipeline_videos").update(
+                {"local_path": str(src)}).eq("video_id", row["video_id"]).execute()
+
+        start = max(0.0, float(row["clip_start"]))
+        end = float(row["clip_end"])
+        if end - start < 0.4:
+            raise ValueError(f"a {end - start:.2f}s clip is not a clip")
+
+        out = Path(row["file_path"] or (Path(MEDIA) / "clips" / f"{row['clip_id']}.mp4"))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path("/tmp") / f"recut_{row['clip_id']}.mp4"
+        sp.run(["ffmpeg", "-y", "-ss", f"{start:.2f}", "-to", f"{end:.2f}",
+                "-i", str(src), "-c:v", "libx264", "-preset", "fast",
+                "-crf", "20", "-c:a", "aac", str(tmp)],
+               check=True, capture_output=True)
+        out.write_bytes(tmp.read_bytes())
+        tmp.unlink(missing_ok=True)
+
+        # New pixels, so the preview, the poster and every stored box are
+        # all stale. Re-render the two and throw the boxes away: screening
+        # draws them again on the next beat, against the footage that now
+        # actually exists. Anything less would leave boxes pointing at
+        # frames that have moved.
+        pv = row.get("preview_path") or f"previews/{row['clip_id']}.mp4"
+        po = row.get("poster_path") or f"previews/{row['clip_id']}.jpg"
+        small = Path("/tmp") / f"pv_{row['clip_id']}.mp4"
+        sp.run(["ffmpeg", "-y", "-i", str(out), "-vf", "scale=-2:480",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+                "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart",
+                str(small)], check=True, capture_output=True)
+        sb.storage.from_("clips").upload(pv, small.read_bytes(),
+            {"content-type": "video/mp4", "upsert": "true"})
+        small.unlink(missing_ok=True)
+        still = Path("/tmp") / f"po_{row['clip_id']}.jpg"
+        sp.run(["ffmpeg", "-y", "-ss", "0.5", "-i", str(out), "-frames:v", "1",
+                "-vf", "scale=-2:480", "-q:v", "5", str(still)],
+               check=True, capture_output=True)
+        sb.storage.from_("clips").upload(po, still.read_bytes(),
+            {"content-type": "image/jpeg", "upsert": "true"})
+        still.unlink(missing_ok=True)
+
+        try:
+            sb.table("pipeline_labels").delete().eq("clip_id", row["clip_id"]).execute()
+        except Exception as e:  # noqa: BLE001 — stale boxes, not a blocker
+            print(f"[recut] could not clear boxes for {row['clip_id']}: {e}")
+
+        sb.table("pipeline_clips").update({
+            "needs_recut": False,
+            "label_status": "raw",     # screening re-boxes and re-judges it
+            "preview_path": pv, "poster_path": po,
+            "outcome": None, "outcome_conf": None,
+            "outcome_2": None, "outcome_2_conf": None,
+            "outcome_3": None, "outcome_3_conf": None,
+            "outcomes": [], "det_conf": None,
+            "range_m": None, "speed_mph": None,
+        }).eq("clip_id", row["clip_id"]).execute()
+        done += 1
+      except Exception as e:  # noqa: BLE001
+        # Leave the flag up so the next run tries again, and say why.
+        print(f"[recut] {row.get('clip_id')} failed: {e}")
+        try:
+            sb.table("pipeline_clips").update(
+                {"recut_note": f"recut failed: {e}"[:400]}
+            ).eq("clip_id", row["clip_id"]).execute()
+        except Exception:  # noqa: BLE001
+            pass
+        failed += 1
+
+    volume.commit()
+    return _noted(sb, {"stage": "recut", "processed": done,
+                       "refetched_sources": refetched, "errors": failed})
 
 
 # ---------------------------------------------------------------- dataset

@@ -388,6 +388,15 @@ label.row, .pickside { cursor: pointer; }
 .bar span { display: block; height: 100%; background: var(--clay);
   border-radius: var(--r-pill); }
 
+/* Trimming a cut by hand: a quiet row until it is opened, then a small
+   console of nudges under the clip it belongs to. */
+.trim { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.trim.open { background: rgba(0,0,0,.14); border-radius: var(--r-sm);
+  padding: 9px 10px; }
+.trim .tm { margin-left: 8px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.trim-wait { margin-left: 10px; color: var(--champagne); }
+.callbtn.tiny { padding: 3px 8px; font-size: 11px; min-width: 0; }
+
 .row.src.off { opacity: .5; }
 .row .end { margin-left: auto; flex: 0 0 auto;
   display: flex; align-items: center; gap: 12px; }
