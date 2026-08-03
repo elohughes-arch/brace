@@ -402,6 +402,8 @@ const RUNS = [
   { stage: 'clip', label: 'Clip', busy: 'Clipping', desc: 'Find the shots in everything you have approved and cut a clip around each one. Needs Modal.' },
   { stage: 'screen', label: 'Screen', busy: 'Screening', desc: 'Detect clays in every raw cut: no clay rejects it, a clay trims it to the flight and sends it for your check. Needs Modal.' },
   { stage: 'prelabel', label: 'Pre-label', busy: 'Pre-labelling', desc: 'Draw the first pass of boxes on the clays and push the frames to Roboflow for checking. Needs Modal.', primary: true },
+  { stage: 'dataset', label: 'Build set', busy: 'Building', desc: 'Assemble a training set from the boxes we already hold — no Roboflow involved. The overlay filter runs on the way out, so the reticle never reaches the model. Needs Modal.' },
+  { stage: 'train', label: 'Train', busy: 'Training', desc: 'Fine-tune our own clay detector on that set. Once one exists, screening uses it instead of Grounding DINO — better on this subject and far cheaper per frame. Needs Modal.' },
 ];
 
 const log = [];
@@ -508,6 +510,15 @@ async function loadCredits() {
   const { data, error } = await supabase.from('credit_topups')
     .select('*').order('noted_at', { ascending: false }).limit(20);
   return { rows: error ? [] : (data || []), err: error?.message || '' };
+}
+
+// Every detector we have trained, newest first. The row is the whole record
+// of a run — what it was built from, what it scored — so a model can be
+// judged against its predecessor rather than taken on trust.
+async function loadModels() {
+  const { data, error } = await supabase.from('pipeline_models')
+    .select('*').order('created_at', { ascending: false }).limit(10);
+  return error ? [] : (data || []);
 }
 
 // The coverage matrix: surviving clips per weather slice, split into what
@@ -1698,7 +1709,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -2294,6 +2305,45 @@ function triageClipsView() {
     </section>`;
 }
 
+// Our own detectors, and what each one scored. mAP50 is the headline: how
+// well the model finds a clay at a sane overlap. The panel is also the
+// answer to "which detector is screening right now" — the newest run with
+// weights still on the volume is the one in use.
+function modelsPanel() {
+  const rows = state.models || [];
+  const pct = (v) => (v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`);
+  return `
+    <section class="panel" style="margin-bottom:18px">
+      <div class="p-head"><span class="p-title">Our detector${rows.length === 1 ? '' : 's'}${rows.length ? ` — ${rows.length}` : ''}</span>
+        <span>
+          <button class="linky" data-run="dataset">Build set</button>
+          <button class="linky" data-run="train" style="margin-left:10px">Train</button>
+        </span></div>
+      ${rows.length ? rows.map((m, i) => `
+      <div class="row">
+        <span class="dot ${i === 0 ? 'on' : ''}"></span>
+        <div class="main">
+          <div class="t">${esc(m.name)}${i === 0 ? ' · in use' : ''}
+            <span class="s">${esc(m.base || '')} · ${m.epochs || '?'} epochs · ${m.imgsz || '?'}px</span></div>
+          <div class="s">mAP50 <b>${pct(m.map50)}</b> · mAP50-95 ${pct(m.map5095)}
+            · precision ${pct(m.precision_)} · recall ${pct(m.recall)}
+            · trained on ${fmt(m.n_train || 0)} frames, judged on ${fmt(m.n_valid || 0)}</div>
+        </div>
+        <div class="end"><span class="s">${m.created_at ? ago(m.created_at) : ''}</span></div>
+      </div>`).join('')
+    : `<div class="empty">No detector of our own yet. Build set assembles one from
+         the ${fmt(state.counts?.pending ?? 0)} clips already boxed, then Train fits a
+         model to it — after that, screening stops paying for Grounding DINO on
+         every frame.</div>`}
+      <p class="foot-note">Trained here, on our own boxes, from clips on our own
+         volume — Roboflow is not in this loop. The overlay filter runs as the set
+         is built, so the reticle that was being labelled as a clay never reaches
+         the model. Screening picks up the newest run automatically; pin one with
+         MODEL_NAME in the Modal secret, or set DETECTOR=dino to go back for a
+         comparison.</p>
+    </section>`;
+}
+
 function labellingView() {
   if (state.loading) return '<div class="empty">Loading…</div>';
   const c = state.counts || {};
@@ -2369,6 +2419,8 @@ function labellingView() {
         <div class="num">${fmt(c.prelabelled ?? 0)}</div>
         <div class="cap">Pre-labelled</div><div class="sub">boxed, in Roboflow</div></div>
     </div>
+
+    ${modelsPanel()}
 
     <section class="panel">
       <div class="p-head"><span class="p-title">${fmt(total)} clips with the AI</span>
@@ -2694,7 +2746,7 @@ function signature() {
     (state.disc || []).map((v) => v.video_id),
     (state.credits?.rows || []).length, state.spend?.usd,
     (state.pile?.vids || []).map((v) => v.video_id), state.pile?.vtotal,
-    state.coverage,
+    (state.models || []).map((m) => m.id), state.coverage,
   ]);
 }
 let painted = '';
@@ -2759,6 +2811,10 @@ function paint(force = false) {
   document.querySelectorAll('[data-stage]').forEach((b) =>
     b.addEventListener('click', () =>
       runStage(b.dataset.stage, b.dataset.stage === 'discover' ? {} : { limit: batch })));
+  // Build set and Train take no batch size — they work on the whole set —
+  // and both outlive the proxy's wait, so the 202 is the expected answer.
+  document.querySelectorAll('[data-run]').forEach((b) =>
+    b.addEventListener('click', () => runStage(b.dataset.run, {})));
   // Criteria discovery from the Dataset strategy page: search the phrases
   // written for that ladder rung and stamp what's found with its level.
   document.querySelectorAll('[data-dsfind]').forEach((b) =>
@@ -3230,7 +3286,7 @@ async function refresh() {
     // with it, and the page reported only that it could not read the pipeline.
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits, models] = await Promise.all([
       settle(loadCounts(), state.counts),
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
@@ -3255,6 +3311,7 @@ async function refresh() {
       view === 'triage' ? settle(loadDiscovered(), state.disc) : Promise.resolve(state.disc),
       settle(loadActivity(), state.activity),
       view === 'health' ? settle(loadCredits(), state.credits) : Promise.resolve(state.credits),
+      view === 'labelling' ? settle(loadModels(), state.models) : Promise.resolve(state.models),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -3267,6 +3324,7 @@ async function refresh() {
     state.rej = rej;
     state.split = splitPrev;
     state.ai = ai;
+    state.models = models;
     state.trials = trials;
     state.sheet = sheet;
     state.progress = progress;
@@ -3300,7 +3358,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

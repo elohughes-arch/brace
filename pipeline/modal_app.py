@@ -73,8 +73,16 @@ gpu_image = (
         "torch", "torchvision", "transformers>=4.44",
         "supabase", "roboflow", "opencv-python-headless", "pillow", "numpy",
         "fastapi", "anthropic",   # anthropic: the hit/miss verdict on each shot
+        # Our own detector: trained here from our own boxes, and the thing
+        # that eventually replaces Grounding DINO on the screening path.
+        "ultralytics", "pyyaml",
     )
 )
+
+# Where the training set is written and the weights land, both on the volume
+# so a run survives the container that made it.
+DATASETS = f"{MEDIA}/datasets"
+MODELS = f"{MEDIA}/models"
 
 secret = modal.Secret.from_name("brace-pipeline")
 
@@ -103,6 +111,31 @@ def _flush_usage(sb, stage):
             for m, (c, i, o) in per.items()]).execute()
     except Exception as e:  # noqa: BLE001 — accounting must never stop work
         print(f"[spend] could not record usage: {e}")
+
+def _latest_weights(sb):
+    """The newest trained detector's weights, if there is one on the volume.
+
+    MODEL_NAME in the secret pins a particular run — the way to stay on a
+    known-good detector while a newer one is still being judged. Absent
+    that, the most recent training run wins. A row whose weights are no
+    longer on the volume is skipped rather than trusted.
+    """
+    from pathlib import Path
+    try:
+        import os
+        q = sb.table("pipeline_models").select("name,weights_path")
+        pin = os.environ.get("MODEL_NAME")
+        if pin:
+            q = q.eq("name", pin)
+        rows = q.order("created_at", desc=True).limit(5).execute().data or []
+        for r in rows:
+            p = r.get("weights_path")
+            if p and Path(p).exists():
+                return p
+    except Exception as e:  # noqa: BLE001 — no model is a fallback, not a failure
+        print(f"[detector] could not read the model book: {e}")
+    return None
+
 
 UNAUTHORISED = fastapi.responses.JSONResponse(
     {"error": "unauthorised"}, status_code=401)
@@ -749,10 +782,25 @@ def screen(request: fastapi.Request):
     if not rows:
         return {"stage": "screen", "processed": 0}
 
+    # Our own detector if one has been trained, Grounding DINO if not. The
+    # trained model is both better on this narrow subject and far cheaper —
+    # a small YOLO at these sizes runs orders of magnitude faster than the
+    # zero-shot transformer, which is what makes scoring new footage as it
+    # arrives affordable rather than a GPU bill. DETECTOR=dino in the secret
+    # forces the old path back for a comparison.
+    yolo = None
+    if os.environ.get("DETECTOR", "auto") != "dino":
+        best = _latest_weights(sb)
+        if best:
+            from ultralytics import YOLO
+            yolo = YOLO(best)
+            print(f"[screen] detecting with {best}")
     device = "cuda"
-    proc = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
-    gdino = AutoModelForZeroShotObjectDetection.from_pretrained(
-        "IDEA-Research/grounding-dino-base").to(device)
+    proc = gdino = None
+    if yolo is None:
+        proc = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
+        gdino = AutoModelForZeroShotObjectDetection.from_pretrained(
+            "IDEA-Research/grounding-dino-base").to(device)
 
     done = kept = 0
     for row in rows:
@@ -785,20 +833,35 @@ def screen(request: fastapi.Request):
           # not by guessing here.
           thresh = float(os.environ.get("SCREEN_THRESHOLD", 0.32))
           boxes_per_frame = {}
-          for i, frame in enumerate(frames):
-              rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-              inputs = proc(images=rgb, text=DETECT_PROMPT,
-                            return_tensors="pt").to(device)
-              with torch.no_grad():
-                  out = gdino(**inputs)
-              res = proc.post_process_grounded_object_detection(
-                  out, inputs.input_ids, threshold=thresh,
-                  target_sizes=[rgb.shape[:2]])[0]
-              if len(res["boxes"]):
-                  boxes_per_frame[i] = [
-                      {"xyxy": b.tolist(), "conf": float(s)}
-                      for b, s in zip(res["boxes"].cpu(), res["scores"].cpu())
-                  ]
+          if yolo is not None:
+              # Batched, and at the size it was trained on: a clay is a few
+              # pixels, and letting the default shrink the frame to 640
+              # throws away the very thing being looked for.
+              imgsz = int(os.environ.get("DETECT_IMGSZ", 960))
+              for s in range(0, len(frames), 16):
+                  chunk = frames[s:s + 16]
+                  for j, r in enumerate(yolo.predict(chunk, conf=thresh,
+                                                     imgsz=imgsz, verbose=False)):
+                      bs = [{"xyxy": list(map(float, b)), "conf": float(c)}
+                            for b, c in zip(r.boxes.xyxy.cpu().tolist(),
+                                            r.boxes.conf.cpu().tolist())]
+                      if bs:
+                          boxes_per_frame[s + j] = bs
+          else:
+              for i, frame in enumerate(frames):
+                  rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                  inputs = proc(images=rgb, text=DETECT_PROMPT,
+                                return_tensors="pt").to(device)
+                  with torch.no_grad():
+                      out = gdino(**inputs)
+                  res = proc.post_process_grounded_object_detection(
+                      out, inputs.input_ids, threshold=thresh,
+                      target_sizes=[rgb.shape[:2]])[0]
+                  if len(res["boxes"]):
+                      boxes_per_frame[i] = [
+                          {"xyxy": b.tolist(), "conf": float(s)}
+                          for b, s in zip(res["boxes"].cpu(), res["scores"].cpu())
+                      ]
 
           # Drop anything that never actually moved — a ShotKam reticle or
           # any other fixed overlay reads as a small disc to the detector
@@ -1037,6 +1100,198 @@ def prelabel(request: fastapi.Request):
 
     return _noted(sb, {"stage": "prelabel", "processed": done,
             "frames_uploaded": uploaded, "errors": failed})
+
+
+# ---------------------------------------------------------------- dataset
+
+# Build a YOLO training set on the volume from the boxes we already hold.
+# Everything here comes out of pipeline_labels and the clip files — Roboflow
+# is not consulted and not required.
+#
+# The stored boxes are raw detector output, drawn before the fixed-overlay
+# filter existed, so the reticle is in there. Running every clip's boxes back
+# through _clay_track on the way out cleans the whole back catalogue without
+# spending a second of GPU re-detecting it: the same pass that will keep new
+# footage clean also retro-fits the old.
+@app.function(image=base_image, secrets=[secret], timeout=7200,
+              volumes={MEDIA: volume})
+@web_endpoint(method="POST")
+def dataset(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+
+    import cv2
+    import shutil
+    from pathlib import Path
+
+    volume.reload()
+    q = request.query_params
+    name = "".join(c for c in q.get("name", "brace") if c.isalnum() or c in "-_") or "brace"
+    # Keep one detected frame in every N. Consecutive frames at 30fps are
+    # nearly the same picture; each one kept is training time spent teaching
+    # the model nothing new and another chance to overfit a single flight.
+    # 15 against the usual 30fps detection lands about two frames a second.
+    every = max(1, int(q.get("every", 15) or 15))
+    # Only boxes the detector was reasonably sure of become ground truth.
+    floor = float(q.get("conf", 0.35) or 0.35)
+
+    sb = _sb()
+    rows = (sb.table("pipeline_clips")
+            .select("clip_id,video_id,file_path,rf_split,holdout,label_status")
+            .in_("label_status", ["pending", "queued", "prelabelled"])
+            .limit(5000).execute().data or [])
+    if not rows:
+        return {"stage": "dataset", "clips": 0, "images": 0}
+
+    root = Path(DATASETS) / name
+    if root.exists():
+        shutil.rmtree(root)      # a rebuild is a rebuild, not a merge
+    for split in ("train", "valid", "test"):
+        (root / "images" / split).mkdir(parents=True, exist_ok=True)
+        (root / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+    counts = {"train": 0, "valid": 0, "test": 0}
+    empties = clips_used = 0
+    for row in rows:
+      try:
+        src = Path(row["file_path"] or "")
+        if not src.exists():
+            continue
+        lab = (sb.table("pipeline_labels").select("boxes_json,frame_dt,t_offset")
+               .eq("clip_id", row["clip_id"]).execute().data)
+        if not lab or not lab[0].get("boxes_json"):
+            continue
+        frame_dt = float(lab[0].get("frame_dt") or 0.2)
+        t_off = float(lab[0].get("t_offset") or 0.0)
+        boxes = {int(k): v for k, v in lab[0]["boxes_json"].items()}
+
+        cap = cv2.VideoCapture(str(src))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        if not width:
+            cap.release()
+            continue
+        boxes = _clay_track(boxes, width)     # the reticle dies here
+        if not boxes:
+            cap.release()
+            continue
+
+        split = row.get("rf_split") or ("test" if row.get("holdout") else "train")
+        if split not in counts:
+            split = "train"
+        for i in sorted(boxes)[::every]:
+            t = i * frame_dt - t_off
+            if t < 0:
+                continue
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            keep = [b for b in boxes[i] if b.get("conf", 0) >= floor]
+            if not keep:
+                continue
+            h, w = frame.shape[:2]
+            lines = []
+            for b in keep:
+                x1, y1, x2, y2 = b["xyxy"]
+                cx, cy = (x1 + x2) / 2 / w, (y1 + y2) / 2 / h
+                bw, bh = (x2 - x1) / w, (y2 - y1) / h
+                if bw <= 0 or bh <= 0:
+                    continue
+                lines.append(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+            if not lines:
+                empties += 1
+                continue
+            stem = f"{row['clip_id']}_{i:05d}"
+            cv2.imwrite(str(root / "images" / split / f"{stem}.jpg"), frame)
+            (root / "labels" / split / f"{stem}.txt").write_text("\n".join(lines))
+            counts[split] += 1
+        cap.release()
+        clips_used += 1
+      except Exception as e:  # noqa: BLE001 — one bad clip is not the set
+        print(f"[dataset] {row.get('clip_id')} skipped: {e}")
+
+    (root / "data.yaml").write_text(
+        f"path: {root}\ntrain: images/train\nval: images/valid\n"
+        f"test: images/test\nnames:\n  0: clay\n")
+    volume.commit()
+    return _noted(sb, {"stage": "dataset", "name": name, "clips": clips_used,
+                       "train": counts["train"], "valid": counts["valid"],
+                       "test": counts["test"], "empty_frames": empties})
+
+
+# ---------------------------------------------------------------- train
+
+# Fine-tune a detector on our own boxes. An A10G rather than the T4 the
+# screening runs on: training is the one job here worth the faster card,
+# and it is charged by the second, so the quicker run is also the cheaper.
+@app.function(image=gpu_image, secrets=[secret], gpu="A10G", timeout=14400,
+              volumes={MEDIA: volume})
+@web_endpoint(method="POST")
+def train(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+
+    import os
+    from pathlib import Path
+
+    volume.reload()
+    q = request.query_params
+    name = "".join(c for c in q.get("name", "brace") if c.isalnum() or c in "-_") or "brace"
+    root = Path(DATASETS) / name
+    data = root / "data.yaml"
+    if not data.exists():
+        return fastapi.responses.JSONResponse(
+            {"error": f"no dataset called {name} — run the dataset stage first"},
+            status_code=400)
+
+    n_train = len(list((root / "images" / "train").glob("*.jpg")))
+    n_valid = len(list((root / "images" / "valid").glob("*.jpg")))
+    n_test = len(list((root / "images" / "test").glob("*.jpg")))
+    if not n_train:
+        return fastapi.responses.JSONResponse(
+            {"error": "the training split is empty"}, status_code=400)
+    # Ultralytics validates against 'val' every epoch and would fall over on
+    # an empty one. A set too small to have been dealt a valid split trains
+    # against itself — honest, and the numbers are marked untrustworthy.
+    if not n_valid:
+        return fastapi.responses.JSONResponse(
+            {"error": "the valid split is empty — no honest score can come out "
+                      "of this run. Clip more videos, or re-deal the splits."},
+            status_code=400)
+
+    # A clay is a handful of pixels at forty yards, so the image size matters
+    # more here than the model size: shrinking to the usual 640 throws away
+    # the object we are trying to find. Small model, large canvas.
+    base = q.get("base", "yolo11s.pt")
+    epochs = max(1, min(int(q.get("epochs", 80) or 80), 400))
+    imgsz = max(320, min(int(q.get("imgsz", 960) or 960), 1536))
+
+    from ultralytics import YOLO
+    model = YOLO(base)
+    model.train(data=str(data), epochs=epochs, imgsz=imgsz,
+                project=str(Path(MODELS) / name), name="run",
+                exist_ok=True, patience=25, verbose=False)
+    metrics = model.val(data=str(data), imgsz=imgsz, verbose=False)
+
+    out_dir = Path(MODELS) / name / "run" / "weights"
+    best = out_dir / "best.pt"
+    box = getattr(metrics, "box", None)
+    row = {
+        "name": name, "base": base, "epochs": epochs, "imgsz": imgsz,
+        "n_train": n_train, "n_valid": n_valid, "n_test": n_test,
+        "map50": float(getattr(box, "map50", 0) or 0),
+        "map5095": float(getattr(box, "map", 0) or 0),
+        "precision_": float(getattr(box, "mp", 0) or 0),
+        "recall": float(getattr(box, "mr", 0) or 0),
+        "weights_path": str(best) if best.exists() else None,
+    }
+    volume.commit()
+    sb = _sb()
+    try:
+        sb.table("pipeline_models").insert(row).execute()
+    except Exception as e:  # noqa: BLE001 — the weights are the deliverable
+        print(f"[train] could not record the run: {e}")
+    return _noted(sb, {"stage": "train", **row})
 
 
 def _judge_burst(row, frames, fps, step, boxes_per_frame):
