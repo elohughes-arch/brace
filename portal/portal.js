@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03j';
+const BUILD = '2026-08-03n';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -549,7 +549,7 @@ async function loadCoverage() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,presentation,weather,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
@@ -627,7 +627,7 @@ async function titleClips(rows) {
 async function loadAiClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,is_pair,clay_colour,det_conf,range_m,speed_mph,created_at')
+    .select('clip_id,video_id,shot_ts,label_status,roboflow_id,preview_path,poster_path,file_path,outcome,outcome_conf,outcome_2,outcome_2_conf,outcome_3,outcome_3_conf,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,is_pair,clay_colour,presentation,weather,det_conf,range_m,speed_mph,created_at')
     .in('label_status', ['queued', 'prelabelled'])
     .order(aiSort === 'new' ? 'created_at' : 'outcome_conf',
       { ascending: aiSort === 'lo', nullsFirst: false })
@@ -718,6 +718,15 @@ const clayRows = new Map();          // clip_id -> rows opened by hand
 const OWNER_SLOTS = ['owner_outcome', 'owner_outcome_2', 'owner_outcome_3'];
 const MAX_CLAYS = 8;
 
+// What the clay did and what the sky was, as the person watching sees it.
+// Presentation is a property of the shot, never of the video; weather was
+// only ever read once per film by triage, and a day's light moves.
+const PRESENTATIONS = ['crosser L→R', 'crosser R→L', 'going away', 'incoming',
+  'driven', 'quartering', 'looper', 'teal', 'rabbit', 'battue', 'chandelle',
+  'simultaneous pair', 'on report'];
+const WEATHERS = ['clear', 'light cloud', 'overcast', 'bright sun', 'rain',
+  'fog', 'dusk', 'low light'];
+
 // A clip's calls, newest storage first: the array if it has been written,
 // the three legacy columns if this row predates it.
 const ownerCalls = (k) => {
@@ -741,8 +750,12 @@ function callRows(k) {
     mine.filter((v) => v != null).length,
     k.n_shots || 0,
     k.is_pair ? 2 : 1);
-  const shown = Math.min(MAX_CLAYS,
-    Math.max(auto, clayRows.get(k.clip_id) || 1));
+  // A count set by hand is authoritative in both directions. Taking the
+  // larger of the two would make "one fewer" do nothing whenever the
+  // clipper had heard more bangs than there were clays — which is exactly
+  // the case the button exists for.
+  const manual = clayRows.get(k.clip_id);
+  const shown = Math.min(MAX_CLAYS, manual != null ? Math.max(1, manual) : auto);
   const slot = (n) => `
     <div class="calls">
       ${shown > 1 ? `<span class="clayno">clay ${n}</span>` : ''}
@@ -754,7 +767,22 @@ function callRows(k) {
     <div class="yourcall">
       <span class="k">Your call${shown > 1 ? 's — every clay gets one' : ''}</span>
       ${Array.from({ length: shown }, (_, i) => slot(i + 1)).join('')}
-      ${shown < MAX_CLAYS ? `<button class="linky addclay" data-addclay="${esc(k.clip_id)}" data-next="${shown + 1}">+ another clay</button>` : ''}
+      <div class="claynudge">
+        ${shown < MAX_CLAYS ? `<button class="linky addclay" data-addclay="${esc(k.clip_id)}" data-next="${shown + 1}">+ another clay</button>` : ''}
+        ${shown > 1 ? `<button class="linky addclay" data-dropclay="${esc(k.clip_id)}" data-next="${shown - 1}">− one fewer</button>` : ''}
+      </div>
+      <div class="tagrow">
+        <label>Presentation
+          <select class="mini" data-tag="presentation" data-clip="${esc(k.clip_id)}">
+            <option value="">—</option>
+            ${PRESENTATIONS.map((o) => `<option ${k.presentation === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+          </select></label>
+        <label>Weather
+          <select class="mini" data-tag="weather" data-clip="${esc(k.clip_id)}">
+            <option value="">—</option>
+            ${WEATHERS.map((o) => `<option ${k.weather === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+          </select></label>
+      </div>
     </div>`;
 }
 
@@ -2849,6 +2877,8 @@ function findingsView() {
           ${donut(Object.entries(f.clay_colour || {}).sort((a, b) => b[1] - a[1]), { label: 'Clay colour', unit: 'clips' })}</figure>
         <figure><figcaption>Weather</figcaption>
           ${donut(Object.entries(f.weather || {}).sort((a, b) => b[1] - a[1]), { label: 'Weather', unit: 'clips' })}</figure>
+        <figure><figcaption>Presentation <span class="s">what the clay did</span></figcaption>
+          ${donut(Object.entries(f.presentation || {}).sort((a, b) => b[1] - a[1]).slice(0, 6), { label: 'Presentation', unit: 'clips' })}</figure>
         <figure><figcaption>Split <span class="s">train · valid · test</span></figcaption>
           ${donut(['train', 'valid', 'test'].map((k) => [k, (f.splits || {})[k] || 0]), { label: 'Split', unit: 'clips' })}</figure>
       </div>
@@ -3283,7 +3313,8 @@ function signature() {
     queuePicked.size, sweeping,
     lastTouched,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.needs_recut ? 'r' : '')
-      + k.clip_start + k.clip_end + JSON.stringify(k.owner_outcomes || [])),
+      + k.clip_start + k.clip_end + (k.presentation || '') + (k.weather || '')
+      + JSON.stringify(k.owner_outcomes || [])),
     [...clayRows.entries()].map(([k, v]) => k + v).join(),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
     state.rej?.total,
@@ -3354,6 +3385,48 @@ function wireCalls() {
         .update(patch).eq('clip_id', id).select('clip_id');
       if (error) note(`could not save your call — ${error.message}`, 'bad');
       if (row) Object.assign(row, patch);
+      touchCard(id);
+    });
+  });
+  document.querySelectorAll('[data-dropclay]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '1';
+    b.addEventListener('click', async () => {
+      const id = b.dataset.dropclay;
+      const n = Math.max(1, Number(b.dataset.next));
+      clayRows.set(id, n);
+      const row = [...state.clips, ...state.ai].find((x) => x.clip_id === id);
+      // Trim the stored calls to match: a row taken away must not leave a
+      // verdict behind for a clay we have decided was never there.
+      if (row) {
+        const calls = ownerCalls(row).slice(0, n);
+        while (calls.length && calls[calls.length - 1] == null) calls.pop();
+        const patch = { owner_outcomes: calls };
+        OWNER_SLOTS.forEach((f, i) => { patch[f] = calls[i] ?? null; });
+        const { error } = await supabase.from('pipeline_clips')
+          .update(patch).eq('clip_id', id).select('clip_id');
+        if (error) note(`could not drop the clay — ${error.message}`, 'bad');
+        else Object.assign(row, patch);
+      }
+      touchCard(id);
+      const card = b.closest('.clipcard, .airow, .cardv');
+      const k = [...state.clips, ...state.ai].find((x) => x.clip_id === id);
+      const host = card?.querySelector('.yourcall');
+      if (host && k) host.outerHTML = callRows(k); else paint(true);
+      wireCalls();
+    });
+  });
+  // Presentation and weather: what the clay did and what the sky was.
+  document.querySelectorAll('[data-tag]:not([data-wired])').forEach((sel) => {
+    sel.dataset.wired = '1';
+    sel.addEventListener('change', async () => {
+      const id = sel.dataset.clip;
+      const field = sel.dataset.tag;
+      const value = sel.value || null;
+      const { error } = await supabase.from('pipeline_clips')
+        .update({ [field]: value }).eq('clip_id', id).select('clip_id');
+      if (error) return note(`could not save the ${field} — ${error.message}`, 'bad');
+      const row = [...state.clips, ...state.ai].find((x) => x.clip_id === id);
+      if (row) row[field] = value;
       touchCard(id);
     });
   });

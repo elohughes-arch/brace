@@ -924,6 +924,14 @@ def screen(request: fastapi.Request):
                      check=True, capture_output=True)
               Path(path).write_bytes(trimmed.read_bytes())
               trimmed.unlink()
+          # Render whenever the pixels changed OR nothing has ever been
+          # rendered for this clip. Rendering only on a trim left every cut
+          # that needed no trimming with no preview at all — promoted to the
+          # check queue as an unwatchable black card, waiting on a clip-stage
+          # backfill that only runs when the clip stage runs. A clip nobody
+          # can watch cannot be checked, which is the whole job of the page.
+          needs_render = trimmed_now or not row.get("preview_path") or not row.get("poster_path")
+          if needs_render:
               small = Path("/tmp") / f"pv_{row['clip_id']}.mp4"
               sp.run(["ffmpeg", "-y", "-i", path, "-vf", "scale=-2:480",
                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
@@ -965,7 +973,7 @@ def screen(request: fastapi.Request):
           # Only claim a preview that was actually rendered. Stamping the path
           # without the file behind it is how 143 clips once became unwatchable:
           # the backfill saw a non-null path and skipped them forever.
-          if trimmed_now:
+          if needs_render:
               update["preview_path"] = pv
               update["poster_path"] = po
           sb.table("pipeline_clips").update(update).eq(

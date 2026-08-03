@@ -778,3 +778,11 @@ select.inp { appearance: none; }
   font-variant-numeric: tabular-nums; }
 
 @media (max-width: 520px) { .viz { flex-direction: column; align-items: flex-start; } }
+
+/* Clay count nudges, and the two things only a person watching can record. */
+.claynudge { display: flex; gap: 14px; margin-top: 6px; }
+.tagrow { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.tagrow label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 46%;
+  min-width: 0; font-size: 10.5px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--text-3); }
+.tagrow select { width: 100%; }
