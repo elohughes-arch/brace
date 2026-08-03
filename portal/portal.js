@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03z';
+const BUILD = '2026-08-04a';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -581,7 +581,9 @@ async function loadClips() {
 // buffered and started the download again, so a preview could never finish
 // loading between polls. Same URL, same buffer, no reload.
 const signedUrls = new Map();   // path -> { url, until }
-const SIGN_FOR = 3600;
+// Six hours, not one. The tab is left open all day on this page, and a URL
+// that outlives the sitting is one that never dies mid-review.
+const SIGN_FOR = 6 * 3600;
 
 async function signClipMedia(rows) {
   const now = Date.now();
@@ -606,6 +608,21 @@ async function signClipMedia(rows) {
     k.preview_url = signedUrls.get(k.preview_path)?.url || null;
     k.poster_url = signedUrls.get(k.poster_path)?.url || null;
   });
+  // A re-signed URL has to reach the page, and a repaint will not carry it:
+  // the repaint signature records only whether a preview exists, not which
+  // URL it is, so re-signing changed nothing the page could notice. The
+  // markup kept the first URL it was given and went on serving it until it
+  // expired — which is why a tab left open an hour filled with dead
+  // players. Patch the elements directly, and never under a clip that is
+  // playing.
+  if (stale.length) {
+    document.querySelectorAll('[data-path]').forEach((el) => {
+      const fresh = signedUrls.get(el.dataset.path)?.url;
+      if (!fresh || el.getAttribute('src') === fresh) return;
+      if (el.tagName === 'VIDEO' && !el.paused && !el.ended) return;
+      el.setAttribute('src', fresh);
+    });
+  }
   // The cache must not grow without bound as pages are flipped through.
   if (signedUrls.size > 600) {
     for (const [p, v] of signedUrls) {
@@ -1101,7 +1118,7 @@ function trialsPanel() {
     <div class="clipcard">
       <div class="clipmedia">
         ${k.preview_url
-    ? `<video controls preload="none" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    ? `<video controls preload="none" data-path="${esc(k.preview_path || '')}" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
     : '<span class="rendering">no preview</span>'}
       </div>
       <div class="clipcap">
@@ -1330,7 +1347,7 @@ function rejectedView() {
     <div class="clipcard">
       <div class="clipmedia">
         ${k.preview_url
-    ? `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    ? `<video controls preload="metadata" data-path="${esc(k.preview_path || '')}" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
     : k.poster_url
       ? `<img src="${esc(k.poster_url)}" alt="" />`
       : '<span class="rendering">Preview rendering — plays here within the hour</span>'}
@@ -2473,7 +2490,8 @@ const ytOpen = new Set();
 function clipMedia(k) {
   const fs = `<button class="expand" data-expand="${esc(k.clip_id)}" title="Full screen">⤢</button>`;
   if (k.preview_url) {
-    return `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>${fs}`;
+    return `<video controls preload="metadata" data-path="${esc(k.preview_path || '')}"
+      ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>${fs}`;
   }
   if (ytOpen.has(k.clip_id)) {
     const a = Math.max(0, Math.floor(k.clip_start || 0));
@@ -2629,7 +2647,7 @@ function triageClipsView() {
         <div class="clipcard">
           <div class="clipmedia">
             ${k.preview_url
-    ? `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    ? `<video controls preload="metadata" data-path="${esc(k.preview_path || '')}" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
     : k.poster_url
       ? `<img src="${esc(k.poster_url)}" alt="" />`
       : '<span class="rendering">Preview rendering — plays here within the hour</span>'}
@@ -2852,7 +2870,7 @@ function verdictDrill() {
         <div class="clipcard">
           <div class="clipmedia">
             ${k.preview_url
-    ? `<video controls preload="none" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
+    ? `<video controls preload="none" data-path="${esc(k.preview_path || '')}" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
     : k.poster_url ? `<img src="${esc(k.poster_url)}" alt="" loading="lazy" />`
       : '<span class="rendering">no preview</span>'}
           </div>
@@ -3182,7 +3200,7 @@ function labellingView() {
       <div class="aiwrap">
         <div class="aileft">
           ${k.preview_url
-    ? `<video class="clipvid" controls preload="none" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>` : ''}
+    ? `<video class="clipvid" controls preload="none" data-path="${esc(k.preview_path || '')}" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>` : ''}
           <div class="t">${esc(k.title || k.video_id)}${k.shot_no ? ` — shot ${k.shot_no}` : ''}</div>
           <div class="s">${k.label_status === 'queued'
     ? 'queued — the AI boxes it within the hour'
@@ -3238,31 +3256,54 @@ function labellingView() {
     ${trialsPanel()}`;
 }
 
+// Taking clips off the page.
+//
+// Both of these used to make you wait for work that had nothing to do with
+// the card disappearing. Send waited on the labeller being fired — a Modal
+// call the proxy holds for up to twenty-five seconds — and Delete waited on
+// a full reload of every panel on the page. Neither answer changes what the
+// press meant, so neither is worth standing still for.
+//
+// The card goes now, the write follows, and only a failure brings it back:
+// refresh() restores the truth if the database disagreed.
+function takeOffPage(ids) {
+  const gone = new Set(ids);
+  ids.forEach((id) => {
+    picked.delete(id);
+    document.querySelector(`.clipcard[data-clip="${CSS.escape(id)}"]`)?.remove();
+  });
+  state.clips = state.clips.filter((k) => !gone.has(k.clip_id));
+  const n = document.getElementById('pickn');
+  if (n) n.textContent = picked.size;
+  const dn = document.getElementById('pickdn');
+  if (dn) dn.textContent = picked.size;
+  settled();
+}
+
 async function queueClips(ids, btn) {
   if (!ids.length) return;
   if (btn) busy(btn, true, 'Sending…');
+  takeOffPage(ids);
   const { error } = await supabase.from('pipeline_clips')
     .update({ label_status: 'queued' }).in('clip_id', ids).select('clip_id');
   if (error) { note(`could not queue clips — ${error.message}`, 'bad'); await refresh(); return; }
   note(`${ids.length} clip${ids.length === 1 ? '' : 's'} queued — handing over to Roboflow now`, 'good');
-  ids.forEach((id) => picked.delete(id));
-  // The handover is one press: queueing alone would wait for the half-past
-  // heartbeat, so the labeller is fired immediately. It works through 50 a
-  // run; the heartbeat sweeps up anything beyond that within the hour.
-  await runStage('prelabel', { limit: 50 });
+  // Fired, not awaited. The beat would box these within the half hour
+  // anyway; firing now only makes it sooner, and nobody should watch a
+  // spinner for it.
+  runStage('prelabel', { limit: 50 }).catch(() => {});
 }
 
 async function deleteClips(ids, btn) {
   if (!ids.length) return;
   if (btn) busy(btn, true, 'Deleting…');
+  takeOffPage(ids);
   // Same bucket screening's own rejects land in — reversible from the
   // Rejected by screening panel rather than gone for good.
   const { error } = await supabase.from('pipeline_clips')
     .update({ label_status: 'rejected' }).in('clip_id', ids).select('clip_id');
   if (error) { note(`could not delete clips — ${error.message}`, 'bad'); await refresh(); return; }
   note(`${ids.length} clip${ids.length === 1 ? '' : 's'} deleted`, 'good');
-  ids.forEach((id) => picked.delete(id));
-  await refresh();
 }
 
 // portal.js is a module, so the drag-select layer in portal-select.js cannot
