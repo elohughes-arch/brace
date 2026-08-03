@@ -512,6 +512,16 @@ async function loadCredits() {
   return { rows: error ? [] : (data || []), err: error?.message || '' };
 }
 
+// The whole findings report in one call. A dozen separate queries would be
+// a dozen round trips and a dozen chances to half-load; the database builds
+// the object where the data already is.
+async function loadFindings() {
+  try {
+    const { data, error } = await supabase.rpc('findings_report');
+    return error ? null : data;
+  } catch { return null; }
+}
+
 // Every detector we have trained, newest first. The row is the whole record
 // of a run — what it was built from, what it scored — so a model can be
 // judged against its predecessor rather than taken on trust.
@@ -1758,9 +1768,9 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
+const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'findings', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -1783,7 +1793,7 @@ let dashEpoch = -1;
 const dashboardIsCurrent = () => dashEpoch === epoch;
 
 const AGENTIC_VIEWS = ['control', 'review', 'sources', 'triage', 'rejected',
-  'labelling', 'mastersheet', 'export', 'health'];
+  'labelling', 'findings', 'mastersheet', 'export', 'health'];
 
 /* The portal's front door: four rooms, pick one. The wordmark up top
    always leads back here. */
@@ -1825,6 +1835,7 @@ function shell(body) {
           <a href="#rejected" class="sub ${view === 'rejected' ? 'on' : ''}">Rejected pile${(state.pile?.vtotal || 0) + (state.pile?.total || 0) ? ` <b>${fmt((state.pile?.vtotal || 0) + (state.pile?.total || 0))}</b>` : ''}</a>
           ${item('review', 'Review', state.counts?.downloaded)}
           ${item('labelling', 'Labelling', state.counts?.queued)}
+          ${item('findings', 'Findings')}
           ${item('mastersheet', 'Mastersheet')}
           ${item('export', 'Export')}
           ${item('health', 'Health', (state.health || []).filter((h) => healthStatus(h)[0] !== 'ok').length)}
@@ -2395,6 +2406,166 @@ function modelsPanel() {
     </section>`;
 }
 
+/* ---------- findings ---------- */
+
+// Everything the pipeline knows about itself, on one page: what was
+// sourced, what survived, what we called, what the machine called, what the
+// dataset is made of and what any of it is worth. The numbers are stated
+// plainly, including the ones that are unflattering — a figure you cannot
+// see is a figure you cannot act on.
+function findingsView() {
+  if (state.loading) return '<div class="empty">Loading the findings…</div>';
+  const f = state.findings;
+  if (!f) {
+    return `<div class="crm-head"><div><h1>Findings</h1></div></div>
+      <div class="panel"><div class="empty">The report could not be built. If this
+      persists the findings_report function may be missing from the database.</div></div>`;
+  }
+  const s = f.sourcing || {};
+  const cl = f.clips || {};
+  const ds = f.dataset || {};
+  const ag = f.agreement || {};
+  const models = f.models || [];
+  const num = (v, suffix = '') => (v == null ? '—' : `${fmt(v)}${suffix}`);
+  const pctOf = (v) => (v == null ? '—' : `${v}%`);
+
+  const stat = (n, cap, sub, warn = false) => `
+    <div class="stat${warn ? ' stat-warn' : ''}">
+      <div class="num">${n}</div><div class="cap">${cap}</div>
+      <div class="sub">${sub}</div></div>`;
+
+  // A dictionary of counts as a proportioned bar — the shape of a
+  // distribution reads faster than a column of numbers.
+  const dist = (obj, order) => {
+    const keys = order ? order.filter((k) => obj[k] != null) : Object.keys(obj || {});
+    const total = keys.reduce((a, k) => a + Number(obj[k] || 0), 0) || 1;
+    if (!keys.length) return '<div class="empty">Nothing recorded yet.</div>';
+    return keys.map((k) => `
+      <div class="row">
+        <div class="main">
+          <div class="t">${esc(k)}</div>
+          <div class="bar"><span style="width:${(100 * obj[k] / total).toFixed(1)}%"></span></div>
+        </div>
+        <div class="end"><span class="s">${fmt(obj[k])} · ${(100 * obj[k] / total).toFixed(1)}%</span></div>
+      </div>`).join('');
+  };
+
+  const CALLS = ['hit', 'chipped', 'miss', 'unclear'];
+  const spend = (f.spend || []).reduce((a, r) => a + Number(r.usd || 0), 0);
+
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Findings</h1>
+        <p>Every figure the pipeline holds about itself, in one place: what has been
+           sourced, what survived each gate, what we have called by hand, what the
+           machine called, what the training set is actually made of, and what any
+           of it is worth. Where a number is unflattering it is still here.</p>
+      </div>
+    </div>
+
+    <div class="stats">
+      ${stat(num(s.videos), 'Videos seen', `${num(s.channels)} channels · ${num(s.hours)} hours`)}
+      ${stat(pctOf(s.kept_pct), 'Survived triage', `${num(s.rejected)} refused · mean score ${s.avg_score ?? '—'}`)}
+      ${stat(num(cl.total), 'Clips cut', `${num(cl.pairs)} pairs · ${num(cl.slo_mo)} slow-motion`)}
+      ${stat(num(ds.boxed_frames), 'Frames boxed', `${num(ds.label_rows)} clips · ~${num(ds.avg_frames_per_clip)} a clip`)}
+    </div>
+
+    <section class="panel">
+      <div class="p-head"><span class="p-title">The funnel — where every video ended up</span></div>
+      ${dist({ discovered: s.discovered, triaged: s.triaged, approved: s.approved,
+    clipped: s.clipped, rejected: s.rejected, binned: s.binned, errored: s.errored },
+    ['discovered', 'triaged', 'approved', 'clipped', 'rejected', 'binned', 'errored'])}
+      <p class="foot-note">${num(s.forced)} forced in by hand, overruling triage.
+         A funnel this narrow at the top is discovery's problem, not triage's:
+         ${pctOf(s.kept_pct)} surviving means most of what is being found is not
+         what we are looking for.</p>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Our calls — the ground truth</span>
+        <span class="s">${num(cl.called)} of ${num(cl.total)} clips called · ${pctOf(cl.call_pct)}</span></div>
+      ${dist(f.owner_calls || {}, CALLS)}
+      <p class="foot-note">These are the only calls in the system made by a person, and
+         the only thing any model is ultimately scored against. Up to
+         ${num(cl.max_clays)} clays have been called on a single clip.</p>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">The machine's calls</span>
+        <span class="s">agreement with us on the first clay: <b>${pctOf(ag.pct)}</b>
+          (${num(ag.agreed)} of ${num(ag.compared)})</span></div>
+      ${dist(f.ai_calls || {}, CALLS)}
+      <p class="foot-note">Agreement is measured only where both a person and the
+         machine have called the same clip, so it moves as more are called. It is the
+         honest read on whether the verdict model can be trusted — and on this
+         sample it cannot yet.</p>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">The training set</span></div>
+      <div class="row"><div class="main"><div class="t">Boxed frames held</div>
+        <div class="s">every frame the detector drew a box on, before striding</div></div>
+        <div class="end"><b>${num(ds.boxed_frames)}</b></div></div>
+      <div class="row"><div class="main"><div class="t">Clips with boxes</div></div>
+        <div class="end"><b>${num(ds.label_rows)}</b></div></div>
+      <div class="row"><div class="main"><div class="t">Mean detection confidence</div>
+        <div class="s">how sure the detector was of the clay it followed</div></div>
+        <div class="end"><b>${cl.avg_det_conf ?? '—'}</b></div></div>
+      <div class="p-head" style="margin-top:14px"><span class="p-title">Split</span></div>
+      ${dist(f.splits || {}, ['train', 'valid', 'test'])}
+      <p class="foot-note">Dealt per video, so no flight's frames straddle two sets.
+         ${(f.splits || {}).test ? '' : '<b>There is no test split.</b> Validation tunes the model, so scoring against it flatters — the first mAP will read better than the truth until some clips are held back as a ruler that is never trained on.'}</p>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Conditions covered</span></div>
+      <div class="p-head"><span class="p-title" style="font-size:12px">Weather</span></div>
+      ${dist(f.weather || {})}
+      <div class="p-head" style="margin-top:14px"><span class="p-title" style="font-size:12px">Clay colour</span></div>
+      ${dist(f.clay_colour || {})}
+      <div class="p-head" style="margin-top:14px"><span class="p-title" style="font-size:12px">Ladder level</span></div>
+      ${dist(f.levels || {})}
+      <p class="foot-note">A thin row is not a statistic, it is the next filming day.
+         A detector taught only on clear sky is a detector that fails on the first
+         overcast morning, and "unknown" is the largest weather slice here because
+         triage could not read the conditions from the frames it sampled.</p>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Reliability — what our detectors scored</span></div>
+      ${models.length ? models.map((m) => `
+      <div class="row">
+        <div class="main">
+          <div class="t">${esc(m.name)} <span class="s">${esc(m.base || '')} · ${m.epochs || '?'} epochs · ${m.imgsz || '?'}px</span></div>
+          <div class="s">mAP50 <b>${m.map50 == null ? '—' : (m.map50 * 100).toFixed(1) + '%'}</b>
+            · mAP50-95 ${m.map5095 == null ? '—' : (m.map5095 * 100).toFixed(1) + '%'}
+            · precision ${m.precision_ == null ? '—' : (m.precision_ * 100).toFixed(1) + '%'}
+            · recall ${m.recall == null ? '—' : (m.recall * 100).toFixed(1) + '%'}
+            · ${fmt(m.n_train || 0)} train / ${fmt(m.n_valid || 0)} valid frames</div>
+        </div>
+        <div class="end"><span class="s">${m.created_at ? ago(m.created_at) : ''}</span></div>
+      </div>`).join('')
+    : '<div class="empty">No detector trained yet. Build set and Train on the Labelling page, and the scores land here.</div>'}
+      <p class="foot-note">mAP50 is the headline: how reliably the model finds a clay
+         at a sensible overlap. Judge it against the previous run, not against a
+         number from a paper — the subject here is a few pixels wide.</p>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">What it has cost</span>
+        <span class="s">$${spend.toFixed(2)} metered</span></div>
+      ${(f.spend || []).length ? (f.spend || []).map((r) => `
+      <div class="row"><div class="main">
+        <div class="t">${esc(r.model)}</div>
+        <div class="s">${fmt(r.calls || 0)} calls · ${fmt(r.in_tokens || 0)} in · ${fmt(r.out_tokens || 0)} out</div>
+      </div><div class="end"><b>$${Number(r.usd || 0).toFixed(2)}</b></div></div>`).join('')
+    : '<div class="empty">Nothing metered yet.</div>'}
+      <p class="foot-note">Model calls only. The GPU time that screens and trains is
+         billed by Modal and is not counted here, and neither is Roboflow.</p>
+    </section>`;
+}
+
 function labellingView() {
   if (state.loading) return '<div class="empty">Loading…</div>';
   const c = state.counts || {};
@@ -2801,7 +2972,7 @@ function signature() {
     (state.disc || []).map((v) => v.video_id),
     (state.credits?.rows || []).length, state.spend?.usd,
     (state.pile?.vids || []).map((v) => v.video_id), state.pile?.vtotal,
-    (state.models || []).map((m) => m.id), state.coverage,
+    (state.models || []).map((m) => m.id), state.findings && 1, state.coverage,
   ]);
 }
 let painted = '';
@@ -2891,6 +3062,7 @@ function paint(force = false) {
     : view === 'sources' ? sourcesView()
     : view === 'triage' ? triageClipsView()
     : view === 'labelling' ? labellingView()
+    : view === 'findings' ? findingsView()
     : view === 'mastersheet' ? mastersheetView()
     : view === 'strategy' ? strategyView()
     : view === 'export' ? exportView()
@@ -3395,7 +3567,7 @@ async function refresh() {
     // with it, and the page reported only that it could not read the pipeline.
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits, models] = await Promise.all([
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits, models, findings] = await Promise.all([
       settle(loadCounts(), state.counts),
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
@@ -3421,6 +3593,7 @@ async function refresh() {
       settle(loadActivity(), state.activity),
       view === 'health' ? settle(loadCredits(), state.credits) : Promise.resolve(state.credits),
       view === 'labelling' ? settle(loadModels(), state.models) : Promise.resolve(state.models),
+      view === 'findings' ? settle(loadFindings(), state.findings) : Promise.resolve(state.findings),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -3434,6 +3607,7 @@ async function refresh() {
     state.split = splitPrev;
     state.ai = ai;
     state.models = models;
+    state.findings = findings;
     state.trials = trials;
     state.sheet = sheet;
     state.progress = progress;
@@ -3467,7 +3641,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();

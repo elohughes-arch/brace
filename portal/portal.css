@@ -380,6 +380,14 @@ label.row, .pickside { cursor: pointer; }
 .clipsend-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .clipsend { width: auto; padding: 7px 14px; font-size: 11px; }
 
+/* Findings: a count as a proportioned bar. The shape of a distribution
+   reads faster than a column of figures, and the clay fill keeps the eye
+   on the one accent this portal has. */
+.bar { height: 5px; margin-top: 6px; border-radius: var(--r-pill);
+  background: rgba(255,255,255,.07); overflow: hidden; }
+.bar span { display: block; height: 100%; background: var(--clay);
+  border-radius: var(--r-pill); }
+
 .row.src.off { opacity: .5; }
 .row .end { margin-left: auto; flex: 0 0 auto;
   display: flex; align-items: center; gap: 12px; }

@@ -1429,14 +1429,33 @@ def _clay_track(boxes_per_frame, frame_w):
             match["items"].append((i, b))
             match["frames"].add(i)
 
+    # Three sightings, not two. Measured against the real stored tracks, the
+    # reticle turns up in every frame of a clip — 589 of 589 in the one this
+    # was checked against — so three costs nothing against a real overlay,
+    # while two was also catching slow or distant clays that had barely
+    # crossed a pixel between neighbouring frames. That direction of error is
+    # the expensive one: a clay wrongly dropped leaves an unlabelled clay in
+    # the training image, which teaches the detector that a clay is
+    # background.
+    fixtures = [c for c in clusters if len(c["frames"]) >= 3]
     live = {}
     for c in clusters:
-        if len(c["frames"]) >= 2:
-            continue   # seen more than once at the same spot — a fixture
+        if len(c["frames"]) >= 3:
+            continue   # seen again and again at one spot — a fixture
         for i, b in c["items"]:
             live.setdefault(i, []).append(b)
     if not live:
         return {}
+
+    # A graphic does not land on the same pixel every time: compression and
+    # the detector's own wobble scatter a few reads a pixel or two off the
+    # rest, and those form their own one- and two-frame clusters that check 1
+    # then waves through. So each fixture also poisons the ground around it.
+    # A track is only killed by this if *every* one of its points sits in
+    # that ground — a real clay crossing the centre of the picture, which is
+    # exactly where the reticle sits and where clays are often shot, moves
+    # through and out, so it lives.
+    dead_r = max(4.0, frame_w * 0.006)
 
     # Check 2 — nearest-centroid tracking over what survived check 1: a gap
     # of a frame or two (a missed detection) keeps a track alive, but a
@@ -1474,6 +1493,12 @@ def _clay_track(boxes_per_frame, frame_w):
         # of frame width is the reticle's signature, not a fast clay's.
         fixed = len(t["pts"]) >= max(3, span * 0.4) and spread < frame_w * 0.02
         if fixed:
+            continue
+        # Loitering entirely inside a fixture's ground — reticle residue.
+        if fixtures and all(
+                any(math.hypot(px - f["cx"], py - f["cy"]) <= dead_r
+                    for f in fixtures)
+                for _, px, py in t["pts"]):
             continue
 
         # Speed, measured per step and taken at the median rather than from
