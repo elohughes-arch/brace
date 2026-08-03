@@ -297,8 +297,11 @@
 
   function injectStyles() {
     const style = document.createElement("style");
+    // Scoped to the clip cards this file governs. Unscoped, it hid every
+    // checkbox in the portal — the rejected pile's and the review queue's
+    // included — so their select-and-delete could not be ticked at all.
     style.textContent =
-      CONFIG.tickSelector + " { display: none !important; }" +
+      CONFIG.clipSelector + " :is(" + CONFIG.tickSelector + ") { display: none !important; }" +
       "#marquee { position: absolute; z-index: 9999; pointer-events: none;" +
       "  border: 1px solid #2F6FEB; background: rgba(47,111,235,.14); border-radius: 2px; }" +
       CONFIG.clipSelector + " { position: relative; user-select: none; cursor: pointer; border-radius: 6px;" +

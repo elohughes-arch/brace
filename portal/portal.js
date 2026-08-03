@@ -1106,7 +1106,7 @@ function rejectedView() {
   // A thumbnail per refusal, playing in place when pressed — 460 discards
   // are only auditable if the eye can sweep them.
   const vcard = (v) => `
-    <article class="cardv rej">
+    <article class="cardv rej ${pilePicked.has(v.video_id) ? 'picked' : ''}" data-pileid="${esc(v.video_id)}">
       <label class="clippick pilebox" title="Select for deletion">
         <input type="checkbox" class="tick" data-pilepick="${esc(v.video_id)}" ${pilePicked.has(v.video_id) ? 'checked' : ''} />
       </label>
@@ -2037,7 +2037,7 @@ function card(v) {
   const href = /^https?:\/\//i.test(v.url || '')
     ? v.url : `https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}`;
   return `
-    <article class="cardv" data-id="${esc(v.video_id)}">
+    <article class="cardv ${queuePicked.has(v.video_id) ? 'picked' : ''}" data-id="${esc(v.video_id)}" data-qid="${esc(v.video_id)}">
       <label class="clippick pilebox" title="Select for deletion">
         <input type="checkbox" class="tick" data-qpick="${esc(v.video_id)}" ${queuePicked.has(v.video_id) ? 'checked' : ''} />
       </label>
@@ -2099,7 +2099,36 @@ const ROBOFLOW_ANNOTATE = 'https://app.roboflow.com/elohughes-icloud-com/brace-c
 const picked = new Set();
 let sweeping = false;      // Select multiple: drag across cards to pick them
 let sweepDown = false;
-window.addEventListener('mouseup', () => { sweepDown = false; });
+window.addEventListener('mouseup', () => {
+  sweepDown = false;
+  document.body.classList.remove('is-dragging');
+});
+
+// Press on a card and pull the mouse across its neighbours — the same sweep
+// the Triage grid uses, for any page with a card and a tick. The card keeps
+// its own buttons: a press that lands on one is left alone, so Watch here,
+// Re-triage and Force in still work.
+function wireSweep(cards, idOf, pickedSet, sync) {
+  const apply = (card, on) => {
+    const id = idOf(card);
+    if (!id) return;
+    on ? pickedSet.add(id) : pickedSet.delete(id);
+    card.classList.toggle('picked', on);
+    const cb = card.querySelector('input[type=checkbox]');
+    if (cb) cb.checked = on;
+    sync();
+  };
+  cards.forEach((card) => {
+    card.addEventListener('mousedown', (e) => {
+      if (e.target.closest('button, a, select, textarea, iframe, video')) return;
+      e.preventDefault();
+      sweepDown = true;
+      document.body.classList.add('is-dragging');
+      apply(card, !pickedSet.has(idOf(card)));
+    });
+    card.addEventListener('mouseenter', () => { if (sweepDown) apply(card, true); });
+  });
+}
 
 function triageClipsView() {
   if (state.loading) return '<div class="empty">Loading clips…</div>';
@@ -3017,13 +3046,19 @@ function paint(force = false) {
   document.getElementById('clipprev')?.addEventListener('click', () => {
     flip(() => { clipPage = Math.max(0, clipPage - 1); });
   });
-  document.querySelectorAll('[data-pilepick]').forEach((cb) => cb.addEventListener('change', () => {
-    cb.checked ? pilePicked.add(cb.dataset.pilepick) : pilePicked.delete(cb.dataset.pilepick);
+  const syncPile = () => {
     const n = document.getElementById('pilen');
     if (n) n.textContent = pilePicked.size;
     const del = document.getElementById('piledel');
     if (del) del.disabled = !pilePicked.size;
+  };
+  document.querySelectorAll('[data-pilepick]').forEach((cb) => cb.addEventListener('change', () => {
+    cb.checked ? pilePicked.add(cb.dataset.pilepick) : pilePicked.delete(cb.dataset.pilepick);
+    cb.closest('.cardv')?.classList.toggle('picked', cb.checked);
+    syncPile();
   }));
+  wireSweep(document.querySelectorAll('.cardv.rej[data-pileid]'),
+    (card) => card.dataset.pileid, pilePicked, syncPile);
   document.getElementById('pileall')?.addEventListener('click', () => {
     document.querySelectorAll('[data-pilepick]').forEach((cb) => { cb.checked = true; pilePicked.add(cb.dataset.pilepick); });
     paint(true);
@@ -3047,13 +3082,19 @@ function paint(force = false) {
   });
   // The same sweep for the review queue: judging 83 videos one card at a
   // time when most are obvious noes is the slow way round.
-  document.querySelectorAll('[data-qpick]').forEach((cb) => cb.addEventListener('change', () => {
-    cb.checked ? queuePicked.add(cb.dataset.qpick) : queuePicked.delete(cb.dataset.qpick);
+  const syncQueue = () => {
     const n = document.getElementById('qn');
     if (n) n.textContent = queuePicked.size;
     const del = document.getElementById('qdel');
     if (del) del.disabled = !queuePicked.size;
+  };
+  document.querySelectorAll('[data-qpick]').forEach((cb) => cb.addEventListener('change', () => {
+    cb.checked ? queuePicked.add(cb.dataset.qpick) : queuePicked.delete(cb.dataset.qpick);
+    cb.closest('.cardv')?.classList.toggle('picked', cb.checked);
+    syncQueue();
   }));
+  wireSweep(document.querySelectorAll('.cardv[data-qid]'),
+    (card) => card.dataset.qid, queuePicked, syncQueue);
   document.getElementById('qall')?.addEventListener('click', () => {
     document.querySelectorAll('[data-qpick]').forEach((cb) => { cb.checked = true; queuePicked.add(cb.dataset.qpick); });
     paint(true);
