@@ -304,6 +304,16 @@ def _advance():
 
     drain("prelabel", clips_queued, "?limit=50", passes=6)
 
+    # The ladder. Everything above this line moves footage toward being
+    # labelled; nothing above it ever trains anything, which is why
+    # pipeline_models sat empty while every other counter climbed. A rung is
+    # taken on its own once it has the material, one rung a beat, and the
+    # run outlives this beat so it is spawned rather than waited on.
+    try:
+        _climb_run.spawn()
+    except Exception as e:  # noqa: BLE001 — never sink the beat over training
+        print(f"[advance] could not start the climb: {e}")
+
     # The pulse: every beat stamps the clock, so the Health page can tell a
     # quiet machine from a dead one.
     import datetime
@@ -312,6 +322,179 @@ def _advance():
         "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }).execute()
     return {"stage": "advance"}
+
+
+# ---------------------------------------------------------------- climb
+
+# Curriculum learning, actually run.
+#
+# The ladder has existed for a while: every clip is sorted onto a rung by how
+# hard it is, the dataset builder takes ?phases=, and each rung's set is named
+# after itself so its weights never overwrite another's. What was missing was
+# anything that climbed it. The beat carried footage as far as being labelled
+# and stopped, so no model was ever trained and mAP had nothing to report.
+#
+# One rung a beat, in order, easiest first:
+#
+#   p1     phase 1 alone — the foundation. Slow orange clays, clean light.
+#   p12    phase 1 and 2 together, and so on up.
+#
+# Each rung is trained on everything up to and including it, not on the rung
+# alone, because a model that has forgotten the easy case has not learned the
+# hard one. And a rung is only taken once the one below it has been trained,
+# so the scores form a sequence you can read: if p12 scores worse than p1,
+# phase 2 is where the difficulty actually is, and that is the whole point of
+# building it as a ladder rather than one heap.
+#
+# A rung is skipped when it is too thin to teach anything — a handful of clips
+# would move the score by noise and read as a result. It waits until it has
+# enough, which is the honest behaviour and also why nothing needs deciding.
+def _climb_logic():
+    import datetime
+    import os
+    import requests
+
+    sb = _sb()
+    if os.environ.get("AUTOTRAIN", "1") not in ("1", "true", "yes"):
+        return {"stage": "climb", "skipped": "AUTOTRAIN is off"}
+
+    base = "https://elohughes-arch--brace-pipeline"
+    headers = {"x-pipeline-token": os.environ["PIPELINE_TOKEN"]}
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # Training runs for the better part of an hour and beats are half-hourly,
+    # so without a lock the machine would start a second run on top of the
+    # first, and a third on top of that.
+    try:
+        lock = (sb.table("pipeline_health").select("status,detail,checked_at")
+                .eq("probe", "climb").execute().data or [])
+        if lock and lock[0].get("status") == "running":
+            when = lock[0].get("checked_at") or ""
+            try:
+                started = datetime.datetime.fromisoformat(when.replace("Z", "+00:00"))
+                if (now - started).total_seconds() < 6 * 3600:
+                    return {"stage": "climb", "skipped": "a run is already going"}
+            except ValueError:
+                pass          # unreadable stamp — treat the lock as stale
+    except Exception as e:  # noqa: BLE001
+        print(f"[climb] could not read the lock: {e}")
+
+    # What material each rung actually has. Only clips with boxes count: a
+    # clip nobody has boxed teaches nothing, however hard it is.
+    rows = (sb.table("pipeline_clips")
+            .select("clip_id,video_id,clay_colour,weather,slo_mo,range_m,"
+                    "speed_mph,background")
+            .in_("label_status", ["pending", "queued", "prelabelled"])
+            .limit(5000).execute().data or [])
+    ids = [r["clip_id"] for r in rows]
+    boxed = set()
+    for i in range(0, len(ids), 200):
+        for l in (sb.table("pipeline_labels").select("clip_id")
+                  .in_("clip_id", ids[i:i + 200]).execute().data or []):
+            boxed.add(l["clip_id"])
+    rows = [r for r in rows if r["clip_id"] in boxed]
+    vids = {}
+    vid_ids = list({r["video_id"] for r in rows})
+    for i in range(0, len(vid_ids), 200):
+        for v in (sb.table("pipeline_videos").select("video_id,weather,ds_level")
+                  .in_("video_id", vid_ids[i:i + 200]).execute().data or []):
+            vids[v["video_id"]] = v
+    per = {}
+    for r in rows:
+        p = _phase_of(r, vids.get(r["video_id"]) or {})
+        per[p] = per.get(p, 0) + 1
+
+    trained = {m.get("name") for m in
+               (sb.table("pipeline_models").select("name").execute().data or [])}
+
+    # The first rung carries the whole foundation and deserves a real set
+    # behind it; every rung after only has to add enough to be worth a run.
+    first_min = int(os.environ.get("CLIMB_FIRST_MIN", 40))
+    rung_min = int(os.environ.get("CLIMB_RUNG_MIN", 15))
+
+    target = None
+    total = 0
+    for k in range(1, 9):
+        n = per.get(k, 0)
+        if n < (first_min if k == 1 else rung_min):
+            break                      # this rung is too thin — wait for more
+        total += n
+        name = "p" + "".join(str(x) for x in range(1, k + 1))
+        if name not in trained:
+            target = (k, name, total)
+            break                      # one rung a beat, and only the next one
+    if not target:
+        print(f"[climb] nothing to take: rungs {per}, trained {sorted(trained)}")
+        return {"stage": "climb", "rungs": per, "trained": sorted(trained),
+                "took": None}
+
+    k, name, clips = target
+    phases = ",".join(str(x) for x in range(1, k + 1))
+
+    def mark(status, detail):
+        try:
+            sb.table("pipeline_health").upsert({
+                "probe": "climb", "status": status, "detail": detail,
+                "checked_at": datetime.datetime.now(
+                    datetime.timezone.utc).isoformat(),
+            }).execute()
+        except Exception as e:  # noqa: BLE001
+            print(f"[climb] could not record state: {e}")
+
+    mark("running", f"building {name} — phases {phases}, {clips} clips")
+    print(f"[climb] taking rung {k} as {name}: phases {phases}, {clips} clips")
+
+    try:
+        r = requests.post(f"{base}-dataset.modal.run?name={name}&phases={phases}",
+                          headers=headers, timeout=7200)
+        built = r.json() if r.headers.get("content-type", "").startswith(
+            "application/json") else {}
+        print(f"[climb] dataset {name}: {r.status_code} {str(built)[:300]}")
+        if built.get("train", 0) < 1:
+            mark("ok", f"{name}: the training split came out empty")
+            return {"stage": "climb", "took": name, "trained": False,
+                    "why": "empty training split"}
+        # Ultralytics validates every epoch and a rung filtered down to
+        # nothing to validate against cannot produce an honest number, so it
+        # is left alone rather than trained against itself and reported.
+        if built.get("valid", 0) < 1:
+            mark("ok", f"{name}: no valid split — nothing to score against")
+            return {"stage": "climb", "took": name, "trained": False,
+                    "why": "empty valid split"}
+
+        mark("running", f"training {name} on {built.get('train')} images")
+        r2 = requests.post(f"{base}-train.modal.run?name={name}",
+                           headers=headers, timeout=21000)
+        out = r2.json() if r2.headers.get("content-type", "").startswith(
+            "application/json") else {}
+        print(f"[climb] train {name}: {r2.status_code} {str(out)[:300]}")
+        mark("ok", f"{name} trained — mAP50 {out.get('map50')}")
+        return {"stage": "climb", "took": name, "phases": phases,
+                "images": built.get("train"), "map50": out.get("map50")}
+    except Exception as e:  # noqa: BLE001 — a failed rung must not hold the lock
+        mark("fail", f"{name}: {str(e)[:200]}")
+        print(f"[climb] {name} failed: {e}")
+        return {"stage": "climb", "took": name, "error": str(e)[:200]}
+
+
+@app.function(image=base_image, secrets=[secret], timeout=21600,
+              volumes={MEDIA: volume})
+def _climb_run():
+    return _climb_logic()
+
+
+# The same climb, by hand, for when you would rather not wait for the beat.
+# It returns as soon as the work is handed off, because a training run
+# outlives any request that starts it.
+@app.function(image=base_image, secrets=[secret], timeout=300)
+@web_endpoint(method="POST")
+def climb(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+    call = _climb_run.spawn()
+    return {"stage": "climb", "started": True,
+            "detail": "building and training the next rung on Modal",
+            "call_id": getattr(call, "object_id", None)}
 
 
 # ---------------------------------------------------------------- health
