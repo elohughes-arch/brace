@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03k';
+const BUILD = '2026-08-03l';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1202,7 +1202,7 @@ function rejectedView() {
         ${v.triage_notes ? `<p class="notes">${esc(v.triage_notes)}</p>` : ''}
         <div class="judge">
           <button class="btn btn-ghost" data-watch="${esc(v.video_id)}">${watching === v.video_id ? 'Close' : 'Watch here'}</button>
-          <button class="btn btn-ghost" data-retriage="${esc(v.video_id)}">Re-triage</button>
+          <button class="btn btn-ghost bad" data-bin="${esc(v.video_id)}">Delete</button>
           <button class="btn btn-ghost" data-force="${esc(v.video_id)}"
             title="You have watched it — fetch it and clip it, whatever triage scored">Force in</button>
         </div>
@@ -3466,12 +3466,19 @@ function wireTrim() {
         recut_note: null,
       }).eq('clip_id', id).select('clip_id');
       if (error) { note(`could not save the length — ${error.message}`, 'bad'); busy(b, false, 'Save length'); return; }
-      note(`${mmss(e.start)}–${mmss(e.end)} saved — press Re-cut to make the cut`, 'good');
       touchCard(id);
       const k = rowFor(id);
       if (k) Object.assign(k, { clip_start: e.start, clip_end: e.end, needs_recut: true });
       trimOpen.delete(id); trimEdits.delete(id);
       redraw(id);
+      // The saved edit starts the cut itself — no second button to remember.
+      // If a run is already going, the edit waits and the next run takes it.
+      if (!running) {
+        note(`${mmss(e.start)}–${mmss(e.end)} saved — re-cutting now`, 'good');
+        runStage('recut');
+      } else {
+        note(`${mmss(e.start)}–${mmss(e.end)} saved — a run is going; the next re-cut takes it`, 'good');
+      }
     });
   });
 }
@@ -3830,6 +3837,18 @@ function paint(force = false) {
     });
     syncPile();
   });
+  document.querySelectorAll('[data-bin]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      busy(b, true, 'Deleting…');
+      // 'binned', not deleted: the row survives so discovery's dedupe
+      // still knows this video and can never re-collect it.
+      const { error } = await supabase.from('pipeline_videos')
+        .update({ status: 'binned' }).eq('video_id', b.dataset.bin).select('video_id');
+      note(error ? `could not delete — ${error.message}`
+        : 'removed from the pile — the sheet still remembers it', error ? 'bad' : 'good');
+      pilePicked.delete(b.dataset.bin);
+      state.loading = true; paint(true); refresh();
+    }));
   document.getElementById('piledel')?.addEventListener('click', async (e) => {
     const ids = [...pilePicked];
     if (!ids.length) return;
