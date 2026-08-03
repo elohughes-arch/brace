@@ -28,18 +28,36 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Haiku by default: scoring eight thumbnails against a rubric is well within
-# its reach, and it is about a fifth of a penny per video against four pence
-# on Opus. Set TRIAGE_MODEL in the Modal secret to trade money for judgement
-# — e.g. claude-opus-5 if the scores start letting junk through.
-MODEL = os.environ.get("TRIAGE_MODEL", "claude-haiku-4-5")
+# Sonnet by default, not Haiku. Haiku was chosen when the job looked like
+# "score eight thumbnails against a rubric", which it is well within reach of
+# — but the job is actually "find a two-inch disc against a sky", and it was
+# being asked at a resolution where that disc did not exist. Sonnet 5 reads
+# high-resolution images, which is the half of the fix that the frame width
+# below cannot supply on its own.
+#
+# The cost is real but small: measured at 4,342 input tokens a video on the
+# old frames, Haiku ran about £0.003 a video against roughly £0.03 on Sonnet
+# at the larger size. Set TRIAGE_MODEL to trade it back down.
+MODEL = os.environ.get("TRIAGE_MODEL", "claude-sonnet-5")
 
 # 0-10. Six is 'usable footage with visible clays'; below that the clip stage
 # would be cutting around shots we could never label.
 KEEP_THRESHOLD = 6.0
 
 N_FRAMES = 8          # frames sampled across the video
-FRAME_WIDTH = 768     # downscale before sending; clays stay legible at this size
+
+# 768 was wrong, and it was the whole problem. A clay at forty yards is a
+# couple of pixels across in a 768-wide frame — the judge was not being harsh,
+# it genuinely could not see the thing it was being asked to look for. With
+# `keep` requiring clays_visible, a judge that cannot see clays rejects
+# everything: 619 of 755 videos scored 0, 1 or 2, and the score distribution
+# came out bimodal rather than graded, which is what a detector looks like
+# when it is guessing.
+#
+# 1536 sits inside the high-resolution tier (2576px on the long edge) rather
+# than at the ceiling: four times the pixels, roughly three times the image
+# tokens, and a clay that is now tens of pixels instead of two or three.
+FRAME_WIDTH = int(os.environ.get("TRIAGE_FRAME_WIDTH", 1536))
 JPEG_QUALITY = 4      # ffmpeg -q:v, lower is better
 
 CAMERA_VALUES = ("pov_glasses", "barrel", "gopro", "third_person", "broadcast", "unknown")
