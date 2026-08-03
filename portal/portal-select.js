@@ -80,11 +80,17 @@
     if (!dragMoved && dx < 4 && dy < 4) return;
     if (!dragMoved) {
       dragMoved = true;
+      // The drag sweeps across headings, captions and the page around them,
+      // none of which the card's own user-select covers — without this the
+      // whole grid turns blue with selected text as the marquee moves.
+      document.body.classList.add("is-dragging");
       marquee = document.createElement("div");
       marquee.id = "marquee";
       document.body.appendChild(marquee);
     }
     event.preventDefault();
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) sel.removeAllRanges();
     const box = {
       left: Math.min(dragStart.x, event.pageX), right: Math.max(dragStart.x, event.pageX),
       top: Math.min(dragStart.y, event.pageY), bottom: Math.max(dragStart.y, event.pageY),
@@ -103,6 +109,7 @@
 
   function onPointerUp() {
     window.removeEventListener("pointermove", onPointerMove);
+    document.body.classList.remove("is-dragging");
     if (marquee) marquee.remove();
     if (!dragMoved) clearSelection();
     marquee = null; dragStart = null; boxes = [];
@@ -163,16 +170,26 @@
     viewerIndex = -1;
   }
 
+  // portal.js owns the Supabase session, so its own queue/delete are the
+  // real implementations; the HTTP endpoints below are only a fallback for
+  // a page that loads this file without it.
+  async function runOp(name, endpoint, ids, extra) {
+    const ops = window.BraceOps;
+    if (ops && typeof ops[name] === "function") return ops[name](ids);
+    const res = await fetch(endpoint, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, ...(extra || {}) }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return null;
+  }
+
   async function deleteClip(id, fromViewer) {
     const card = cardFor(id);
     if (!card) return;
     card.classList.add("is-deleting");
     try {
-      const res = await fetch(CONFIG.deleteEndpoint, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: [id], reason: "bad clip" }),
-      });
-      if (!res.ok) throw new Error(await res.text());
+      await runOp("deleteClips", CONFIG.deleteEndpoint, [id], { reason: "bad clip" });
       if (fromViewer) {
         const wasLast = viewerIndex >= visible().length - 1;
         card.remove(); selected.delete(id);
@@ -196,17 +213,30 @@
     const button = document.getElementById("bulk-queue");
     if (button) { button.disabled = true; button.textContent = "Sending…"; }
     try {
-      const res = await fetch(CONFIG.queueEndpoint, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
-      });
-      if (!res.ok) throw new Error(await res.text());
+      await runOp("queueClips", CONFIG.queueEndpoint, ids);
       for (const el of clips()) if (selected.has(idOf(el))) el.classList.add("is-queued");
       clearSelection();
     } catch (err) {
       alert("Send failed: " + err.message);
     } finally {
       if (button) { button.disabled = false; button.textContent = "Send to AI"; }
+    }
+  }
+
+  async function deleteSelected() {
+    const ids = Array.from(selected);
+    if (!ids.length) return;
+    if (!confirm("Delete " + ids.length + " clip" + (ids.length === 1 ? "" : "s") + "?")) return;
+    const button = document.getElementById("bulk-delete");
+    if (button) { button.disabled = true; button.textContent = "Deleting…"; }
+    try {
+      await runOp("deleteClips", CONFIG.deleteEndpoint, ids, { reason: "bad clip" });
+      for (const el of clips()) if (selected.has(idOf(el))) el.remove();
+      clearSelection();
+    } catch (err) {
+      alert("Delete failed: " + err.message);
+    } finally {
+      if (button) { button.disabled = false; button.textContent = "Delete"; }
     }
   }
 
@@ -301,7 +331,10 @@
       "#bulk-bar.visible { transform: translate(-50%, 0); }" +
       "#bulk-bar button { border: 0; border-radius: 8px; padding: 9px 14px; font: inherit; cursor: pointer; }" +
       "#bulk-queue { background: #34503C; color: #F4EEE1; }" +
+      "#bulk-delete { background: #8C2F2F; color: #F4EEE1; }" +
       "#bulk-clear { background: transparent; color: #7E9B82; }" +
+      "body.is-dragging, body.is-dragging * { user-select: none !important;" +
+      "  -webkit-user-select: none !important; }" +
       "[data-filter].active { outline: 2px solid #B8995A; }";
     document.head.appendChild(style);
   }
@@ -312,9 +345,11 @@
     bar.id = "bulk-bar";
     bar.innerHTML = '<span id="bulk-count">0 clips selected</span>' +
       '<button id="bulk-queue" type="button">Send to AI</button>' +
+      '<button id="bulk-delete" type="button">Delete</button>' +
       '<button id="bulk-clear" type="button">Clear</button>';
     document.body.appendChild(bar);
     bar.querySelector("#bulk-queue").addEventListener("click", sendToAI);
+    bar.querySelector("#bulk-delete").addEventListener("click", deleteSelected);
     bar.querySelector("#bulk-clear").addEventListener("click", clearSelection);
   }
 

@@ -79,6 +79,8 @@ const MAX_DURATION_S = 3600;
 const REJECT_TITLE_WORDS = [
   'review', 'unboxing', 'compilation', 'vs', 'reaction',
   'cleaning', 'reload', 'airsoft', 'video game', 'gameplay',
+  'roblox', 'minecraft', 'fortnite', 'gta', 'farming simulator',
+  "let's play", 'walkthrough', 'protest', 'manifestation', 'riot',
 ];
 
 const yt = async (path, params) => {

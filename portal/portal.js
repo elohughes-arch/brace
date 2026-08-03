@@ -523,12 +523,19 @@ async function loadCoverage() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,owner_outcome,owner_outcome_2,owner_outcome_3,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
   if (error) return [];
   const rows = data || [];
+  // Whose clip is whose. The queue is ordered the same way every load, so
+  // alternating on the row's position in the whole queue — not just this
+  // page — deals an exactly even split that stays put across page flips.
+  // A sorter already recorded in the database wins; this only fills the gap.
+  rows.forEach((k, i) => {
+    k.sorter = k.sorter || ((clipPage * PAGE + i) % 2 === 0 ? 'eddie' : 'rupert');
+  });
   // Previews live in a private bucket; a signed URL is the only way a
   // browser can play one, and signing is itself gated by is_portal_owner().
   await signClipMedia(rows);
@@ -1119,6 +1126,8 @@ function rejectedView() {
         <div class="judge">
           <button class="btn btn-ghost" data-watch="${esc(v.video_id)}">${watching === v.video_id ? 'Close' : 'Watch here'}</button>
           <button class="btn btn-ghost" data-retriage="${esc(v.video_id)}">Re-triage</button>
+          <button class="btn btn-ghost" data-addreview="${esc(v.video_id)}"
+            title="Skip scoring — put it straight in the Review queue">Add to review</button>
         </div>
       </div>
     </article>`;
@@ -2365,6 +2374,11 @@ async function deleteClips(ids, btn) {
   await refresh();
 }
 
+// portal.js is a module, so the drag-select layer in portal-select.js cannot
+// see these. It has no Supabase client of its own — without this it would
+// have to post to an HTTP endpoint that does not exist.
+window.BraceOps = { queueClips, deleteClips };
+
 /* ---------- mastersheet ---------- */
 
 // Every video the machine has ever touched, in one ledger. Its other job is
@@ -2925,6 +2939,20 @@ function paint(force = false) {
         .eq('video_id', b.dataset.retriage).select('video_id');
       note(error ? `could not re-triage — ${error.message}`
         : `${b.dataset.retriage} sent back — the next triage run rescores it`, error ? 'bad' : 'good');
+      refresh();
+    }));
+  // The eye overruling the machine outright: skip scoring and put the video
+  // straight in the Review queue, for the rare good one triage got wrong —
+  // re-triage alone would just risk the same automated call twice.
+  document.querySelectorAll('[data-addreview]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      const { error } = await supabase.from('pipeline_videos')
+        .update({ status: 'downloaded',
+                  triage_notes: 'added to review by hand, overruling triage' })
+        .eq('video_id', b.dataset.addreview).select('video_id');
+      note(error ? `could not add it — ${error.message}`
+        : `${b.dataset.addreview} added to the review queue`, error ? 'bad' : 'good');
       refresh();
     }));
   // Placing a video on the ladder by hand, from the Mastersheet.

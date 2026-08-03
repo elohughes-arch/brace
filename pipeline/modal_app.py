@@ -341,11 +341,22 @@ def discover(request: fastapi.Request):
               schedule=modal.Cron("0 2 * * *"))  # nightly 02:00 UTC
 def _discover_impl():
     import os
-    from discover import DEFAULT_QUERIES, search
+    from discover import DEFAULT_QUERIES, DEFAULT_CHANNELS, search, channel_uploads
     sb = _sb()
+    key = os.environ["YOUTUBE_API_KEY"]
     total = 0
     for q in DEFAULT_QUERIES:
-        rows = search(os.environ["YOUTUBE_API_KEY"], q)
+        rows = search(key, q)
+        if rows:
+            sb.table("pipeline_videos").upsert(
+                rows, on_conflict="video_id", ignore_duplicates=True
+            ).execute()
+        total += len(rows)
+    # Channels worth crawling in full — a camera maker or shooting school
+    # whose uploads are almost entirely POV clay footage — rather than
+    # leaving them to a keyword search's luck. See DEFAULT_CHANNELS.
+    for c in DEFAULT_CHANNELS:
+        rows = channel_uploads(key, c)
         if rows:
             sb.table("pipeline_videos").upsert(
                 rows, on_conflict="video_id", ignore_duplicates=True
@@ -467,6 +478,13 @@ def triage(request: fastapi.Request):
                 wav = Path(td) / "a.wav"
                 extract_audio(out, wav)
                 shot_times = detect_shots(wav)
+                # The clip stage's threshold is tuned tight for a precise
+                # cut point; here it only needs to answer yes/no, and a shot
+                # too quiet or distant to clear it would otherwise sink the
+                # whole video with no recourse. One retry, looser, before
+                # calling it silent.
+                if not shot_times:
+                    shot_times = detect_shots(wav, k_mad=6.0)
             shots_heard = len(shot_times)
             if shots_heard == 0:
                 sb.table("pipeline_videos").update({

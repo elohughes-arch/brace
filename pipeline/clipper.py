@@ -42,8 +42,16 @@ def extract_audio(video: Path, wav_path: Path) -> None:
     )
 
 
-def detect_shots(wav_path: Path) -> list[float]:
-    """Return timestamps (s) of detected gunshots."""
+def detect_shots(wav_path: Path, k_mad: float = K_MAD) -> list[float]:
+    """Return timestamps (s) of detected gunshots.
+
+    k_mad is exposed rather than hardcoded so a caller that only needs to
+    know *whether* a shot is in there — triage's presence check, not the
+    clip stage's precise cut points — can retry looser. K_MAD=12 is tuned
+    to keep clip boundaries tight; a video with real shots too quiet or
+    distant to clear it would otherwise be dropped outright, and unlike a
+    clip cut a beat early, that failure is never recoverable.
+    """
     sr, audio = wavfile.read(wav_path)
     audio = audio.astype(np.float64)
     if audio.ndim > 1:
@@ -56,7 +64,7 @@ def detect_shots(wav_path: Path) -> list[float]:
 
     med = np.median(energy)
     mad = np.median(np.abs(energy - med)) + 1e-9
-    threshold = med + K_MAD * mad
+    threshold = med + k_mad * mad
 
     spike = energy > threshold
     if not spike.any():
