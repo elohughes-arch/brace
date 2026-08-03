@@ -203,7 +203,7 @@ def _split(group: str) -> str:
 # It calls the stages over HTTP with the pipeline's own token, so the logic
 # and its limits live in exactly one place.
 @app.function(image=base_image, secrets=[secret], timeout=3500,
-              schedule=modal.Cron("30 * * * *"))
+              schedule=modal.Cron("*/30 * * * *"))
 def _advance():
     import os
     import requests
@@ -225,8 +225,6 @@ def _advance():
                           headers=headers, timeout=3000)
         print(f"[advance] {stage}: {r.status_code} {r.text[:300]}")
 
-    if videos_in("discovered"):
-        hit("triage", "?limit=25")
     def clips_unpreviewed():
         return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
                 .in_("label_status", ["pending", "queued", "rejected"])
@@ -235,6 +233,9 @@ def _advance():
     def clips_in(status):
         return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
                 .eq("label_status", status).execute().count or 0)
+
+    def errored():
+        return videos_in("error")
 
     def clips_to_recut():
         return (sb.table("pipeline_clips").select("clip_id", count="exact", head=True)
@@ -248,7 +249,7 @@ def _advance():
     # instead of nibbling at it.
     import time
     started = time.time()
-    BUDGET = 45 * 60          # stop well inside the hour, whatever is left
+    BUDGET = 24 * 60          # inside the half-hour, so beats never overlap
 
     def drain(stage, work, query="", passes=12):
         for _ in range(passes):
@@ -259,11 +260,48 @@ def _advance():
                 return
             hit(stage, query)
 
+    # An errored video was a dead end — nothing in the machine ever looked
+    # at one again, so a download that failed on a bad night stayed failed
+    # for good. One retry a beat, and if it fails again it lands back here
+    # and is retried next time rather than being lost.
+    if errored():
+        try:
+            back = (sb.table("pipeline_videos").select("video_id")
+                    .eq("status", "error").limit(5).execute().data or [])
+            for v in back:
+                sb.table("pipeline_videos").update(
+                    {"status": "discovered", "local_path": None}
+                ).eq("video_id", v["video_id"]).execute()
+            print(f"[advance] returned {len(back)} errored videos to discovered")
+        except Exception as e:  # noqa: BLE001 — never sink the beat
+            print(f"[advance] could not retry errored videos: {e}")
+
     # Order matters: a re-cut clip goes back to raw, so cut before screening
     # and it is boxed on the same beat rather than waiting for the next.
+    drain("triage", lambda: videos_in("discovered"), "?limit=25", passes=6)
     drain("recut", clips_to_recut, "?limit=25", passes=4)
     drain("clip", lambda: videos_in("approved") or clips_unpreviewed(), "", passes=4)
     drain("screen", lambda: clips_in("raw"), "?limit=20")
+    # The last gate. Screening has already proved a clay is in the cut, and
+    # Roboflow is itself where boxes get checked — so holding every clip for
+    # a press before it can be boxed is a second queue doing the first one's
+    # job. AUTOSEND=1 in the secret hands checked clips over on the beat and
+    # makes the flow hands-off apart from Review. Off by default, because it
+    # spends Roboflow quota and that should be a decision, not a surprise.
+    if os.environ.get("AUTOSEND") in ("1", "true", "yes"):
+        try:
+            ready = (sb.table("pipeline_clips").select("clip_id")
+                     .eq("label_status", "pending")
+                     .neq("owner_outcomes", "[]")
+                     .limit(200).execute().data or [])
+            if ready:
+                ids = [r["clip_id"] for r in ready]
+                sb.table("pipeline_clips").update({"label_status": "queued"}) \
+                  .in_("clip_id", ids).execute()
+                print(f"[advance] auto-sent {len(ids)} checked clips to the labeller")
+        except Exception as e:  # noqa: BLE001
+            print(f"[advance] autosend failed: {e}")
+
     drain("prelabel", clips_queued, "?limit=50", passes=6)
 
     # The pulse: every beat stamps the clock, so the Health page can tell a

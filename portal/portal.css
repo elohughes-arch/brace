@@ -818,3 +818,12 @@ select.inp { appearance: none; }
    be found against — wrap under the verdict buttons rather than squeezing
    them off the card. */
 .claypres { margin-left: 0; max-width: 100%; flex: 1 1 120px; min-width: 0; }
+
+/* The hand controls stay, but folded away: the page should not imply that
+   anything needs pressing, because it does not. */
+.handrun summary { font-size: 12px; color: var(--text-3); cursor: pointer;
+  list-style: none; padding: 6px 0; }
+.handrun summary::-webkit-details-marker { display: none; }
+.handrun summary::before { content: '▸ '; }
+.handrun[open] summary::before { content: '▾ '; }
+.handrun summary:hover { color: var(--text-2); }

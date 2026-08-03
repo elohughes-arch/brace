@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03v';
+const BUILD = '2026-08-03w';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2052,21 +2052,30 @@ function controlView() {
 
     <div class="grid" style="margin-top:18px">
       <section class="panel">
-        <div class="p-head"><span class="p-title">Run a stage by hand</span>
-          <select id="batch" class="mini" title="How many videos one press works through — the cost dial">
-            ${[3, 10, 25, 50].map((v) => `<option value="${v}" ${v === batch ? 'selected' : ''}>${v} at a time</option>`).join('')}
-            <option value="500" ${batch === 500 ? 'selected' : ''}>everything in the queue</option>
-          </select></div>
-        <div class="runrow">
-          ${RUNS.map((r) => `
-            <button class="btn ${r.primary ? '' : 'btn-ghost'} mini-btn" data-stage="${r.stage}"
-              title="${esc(r.desc)}" ${running ? 'disabled' : ''}>
-              ${running === r.stage ? `${r.busy}…` : r.label}</button>`).join('')}
-        </div>
-        <p class="foot-note">Only needed to push something through early — the beat
-           does all of this hourly. Discover answers here and now; the rest run on
-           Modal and can outlive the request, so "still running" is Modal working,
-           not a failure. The batch size is the cost dial.</p>
+        <div class="p-head"><span class="p-title">The machine runs itself</span></div>
+        <p class="foot-note" style="margin-top:0">Every half hour the beat takes each
+           stage as far as it will go rather than one batch and stopping — triage what
+           was found, cut what you approved, screen what was cut, box what was sent —
+           and it keeps going until the queue is empty or the half hour is up. An
+           errored video is put back for another attempt instead of being left. There
+           is nothing here you need to press.</p>
+        <details class="handrun">
+          <summary>Push a stage through early</summary>
+          <div class="p-head" style="margin-top:10px"><span class="p-title">Run a stage by hand</span>
+            <select id="batch" class="mini" title="How many videos one press works through — the cost dial">
+              ${[3, 10, 25, 50].map((v) => `<option value="${v}" ${v === batch ? 'selected' : ''}>${v} at a time</option>`).join('')}
+              <option value="500" ${batch === 500 ? 'selected' : ''}>everything in the queue</option>
+            </select></div>
+          <div class="runrow">
+            ${RUNS.map((r) => `
+              <button class="btn ${r.primary ? '' : 'btn-ghost'} mini-btn" data-stage="${r.stage}"
+                title="${esc(r.desc)}" ${running ? 'disabled' : ''}>
+                ${running === r.stage ? `${r.busy}…` : r.label}</button>`).join('')}
+          </div>
+          <p class="foot-note">Only for when you cannot wait for the next beat. Discover
+             answers here and now; the rest run on Modal and outlive the request, so
+             "still running" is Modal working, not a failure.</p>
+        </details>
       </section>
 
       <section class="panel">
