@@ -62,14 +62,35 @@ JPEG_QUALITY = 4      # ffmpeg -q:v, lower is better
 
 CAMERA_VALUES = ("pov_glasses", "barrel", "gopro", "third_person", "broadcast", "unknown")
 
+# Point of view, or nothing. The model this trains watches the world through
+# hardware mounted on a shooter — a barrel cam, glasses, a GoPro on the chest.
+# Broadcast and third-person footage shows the same clays from somewhere the
+# deployed camera will never stand: different lens, different distance,
+# different angle on the same flight. It looks like useful data and trains the
+# model to read a view it will not be given.
+#
+# 'unknown' is kept deliberately. It means the judge could not tell, which is
+# not the same as knowing it is wrong, and throwing away the unclassifiable
+# would bin footage on the judge's uncertainty rather than on the footage.
+POV_CAMERAS = ("pov_glasses", "barrel", "gopro", "unknown")
+
 SYSTEM = """You triage third-party shooting footage for a clay-pigeon object-detection \
 training set. You are shown frames sampled evenly across one video. Judge only what \
 is in the frames.
 
-Footage is useful when it is filmed from or near the shooter's eyeline, shows clays \
-in flight against sky or treeline, and is clean enough that a human could draw a box \
-round a clay. Footage is useless when it is a talking head, a product review, a range \
-of static targets, live quarry, a video game, heavily edited with overlays or \
+Footage is useful ONLY when it is point of view: filmed from a camera carried by \
+the shooter — mounted on the gun or barrel, worn on the head or glasses, or on the \
+chest. It must also show clays in flight against sky or treeline and be clean enough \
+that a human could draw a box round a clay.
+
+Footage filmed from beside, behind or in front of the shooter is NOT point of view, \
+however good it looks. Neither is broadcast or competition coverage, tripod or \
+drone footage, or anything cut between multiple camera angles. Score these 0-2 \
+whatever else is in them — a clear clay filmed from the wrong place is worse than \
+useless here, because it teaches a view the deployed camera will never have.
+
+Footage is also useless when it is a talking head, a product review, a range of \
+static targets, live quarry, a video game, heavily edited with overlays or \
 transitions, too dark, or so compressed that a clay is a smudge.
 
 Score 0-10 for training value:
