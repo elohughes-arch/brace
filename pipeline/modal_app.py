@@ -404,13 +404,29 @@ def _climb_logic():
         p = _phase_of(r, vids.get(r["video_id"]) or {})
         per[p] = per.get(p, 0) + 1
 
-    trained = {m.get("name") for m in
-               (sb.table("pipeline_models").select("name").execute().data or [])}
+    # What has been trained, and how much material stood behind it. A rung
+    # carries its size in its name — p1-74 is the foundation trained on 74
+    # clips — because a rung trained once and never again is a model frozen
+    # at whatever happened to be screened that day, while the queue behind it
+    # keeps filling. With a backlog draining, the first rung would otherwise
+    # be built on a fraction of the footage and every rung above it would
+    # inherit that. Names are kept rather than overwritten, so p1-74 and
+    # p1-400 sit side by side and the gain from more of the same footage is
+    # a number you can read instead of a belief.
+    trained = [m.get("name") or "" for m in
+               (sb.table("pipeline_models").select("name").execute().data or [])]
+    best = {}
+    for nm in trained:
+        rung, _, size = nm.rpartition("-")
+        if rung and size.isdigit():
+            best[rung] = max(best.get(rung, 0), int(size))
 
     # The first rung carries the whole foundation and deserves a real set
     # behind it; every rung after only has to add enough to be worth a run.
     first_min = int(os.environ.get("CLIMB_FIRST_MIN", 40))
     rung_min = int(os.environ.get("CLIMB_RUNG_MIN", 15))
+    # How much a rung's material must grow before it is worth the hour again.
+    regrow = float(os.environ.get("CLIMB_REGROW", 1.5))
 
     target = None
     total = 0
@@ -419,17 +435,22 @@ def _climb_logic():
         if n < (first_min if k == 1 else rung_min):
             break                      # this rung is too thin — wait for more
         total += n
-        name = "p" + "".join(str(x) for x in range(1, k + 1))
-        if name not in trained:
-            target = (k, name, total)
+        rung = "p" + "".join(str(x) for x in range(1, k + 1))
+        seen = best.get(rung, 0)
+        # Untrained, or grown enough since it last ran. Checked lowest rung
+        # first, so a foundation that has doubled is refreshed before effort
+        # goes into anything built on top of it.
+        if seen == 0 or total >= seen * regrow:
+            target = (k, f"{rung}-{total}", total, rung, seen)
             break                      # one rung a beat, and only the next one
     if not target:
-        print(f"[climb] nothing to take: rungs {per}, trained {sorted(trained)}")
+        print(f"[climb] nothing to take: rungs {per}, trained {sorted(best.items())}")
         return {"stage": "climb", "rungs": per, "trained": sorted(trained),
                 "took": None}
 
-    k, name, clips = target
+    k, name, clips, rung, seen = target
     phases = ",".join(str(x) for x in range(1, k + 1))
+    print(f"[climb] {rung}: {clips} clips now, {seen} when last trained")
 
     def mark(status, detail):
         try:
