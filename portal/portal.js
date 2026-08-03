@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03h';
+const BUILD = '2026-08-03i';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1798,7 +1798,7 @@ let dashEpoch = -1;
 const dashboardIsCurrent = () => dashEpoch === epoch;
 
 const AGENTIC_VIEWS = ['control', 'review', 'sources', 'triage', 'rejected',
-  'labelling', 'findings', 'mastersheet', 'export', 'health'];
+  'labelling', 'mastersheet', 'export', 'health'];
 
 /* The portal's front door: four rooms, pick one. The wordmark up top
    always leads back here. */
@@ -1840,15 +1840,15 @@ function shell(body) {
           <a href="#rejected" class="sub ${view === 'rejected' ? 'on' : ''}">Rejected pile${(state.pile?.vtotal || 0) + (state.pile?.total || 0) ? ` <b>${fmt((state.pile?.vtotal || 0) + (state.pile?.total || 0))}</b>` : ''}</a>
           ${item('review', 'Review', state.counts?.downloaded)}
           ${item('labelling', 'Labelling', state.counts?.queued)}
-          ${item('findings', 'Findings')}
           ${item('mastersheet', 'Mastersheet')}
           ${item('export', 'Export')}
           ${item('health', 'Health', (state.health || []).filter((h) => healthStatus(h)[0] !== 'ok').length)}
           </div>` : `
-          <a href="#control" class="navhead">Agentic</a>
+          <a href="#control" class="navhead">Agentic</a>`}
+          <a href="#findings" class="navhead ${view === 'findings' ? 'on' : ''}">Findings</a>
           <a href="#productivity" class="navhead ${view === 'productivity' ? 'on' : ''}">Productivity${state.counts?.todo ? ` <b>${fmt(state.counts.todo)}</b>` : ''}</a>
           <a href="#costs" class="navhead ${view === 'costs' ? 'on' : ''}">Costs</a>
-          <a href="#documents" class="navhead ${view === 'documents' || view === 'strategy' ? 'on' : ''}">Documents</a>`}
+          <a href="#documents" class="navhead ${view === 'documents' || view === 'strategy' ? 'on' : ''}">Documents</a>
         </nav>
         <div class="side-foot">
           ${state.spend && state.spend.usd
