@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03j';
+const BUILD = '2026-08-03k';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1414,9 +1414,10 @@ const PIE = ['#F05A28', '#4ECDC4', '#CBBE93', '#6FBE72', '#E0705F', '#8f9bff'];
 const today = () => new Date().toISOString().slice(0, 10);
 const gbp = (n) => `£${Number(n).toFixed(2)}`;
 
-// A donut with no chart library: conic-gradient does the slicing, a hole
-// punched by a pseudo-element, and a legend that carries the numbers.
-function donut(slices, title) {
+// The office pie: conic-gradient does the slicing, a hole punched by a
+// pseudo-element, a legend carrying the numbers. Named pie because the
+// findings section has its own donut() and Safari refuses two of a name.
+function pie(slices, title) {
   const total = slices.reduce((a, x) => a + x.v, 0);
   if (!total) return '<div class="empty">Nothing logged yet.</div>';
   let acc = 0;
@@ -1427,9 +1428,9 @@ function donut(slices, title) {
   const leg = slices.map((x, i) =>
     `<span><i style="background:${PIE[i % PIE.length]}"></i>${esc(x.label)} — ${x.text}</span>`).join('');
   return `
-    <div class="donutwrap">
-      <div class="donut" style="background:conic-gradient(${stops})"><span>${esc(title)}</span></div>
-      <div class="legend">${leg}</div>
+    <div class="piewrap">
+      <div class="pie" style="background:conic-gradient(${stops})"><span>${esc(title)}</span></div>
+      <div class="pielegend">${leg}</div>
     </div>`;
 }
 
@@ -1553,7 +1554,7 @@ function productivityView() {
       </section>
       <section class="panel">
         <div class="p-head"><span class="p-title">Whose hours</span></div>
-        ${donut(slices, `${Math.round(totalH)}h`)}
+        ${pie(slices, `${Math.round(totalH)}h`)}
       </section>
     </div>
 
@@ -1649,9 +1650,9 @@ function costsView() {
       </section>
       <section class="panel">
         <div class="p-head"><span class="p-title">Where it goes</span></div>
-        ${donut(catSlices, gbp(total))}
+        ${pie(catSlices, gbp(total))}
         <div style="height:18px"></div>
-        ${perSlices.length > 1 ? donut(perSlices, 'who') : ''}
+        ${perSlices.length > 1 ? pie(perSlices, 'who') : ''}
       </section>
     </div>
 
