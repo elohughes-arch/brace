@@ -814,4 +814,7 @@ select.inp { appearance: none; }
   aspect-ratio: auto; background: #000; }
 .clipmedia.blown .expand { opacity: 1; }
 /* A clay's own presentation, on its own row beside its verdict. */
-.claypres { margin-left: 8px; max-width: 150px; }
+/* Three per-clay selects — what it did, what colour it was, what it had to
+   be found against — wrap under the verdict buttons rather than squeezing
+   them off the card. */
+.claypres { margin-left: 0; max-width: 100%; flex: 1 1 120px; min-width: 0; }

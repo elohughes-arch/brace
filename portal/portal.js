@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03s';
+const BUILD = '2026-08-03t';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -553,7 +553,7 @@ async function loadCoverage() {
 async function loadClips() {
   const PAGE = 40;
   const { data, error } = await supabase.from('pipeline_clips')
-    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,presentation,presentations,clay_colour,clay_colours,weather,background,shot_type,created_at')
+    .select('clip_id,video_id,shot_ts,clip_start,clip_end,is_pair,label_status,roboflow_id,preview_path,poster_path,file_path,sorter,owner_outcome,owner_outcome_2,owner_outcome_3,owner_outcomes,outcomes,n_shots,needs_recut,presentation,presentations,clay_colour,clay_colours,weather,background,backgrounds,shot_type,created_at')
     .eq('label_status', 'pending')
     .order('video_id').order('shot_ts')
     .range(clipPage * PAGE, clipPage * PAGE + PAGE - 1);
@@ -743,6 +743,11 @@ const ownerCalls = (k) => {
   if (arr.length) return arr;
   return OWNER_SLOTS.map((f) => k[f] ?? null);
 };
+const clayBackgrounds = (k) => {
+  const arr = Array.isArray(k.backgrounds) ? [...k.backgrounds] : [];
+  if (arr.length) return arr;
+  return k.background ? [k.background] : [];
+};
 const clayColours = (k) => {
   const arr = Array.isArray(k.clay_colours) ? [...k.clay_colours] : [];
   if (arr.length) return arr;
@@ -777,6 +782,7 @@ function callRows(k) {
   const shown = Math.min(MAX_CLAYS, manual != null ? Math.max(1, manual) : auto);
   const pres = clayPresentations(k);
   const cols = clayColours(k);
+  const bgs = clayBackgrounds(k);
   const slot = (n) => `
     <div class="calls">
       ${shown > 1 ? `<span class="clayno">clay ${n}</span>` : ''}
@@ -793,6 +799,11 @@ function callRows(k) {
         <option value="">${n === 1 && k.clay_colour && k.clay_colour !== 'unknown' ? `— ${esc(k.clay_colour)}?` : '— colour'}</option>
         ${CLAY_COLOURS.map((o) => `<option ${cols[n - 1] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
       </select>
+      <select class="mini claypres" data-bg="${esc(k.clip_id)}" data-slot="${n}"
+        title="What this clay had to be found against">
+        <option value="">— background</option>
+        ${BACKGROUNDS.map((o) => `<option ${bgs[n - 1] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+      </select>
     </div>`;
   return `
     <div class="yourcall">
@@ -808,11 +819,7 @@ function callRows(k) {
             <option value="">—</option>
             ${WEATHERS.map((o) => `<option ${k.weather === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
           </select></label>
-        <label>Background
-          <select class="mini" data-tag="background" data-clip="${esc(k.clip_id)}">
-            <option value="">—</option>
-            ${BACKGROUNDS.map((o) => `<option ${k.background === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
-          </select></label>
+
       </div>
     </div>`;
 }
@@ -2964,6 +2971,8 @@ function findingsView() {
           ${donut(Object.entries(f.camera || {}).sort((a, b) => b[1] - a[1]), { label: 'Camera', unit: 'clips' })}</figure>
         <figure><figcaption>Clay colour</figcaption>
           ${donut(Object.entries(f.clay_colour || {}).sort((a, b) => b[1] - a[1]), { label: 'Clay colour', unit: 'clips' })}</figure>
+        <figure><figcaption>Background <span class="s">what the clay was found against</span></figcaption>
+          ${donut(Object.entries(f.background || {}).sort((a, b) => b[1] - a[1]), { label: 'Background', unit: 'clays' })}</figure>
         <figure><figcaption>Weather</figcaption>
           ${donut(Object.entries(f.weather || {}).sort((a, b) => b[1] - a[1]), { label: 'Weather', unit: 'clips' })}</figure>
         <figure><figcaption>Shot type <span class="s">read from the tracked flight</span></figcaption>
@@ -3405,7 +3414,7 @@ function signature() {
     lastTouched, ytOpen.size,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.needs_recut ? 'r' : '')
       + k.clip_start + k.clip_end + JSON.stringify(k.presentations || []) + JSON.stringify(k.clay_colours || [])
-      + (k.weather || '') + (k.background || '')
+      + (k.weather || '') + JSON.stringify(k.backgrounds || [])
       + JSON.stringify(k.owner_outcomes || [])),
     [...clayRows.entries()].map(([k, v]) => k + v).join(),
     (state.rej?.rows || []).map((k) => k.clip_id + (k.preview_url ? 'v' : '')),
@@ -3557,6 +3566,30 @@ function wireCalls() {
       } else {
         box?.classList.toggle('blown');   // no API: fill the window instead
       }
+    });
+  });
+  document.querySelectorAll('[data-bg]:not([data-wired])').forEach((sel) => {
+    sel.dataset.wired = '1';
+    sel.addEventListener('change', async () => {
+      const id = sel.dataset.bg;
+      const n = Number(sel.dataset.slot || 1);
+      const row = [...state.clips, ...state.ai].find((x) => x.clip_id === id);
+      const arr = row ? clayBackgrounds(row) : [];
+      while (arr.length < n) arr.push(null);
+      arr[n - 1] = sel.value || null;
+      while (arr.length && arr[arr.length - 1] == null) arr.pop();
+      // The single column is what the phase rule reads, and holds the
+      // hardest background in the clip: if any clay had to be found against
+      // terrain, the clip contains that difficulty whatever its partner did.
+      const CLUTTER = ['treeline', 'hillside', 'valley', 'ground', 'buildings', 'mixed'];
+      const hardest = arr.find((x) => CLUTTER.includes(x)) || arr.find(Boolean) || null;
+      const patch = { backgrounds: arr, background: hardest };
+      const { error } = await supabase.from('pipeline_clips')
+        .update(patch).eq('clip_id', id).select('clip_id');
+      if (error) return note(`could not save the background — ${error.message}`, 'bad');
+      if (row) Object.assign(row, patch);
+      touchCard(id);
+      settled();
     });
   });
   document.querySelectorAll('[data-colour]:not([data-wired])').forEach((sel) => {
