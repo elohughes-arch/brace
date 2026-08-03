@@ -768,6 +768,14 @@ def screen(request: fastapi.Request):
                       for b, s in zip(res["boxes"].cpu(), res["scores"].cpu())
                   ]
 
+          # Drop anything that never actually moved — a ShotKam reticle or
+          # any other fixed overlay reads as a small disc to the detector
+          # every frame, and left in, it would out-stay the real clay in
+          # every downstream step: trim, det_conf, and the boxes shipped to
+          # Roboflow as ground truth. What survives is scored up by speed.
+          boxes_per_frame = _clay_track(
+              boxes_per_frame, frames[0].shape[1] if frames else 0)
+
           # The clipper cuts by sound, which cannot know whether a clay is in
           # view. This is the first stage that can see — a clip with no clay
           # in any frame is rejected here rather than sent on as empty work.
@@ -1055,6 +1063,81 @@ def _ask_gemini(model, system, blocks):
     return "".join(p.get("text", "")
                    for c in data.get("candidates", [])[:1]
                    for p in c.get("content", {}).get("parts", []))
+
+
+def _clay_track(boxes_per_frame, frame_w):
+    """Separates the moving clay from anything nailed to the same spot.
+
+    Grounding DINO runs blind, frame by frame — it has no memory that a red
+    crosshair dead-centre of every single frame is a ShotKam reticle burned
+    into the footage, not a clay, and "small orange disc. small black disc"
+    matches both once the reticle's centre dot is on-target. A clay in
+    flight crosses a real slice of the frame in well under a second; a HUD
+    element does not move a pixel. Boxes are linked frame-to-frame into
+    tracks by nearest centroid, anything that barely drifts across its
+    whole life is dropped outright — before it can stretch the trim, warp
+    det_conf, or go to Roboflow as a labelled clay — and what survives has
+    its confidence lifted by how fast it moved. That is the strongest signal
+    this detector has for which box is the real clay, and it only pays off
+    more as a clip fills with birds, wad and a second bird to confuse it.
+    """
+    import math
+
+    idxs = sorted(boxes_per_frame)
+    if not idxs:
+        return {}
+
+    def centroid(b):
+        x1, y1, x2, y2 = b["xyxy"]
+        return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+    # Nearest-centroid tracking: a gap of a frame or two (a missed
+    # detection) keeps a track alive, but a jump too big to be the same
+    # object starts a new one. max_jump scales with frame width so the same
+    # numbers hold at any resolution.
+    max_jump = frame_w * 0.12
+    max_gap = 3
+    tracks = []
+    for i in idxs:
+        for b in boxes_per_frame[i]:
+            cx, cy = centroid(b)
+            best_t, best_d = None, None
+            for t in tracks:
+                if i - t["last_idx"] > max_gap:
+                    continue
+                lx, ly = t["pts"][-1][1], t["pts"][-1][2]
+                d = math.hypot(cx - lx, cy - ly)
+                if d <= max_jump and (best_d is None or d < best_d):
+                    best_t, best_d = t, d
+            if best_t is None:
+                best_t = {"last_idx": i, "pts": [], "boxes": []}
+                tracks.append(best_t)
+            best_t["pts"].append((i, cx, cy))
+            best_t["boxes"].append((i, b))
+            best_t["last_idx"] = i
+
+    span = idxs[-1] - idxs[0] + 1
+    out = {}
+    for t in tracks:
+        xs = [p[1] for p in t["pts"]]
+        ys = [p[2] for p in t["pts"]]
+        spread = max(max(xs) - min(xs), max(ys) - min(ys))
+        # A fixture sits in nearly every frame without moving; present for
+        # a real stretch of the clip and stuck within a couple of percent
+        # of frame width is the reticle's signature, not a fast clay's.
+        fixed = len(t["pts"]) >= max(3, span * 0.4) and spread < frame_w * 0.02
+        if fixed:
+            continue
+        first, last = t["pts"][0], t["pts"][-1]
+        frames_span = max(1, last[0] - first[0])
+        px_per_frame = math.hypot(last[1] - first[1], last[2] - first[2]) / frames_span
+        # The booster: up to +0.15 confidence for whatever is covering the
+        # most ground per frame, so a real crossing clay outranks a slower
+        # distractor even when both clear the detector's own threshold.
+        boost = min(0.15, (px_per_frame / (frame_w * 0.15)) * 0.15)
+        for i, b in t["boxes"]:
+            out.setdefault(i, []).append({**b, "conf": min(1.0, b["conf"] + boost)})
+    return out
 
 
 def _shot_metrics(into_clip, boxes_per_frame, frame_dt, frame_w, outcome):
