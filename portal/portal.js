@@ -409,7 +409,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-03g';
+const BUILD = '2026-08-03h';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2218,6 +2218,47 @@ function wireSweep(cards, idOf, pickedSet, sync) {
 // clip_start and clip_end mean. The preview plays the cut as it stands, so
 // the playhead maps straight across: absolute = clip_start + currentTime.
 // That makes "start here" and "end here" exact rather than a guess.
+// The card last worked on. Trimming one, calling it, or simply playing it
+// leaves a mark, because a grid of forty near-identical clips gives the eye
+// nothing to come back to — you adjust a length, look away, and cannot find
+// which one it was.
+let lastTouched = null;
+
+function touchCard(id) {
+  if (!id || id === lastTouched) return;
+  lastTouched = id;
+  // Moved in place: a repaint here would tear down the very video that is
+  // probably playing, which is what the mark exists to help you return to.
+  document.querySelectorAll('.clipcard.last-touched')
+    .forEach((c) => c.classList.remove('last-touched'));
+  document.querySelector(`.clipcard[data-clip="${CSS.escape(id)}"]`)
+    ?.classList.add('last-touched');
+}
+
+// Wired once against the document, not per repaint: these must survive the
+// markup being replaced, and re-binding them each time would stack handlers.
+let globalsWired = false;
+function wireGlobals() {
+  if (globalsWired) return;
+  globalsWired = true;
+
+  // One clip at a time. Two previews talking over each other is not review,
+  // and with forty on a page it was easy to leave several running.
+  document.addEventListener('play', (e) => {
+    const v = e.target;
+    if (!(v instanceof HTMLVideoElement)) return;
+    document.querySelectorAll('video').forEach((o) => {
+      if (o !== v && !o.paused) o.pause();
+    });
+    touchCard(v.closest('.clipcard')?.dataset.clip);
+  }, true);   // capture: 'play' does not bubble
+
+  document.addEventListener('pointerdown', (e) => {
+    const card = e.target.closest?.('.clipcard[data-clip]');
+    if (card) touchCard(card.dataset.clip);
+  }, true);
+}
+
 const trimEdits = new Map();     // clip_id -> { start, end }
 const trimOpen = new Set();
 
@@ -2273,7 +2314,7 @@ function triageClipsView() {
   // preview plays in place; a poster-only clip shows its still with a badge;
   // a brand-new cut holds the space with a note.
   const pendingCard = (k) => `
-    <div class="clipcard ${picked.has(k.clip_id) ? 'picked' : ''}" data-id="${esc(k.clip_id)}" data-clip="${esc(k.clip_id)}" data-owner="${esc(k.sorter)}" data-src="${esc(k.preview_url)}">
+    <div class="clipcard ${picked.has(k.clip_id) ? 'picked' : ''} ${lastTouched === k.clip_id ? 'last-touched' : ''}" data-id="${esc(k.clip_id)}" data-clip="${esc(k.clip_id)}" data-owner="${esc(k.sorter)}" data-src="${esc(k.preview_url)}">
       <div class="clipmedia">
         ${k.preview_url
     ? `<video controls preload="metadata" ${k.poster_url ? `poster="${esc(k.poster_url)}"` : ''} src="${esc(k.preview_url)}"></video>`
@@ -3162,6 +3203,7 @@ function signature() {
     state.sources.map((x) => `${x.id}${x.enabled}${x.last_found}`),
     clipPage, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
     queuePicked.size, sweeping,
+    lastTouched,
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.needs_recut ? 'r' : '')
       + k.clip_start + k.clip_end + JSON.stringify(k.owner_outcomes || [])),
     [...clayRows.entries()].map(([k, v]) => k + v).join(),
@@ -3234,6 +3276,7 @@ function wireCalls() {
         .update(patch).eq('clip_id', id).select('clip_id');
       if (error) note(`could not save your call — ${error.message}`, 'bad');
       if (row) Object.assign(row, patch);
+      touchCard(id);
     });
   });
   document.querySelectorAll('[data-addclay]:not([data-wired])').forEach((b) => {
@@ -3345,6 +3388,7 @@ function wireTrim() {
       }).eq('clip_id', id).select('clip_id');
       if (error) { note(`could not save the length — ${error.message}`, 'bad'); busy(b, false, 'Save length'); return; }
       note(`${mmss(e.start)}–${mmss(e.end)} saved — press Re-cut to make the cut`, 'good');
+      touchCard(id);
       const k = rowFor(id);
       if (k) Object.assign(k, { clip_start: e.start, clip_end: e.end, needs_recut: true });
       trimOpen.delete(id); trimEdits.delete(id);
@@ -3417,6 +3461,7 @@ function paint(force = false) {
     b.addEventListener('click', () => runStage('discover', { level: b.dataset.dsfind })));
   // The owner's verdict on a shot — ground truth. Models are scored against
   // these, and one day an outcome model will be trained on them.
+  wireGlobals();
   wireCalls();
   // ---- the office ----
 

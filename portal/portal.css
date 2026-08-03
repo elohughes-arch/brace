@@ -726,3 +726,17 @@ select.inp { appearance: none; }
 .drill { margin-top: 12px; padding: 12px; border-radius: var(--r-md);
   background: rgba(0,0,0,.16); border: 1px solid var(--line); }
 .drill .clipgrid { margin-top: 10px; }
+
+/* The card last worked on. A grid of near-identical clips gives the eye
+   nothing to return to, so the last one touched keeps a mark until another
+   takes it. Champagne, not clay: clay already means "picked", and the two
+   need to be legible at the same time on the same card. */
+.clipcard.last-touched { box-shadow: 0 0 0 3px var(--champagne); }
+/* Both at once: the owner outline owns `outline` (portal-select.js sets it
+   !important), and picked owns the inset ring, so this stacks rather than
+   replaces — a selected card that was also the last edited shows both. */
+.clipcard.picked.last-touched {
+  box-shadow: inset 0 0 0 2px var(--clay), 0 0 0 3px var(--champagne); }
+.clipcard.last-touched .clipcap .t::after {
+  content: 'last used'; margin-left: 8px; font-size: 10px;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--champagne); }
