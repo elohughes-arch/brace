@@ -27,7 +27,7 @@
      MODAL_URL_TRIAGE / _CLIP / _PRELABEL   optional per-stage overrides
    ========================================================================== */
 
-const STAGES = ['discover', 'triage', 'clip', 'screen', 'prelabel', 'recut', 'dataset', 'train', 'health'];
+const STAGES = ['discover', 'triage', 'clip', 'screen', 'prelabel', 'recut', 'dataset', 'train', 'scrub', 'health'];
 const LOCAL_STAGES = ['discover'];      // run here, not on Modal
 
 // Vercel functions are capped well below Modal's 30-minute timeouts, so we
@@ -38,7 +38,7 @@ const WAIT_MS = Number(process.env.PIPELINE_WAIT_MS) || 25_000;
 
 // Only these reach Modal; everything else in the query string is dropped.
 const PASSTHROUGH = ['limit', 'unreviewed', 'name', 'every', 'conf',
-  'epochs', 'imgsz', 'base', 'phases'];
+  'epochs', 'imgsz', 'base', 'phases', 'dry'];
 
 /* ---------------------------------------------------------------- discover */
 // Candidates come from pipeline_sources, which the portal edits. Three kinds:

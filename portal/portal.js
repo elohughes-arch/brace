@@ -405,11 +405,12 @@ const RUNS = [
   { stage: 'recut', label: 'Re-cut', busy: 'Re-cutting', desc: 'Cut again the clips whose start and end you have edited by hand, then send them back through screening. Needs Modal.' },
   { stage: 'dataset', label: 'Build set', busy: 'Building', desc: 'Assemble a training set from the boxes we already hold — no Roboflow involved. The overlay filter runs on the way out, so the reticle never reaches the model. Needs Modal.' },
   { stage: 'train', label: 'Train', busy: 'Training', desc: 'Fine-tune our own clay detector on that set. Once one exists, screening uses it instead of Grounding DINO — better on this subject and far cheaper per frame. Needs Modal.' },
+  { stage: 'scrub', label: 'Scrub labels', busy: 'Scrubbing', desc: 'Re-run the current overlay filter over every clip already screened, so red dots and crosshairs stored as clays are re-labelled as the reticle. Anything it corrects goes back in the upload queue to replace the bad copy in Roboflow. Needs Modal.' },
 ];
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04d';
+const BUILD = '2026-08-04e';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });

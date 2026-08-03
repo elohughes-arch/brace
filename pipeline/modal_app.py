@@ -947,7 +947,9 @@ def screen(request: fastapi.Request):
           # every downstream step: trim, det_conf, and the boxes shipped to
           # Roboflow as ground truth. What survives is scored up by speed.
           boxes_per_frame = _clay_track(
-              boxes_per_frame, frames[0].shape[1] if frames else 0)
+              boxes_per_frame,
+              frames[0].shape[1] if frames else 0,
+              frames[0].shape[0] if frames else 0)
           reticle = getattr(_clay_track, "last_fixtures", {}) or {}
 
           # The clipper cuts by sound, which cannot know whether a clay is in
@@ -1116,8 +1118,32 @@ def prelabel(request: fastapi.Request):
             continue
         frame_dt = float(lab[0].get("frame_dt") or 0.2)
         t_off = float(lab[0].get("t_offset") or 0.0)
-        reticle = lab[0].get("reticle_json") or {}
         cap = cv2.VideoCapture(row["file_path"])
+
+        # Re-filter, never trust. boxes_json was written by whichever version
+        # of the reticle filter happened to be deployed the day the clip was
+        # screened, and this is the stage that turns a box into ground truth a
+        # model is trained on: a red aim dot shipped as class 0 teaches the
+        # detector that the thing in the middle of every ShotKam frame is a
+        # clay, which is the one lesson that can never be unlearned from a
+        # later run. Running the current filter here costs microseconds and
+        # makes the rule that decides what a clay is live in exactly one
+        # place, applied to every clip regardless of its age.
+        _w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        _h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        reticle = {int(k): v for k, v in (lab[0].get("reticle_json") or {}).items()}
+        if _w:
+            clean = _clay_track({int(k): v for k, v in boxes.items()}, _w, _h)
+            for i, bs in (getattr(_clay_track, "last_fixtures", {}) or {}).items():
+                reticle.setdefault(int(i), bs)
+            if not clean:
+                # Every box in the clip was an overlay. There is no clay here.
+                cap.release()
+                sb.table("pipeline_clips").update(
+                    {"label_status": "rejected"}).eq("clip_id", row["clip_id"]).execute()
+                continue
+            boxes = {str(k): v for k, v in clean.items()}
+
         tmp = Path("/tmp/frames")
         tmp.mkdir(parents=True, exist_ok=True)
         idxs = sorted(int(k) for k in boxes)
@@ -1430,10 +1456,18 @@ def dataset(request: fastapi.Request):
 
         cap = cv2.VideoCapture(str(src))
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         if not width:
             cap.release()
             continue
-        boxes = _clay_track(boxes, width)     # the reticle dies here
+        boxes = _clay_track(boxes, width, height)   # the reticle dies here
+        # ...and is reborn as class 1. Take the fixtures this pass found on top
+        # of whatever was stored: the stored set came from an older, laxer
+        # filter, so anything it missed — an aim dot caught in only two frames —
+        # would otherwise vanish from the picture entirely, leaving the very
+        # object the model most needs named as unlabelled background.
+        for i, bs in (getattr(_clay_track, "last_fixtures", {}) or {}).items():
+            reticle.setdefault(int(i), bs)
         if not boxes:
             cap.release()
             continue
@@ -1821,7 +1855,7 @@ def _shot_type(boxes_per_frame, frame_w, frame_h):
     return "quartering"
 
 
-def _clay_track(boxes_per_frame, frame_w):
+def _clay_track(boxes_per_frame, frame_w, frame_h=None):
     """Enforces one rule: only a moving clay may reach the trim, the metrics
     or a Roboflow annotation. Nothing fixed in the frame — a reticle, a red
     dot, any burned-in overlay — gets to call itself a clay.
@@ -1888,7 +1922,31 @@ def _clay_track(boxes_per_frame, frame_w):
     # the expensive one: a clay wrongly dropped leaves an unlabelled clay in
     # the training image, which teaches the detector that a clay is
     # background.
-    fixtures = [c for c in clusters if len(c["frames"]) >= 3]
+    #
+    # The optical centre is the exception. A ShotKam's aim dot sits exactly
+    # there, is a few pixels across, and reads to any detector as a small
+    # orange disc — precisely a clay, and next to a genuinely black clay it is
+    # the *dot* that looks like the orange one. It is also sometimes caught in
+    # only two frames, which the general rule would wave through. Two is
+    # enough when a mark is that small and sitting on the middle of the
+    # picture, because the cost of the rule is bounded: for a real clay to be
+    # taken by it, it would have to land on the same pixel at the centre of
+    # the frame twice over, which means stopping dead on the aim point.
+    # Clays do not stop.
+    cx0, cy0 = frame_w / 2.0, (frame_h or frame_w * 9 / 16.0) / 2.0
+    centre_r = frame_w * 0.03
+    small = frame_w * 0.03
+
+    def at_the_aim_point(c):
+        if math.hypot(c["cx"] - cx0, c["cy"] - cy0) > centre_r:
+            return False
+        w = max((b["xyxy"][2] - b["xyxy"][0]) for _, b in c["items"])
+        h = max((b["xyxy"][3] - b["xyxy"][1]) for _, b in c["items"])
+        return max(w, h) <= small
+
+    fixtures = [c for c in clusters
+                if len(c["frames"]) >= 3
+                or (len(c["frames"]) >= 2 and at_the_aim_point(c))]
     # What the fixtures actually are, frame by frame, for whoever wants them:
     # a reticle is worth keeping, not merely worth excluding.
     fixed_boxes = {}
@@ -1896,10 +1954,11 @@ def _clay_track(boxes_per_frame, frame_w):
         for i, b in c["items"]:
             fixed_boxes.setdefault(i, []).append(b)
     _clay_track.last_fixtures = fixed_boxes
+    fixture_ids = {id(c) for c in fixtures}
     live = {}
     for c in clusters:
-        if len(c["frames"]) >= 3:
-            continue   # seen again and again at one spot — a fixture
+        if id(c) in fixture_ids:
+            continue   # a fixture: seen again at one spot, or on the aim point
         for i, b in c["items"]:
             live.setdefault(i, []).append(b)
     if not live:
@@ -2101,6 +2160,121 @@ def _shot_metrics(into_clip, boxes_per_frame, frame_dt, frame_w, outcome):
             if 5 <= mph <= 130:   # outside this is track noise, not a clay
                 out["speed_mph"] = round(mph)
     return out
+
+
+# ---------------------------------------------------------------- scrub
+
+# Every clip already screened carries boxes filtered by whichever version of
+# the reticle rule was deployed that day. Each time the rule gets sharper,
+# the clips behind it stay wrong — and a red aim dot stored as class 0 is
+# not a cosmetic error, it is a training label that teaches the detector the
+# fixed mark in the middle of every ShotKam frame is a clay.
+#
+# This re-runs the current filter over stored boxes and writes back what it
+# should have been. It re-detects nothing and needs no GPU: the boxes are
+# already on disk, and the filter is pure geometry over them. Boxes it now
+# rejects move to reticle_json rather than being deleted — a mark the
+# detector reliably mistakes for a clay is the most valuable class-1 example
+# there is. Any clip whose labels actually changed is sent back to the
+# upload queue, because the copy sitting in Roboflow is the bad one.
+#
+# ?dry=1 reports what it would change and writes nothing.
+@app.function(image=base_image, secrets=[secret], timeout=3600,
+              volumes={MEDIA: volume})
+@web_endpoint(method="POST")
+def scrub(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+
+    import cv2
+    from pathlib import Path
+
+    volume.reload()
+    dry = request.query_params.get("dry") in ("1", "true", "yes")
+    limit = min(int(request.query_params.get("limit", 2000)), 20000)
+
+    sb = _sb()
+    rows = (sb.table("pipeline_labels")
+            .select("clip_id,boxes_json,reticle_json")
+            .limit(limit).execute().data or [])
+    paths = {}
+    ids = [r["clip_id"] for r in rows]
+    for j in range(0, len(ids), 200):
+        for c in (sb.table("pipeline_clips")
+                  .select("clip_id,file_path,label_status")
+                  .in_("clip_id", ids[j:j + 200]).execute().data or []):
+            paths[c["clip_id"]] = c
+
+    scanned = changed = dropped = emptied = requeued = 0
+    for r in rows:
+      try:
+        boxes = r.get("boxes_json") or {}
+        if not boxes:
+            continue
+        scanned += 1
+        boxes = {int(k): v for k, v in boxes.items()}
+        before = sum(len(v) for v in boxes.values())
+
+        clip = paths.get(r["clip_id"]) or {}
+        w = h = 0
+        fp = clip.get("file_path")
+        if fp and Path(fp).exists():
+            cap = cv2.VideoCapture(fp)
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            cap.release()
+        if not w:
+            # The file has been swept off the volume, but the boxes are in its
+            # pixel coordinates, so the frame it came from is recoverable: the
+            # furthest-right edge any box reached is a floor on the width.
+            # Rounding up to the nearest standard frame keeps the filter's
+            # thresholds — all proportions of frame width — honest.
+            far = max((b["xyxy"][2] for v in boxes.values() for b in v),
+                      default=0)
+            w = next((s for s in (640, 1280, 1920, 2560, 3840) if far <= s), 3840)
+            h = int(round(w * 9 / 16.0))
+
+        clean = _clay_track(boxes, w, h)
+        fixtures = getattr(_clay_track, "last_fixtures", {}) or {}
+        after = sum(len(v) for v in clean.values())
+        if after == before and not fixtures:
+            continue
+
+        changed += 1
+        dropped += before - after
+        reticle = {int(k): v for k, v in (r.get("reticle_json") or {}).items()}
+        for i, bs in fixtures.items():
+            reticle.setdefault(int(i), bs)
+        if dry:
+            if not clean:
+                emptied += 1
+            continue
+
+        sb.table("pipeline_labels").update({
+            "boxes_json": {str(k): v for k, v in clean.items()},
+            "reticle_json": {str(k): v for k, v in reticle.items()} or None,
+        }).eq("clip_id", r["clip_id"]).execute()
+
+        if not clean:
+            # Nothing left that moves. The clip was a reticle and scenery.
+            emptied += 1
+            sb.table("pipeline_clips").update(
+                {"label_status": "rejected"}).eq("clip_id", r["clip_id"]).execute()
+        elif clip.get("label_status") in ("prelabelled", "uploaded"):
+            # A wrong copy is already in Roboflow under this clip. Send it
+            # round again so the corrected boxes replace it.
+            requeued += 1
+            sb.table("pipeline_clips").update(
+                {"label_status": "queued"}).eq("clip_id", r["clip_id"]).execute()
+      except Exception as e:  # noqa: BLE001 — one bad row must not stop the sweep
+        print(f"[scrub] {r.get('clip_id')}: {e}")
+
+    print(f"[scrub] scanned {scanned} · changed {changed} · boxes dropped "
+          f"{dropped} · emptied {emptied} · requeued {requeued}"
+          f"{' (dry run)' if dry else ''}")
+    return {"ok": True, "dry": dry, "scanned": scanned, "changed": changed,
+            "boxes_dropped": dropped, "clips_emptied": emptied,
+            "requeued": requeued}
 
 
 # ---------------------------------------------------------------- rejudge
