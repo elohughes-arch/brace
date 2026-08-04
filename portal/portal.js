@@ -413,7 +413,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04h';
+const BUILD = '2026-08-04i';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -3120,17 +3120,59 @@ function findingsView() {
       </div>
     </div>
 
+    ${(() => {
+    // The detector is the product; everything else on this page is how it
+    // got made. So the model's own numbers go first and alone, and the
+    // sourcing figures — which were sitting in the same row and reading as
+    // equally important — drop to a second band below.
+    const m = models[0] || null;
+    const prev = models[1] || null;
+    const pct = (v) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
+    // Movement against the previous rung, which is the number that actually
+    // says whether the last night's work helped.
+    const delta = (m && prev && m.map50 != null && prev.map50 != null)
+      ? (m.map50 - prev.map50) * 100 : null;
+    const arrow = delta == null ? ''
+      : ` · ${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta).toFixed(1)} on ${esc(prev.name)}`;
+    const imgs = m ? (m.n_train || 0) + (m.n_valid || 0) + (m.n_test || 0) : 0;
+    // Train's share of the set. Below about two thirds means images are
+    // sitting in valid or test where they teach the model nothing, which is
+    // worth seeing on the page rather than in a query.
+    const trainShare = imgs ? (m.n_train || 0) / imgs : 0;
+    return `
+    <div class="p-head" style="margin:22px 0 8px">
+      <span class="p-title">The detector — what we have actually built</span>
+      ${m ? `<span class="s">${esc(m.name)} · ${esc(String(m.created_at || '').slice(0, 16).replace('T', ' '))}</span>` : ''}
+    </div>
     <div class="stats">
-      ${stat(num(ds.boxed_frames), 'Frames boxed', `the training set · ${num(ds.label_rows)} clips`)}
-      ${stat(pctOf(cl.call_pct), 'Checked by a person', `${num(cl.called)} of ${num(cl.total)} clips`, (cl.call_pct ?? 0) < 25)}
-      ${stat(pctOf(ag.pct), 'Machine agrees with us', `${num(ag.compared)} clips called by both`, (ag.pct ?? 0) < 70)}
-      ${stat(models.length && models[0].map50 != null ? `${(models[0].map50 * 100).toFixed(0)}%` : '—',
-    'Detector mAP50', models.length ? esc(models[0].name) : 'no detector trained yet', !models.length)}
+      ${stat(m && m.map50 != null ? pct(m.map50) : '—', 'mAP50',
+    m ? `${esc(m.name)}${arrow}` : 'no detector trained yet', !m)}
+      ${stat(m && m.map5095 != null ? pct(m.map5095) : '—', 'mAP50-95',
+    'how tight the boxes are', !m)}
+      ${stat(m && m.recall != null ? pct(m.recall) : '—', 'Recall',
+    m && m.precision_ != null ? `precision ${pct(m.precision_)}` : 'clays found of clays present', !m)}
+      ${stat(num(imgs), 'Images in the set',
+    m ? `${num(ds.label_rows)} clips boxed · ${num(ds.boxed_frames)} frames` : 'nothing built yet', !imgs)}
+      ${stat(m ? `${num(m.n_train)}` : '—', 'Train',
+    imgs ? `${(trainShare * 100).toFixed(0)}% of the set` : '—', imgs && trainShare < 0.6)}
+      ${stat(m ? `${num(m.n_valid)}` : '—', 'Valid', 'tunes the run', false)}
+      ${stat(m ? `${num(m.n_test)}` : '—', 'Test',
+    m && m.n_test ? 'the frozen ruler' : 'no honest ruler', !(m && m.n_test))}
+      ${stat(state.spend && state.spend.usd != null ? `$${Number(state.spend.usd).toFixed(2)}` : '—',
+    'Cost to here', `${num(models.length)} training run${models.length === 1 ? '' : 's'} · all AI spend`)}
+    </div>`;
+  })()}
+
+    <div class="p-head" style="margin:26px 0 8px">
+      <span class="p-title">The pipeline — where the footage came from</span>
+      <span class="s">how the set above got made</span>
+    </div>
+    <div class="stats">
       ${stat(num(s.videos), 'Videos seen', `${num(s.channels)} channels · ${num(s.hours)} hours`)}
       ${stat(pctOf(s.kept_pct), 'Survived triage', `${num(s.rejected)} refused · mean ${s.avg_score ?? '—'}`)}
       ${stat(num(cl.total), 'Clips cut', `${num(cl.pairs)} pairs · ${num(cl.slo_mo)} slow-motion`)}
-      ${stat((f.splits || {}).test ? num((f.splits || {}).test) : 'none',
-    'Held-out test clips', (f.splits || {}).test ? 'the honest ruler' : 'the model is unmeasured', !(f.splits || {}).test)}
+      ${stat(pctOf(cl.call_pct), 'Checked by a person', `${num(cl.called)} of ${num(cl.total)} clips`, (cl.call_pct ?? 0) < 25)}
+      ${stat(pctOf(ag.pct), 'Machine agrees with us', `${num(ag.compared)} clips called by both`, (ag.pct ?? 0) < 70)}
     </div>
 
     <section class="panel">

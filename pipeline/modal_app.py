@@ -194,6 +194,101 @@ def _split(group: str) -> str:
     return "test" if h < 15 else "valid" if h < 30 else "train"
 
 
+def _deal_splits(sb):
+    """Re-deal the scenes so the split lands near 70/15/15 of *clips*.
+
+    _split() deals 70/15/15 of channels, which is not the same thing and was
+    not close to it. Channels are wildly uneven — one ground with four hundred
+    clips counts the same as one with six — so a single large channel landing
+    in valid drags the whole deal with it. Measured on the first five training
+    runs it did exactly that: 2,761 images to train against 3,548 to valid, so
+    more than half the dataset sat in a split that teaches nothing.
+
+    Scene-level splitting is still the rule; only the balancing changes.
+    Channels are ordered by a deterministic hash, then each is dealt to
+    whichever split is furthest below its share of clips. Same anti-leakage
+    guarantee — a channel is never split across two sets — but the sizes come
+    out where they should.
+
+    Test is dealt once and never re-dealt. A ruler that changes between runs
+    cannot compare them, and the test sets on those five runs swung from 20
+    images to 1,113, which is why their scores were never strictly
+    comparable. Any channel already sitting in test stays there.
+    """
+    import hashlib
+
+    TARGET = {"train": 0.70, "valid": 0.15, "test": 0.15}
+    try:
+        vids = (sb.table("pipeline_videos")
+                .select("video_id,channel,rf_split")
+                .limit(20000).execute().data or [])
+        clips = (sb.table("pipeline_clips").select("video_id")
+                 .limit(20000).execute().data or [])
+    except Exception as e:  # noqa: BLE001 — a failed deal must not stop the beat
+        print(f"[split] could not read the deal: {e}")
+        return {}
+
+    per_video = {}
+    for c in clips:
+        per_video[c["video_id"]] = per_video.get(c["video_id"], 0) + 1
+
+    # A scene is the channel where one is known, the video otherwise.
+    scenes: dict[str, dict] = {}
+    for v in vids:
+        key = (v.get("channel") or "").strip() or v["video_id"]
+        s = scenes.setdefault(key, {"videos": [], "clips": 0, "frozen": None})
+        s["videos"].append(v["video_id"])
+        s["clips"] += per_video.get(v["video_id"], 0)
+        if v.get("rf_split") == "test":
+            s["frozen"] = "test"      # the ruler, once dealt, is not re-dealt
+
+    total = sum(s["clips"] for s in scenes.values()) or 1
+    have = {"train": 0, "valid": 0, "test": 0}
+    deal: dict[str, str] = {}
+
+    # Frozen scenes are placed first so the greedy pass below sees the room
+    # they have already taken, rather than over-filling test on top of them.
+    for key, s in scenes.items():
+        if s["frozen"]:
+            deal[key] = "test"
+            have["test"] += s["clips"]
+
+    # Biggest scenes first: a large one placed late can no longer be balanced
+    # around, and the hash breaks ties so the deal repeats exactly.
+    rest = [k for k in scenes if k not in deal]
+    rest.sort(key=lambda k: (-scenes[k]["clips"],
+                             hashlib.md5(k.encode()).hexdigest()))
+    for key in rest:
+        n = scenes[key]["clips"]
+        # Whichever split is furthest below its share, measured as a deficit
+        # in clips rather than a ratio — a ratio is unstable while the counts
+        # are small and would send the first few scenes all to one place.
+        want = min(TARGET, key=lambda s: have[s] - TARGET[s] * total)
+        deal[key] = want
+        have[want] += n
+
+    # Write back only what changed, and never move a clip out of test.
+    moved = 0
+    for key, split in deal.items():
+        for vid in scenes[key]["videos"]:
+            cur = next((v.get("rf_split") for v in vids if v["video_id"] == vid), None)
+            if cur == split or cur == "test":
+                continue
+            try:
+                sb.table("pipeline_videos").update(
+                    {"rf_split": split, "holdout": split == "test"}
+                ).eq("video_id", vid).execute()
+                moved += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"[split] could not re-deal {vid}: {e}")
+
+    share = {k: round(100 * v / total) for k, v in have.items()}
+    print(f"[split] {len(scenes)} scenes, {total} clips -> "
+          f"train {share['train']}% valid {share['valid']}% test {share['test']}% "
+          f"({moved} videos moved, test frozen)")
+    return have
+
+
 # ---------------------------------------------------------------- advance
 
 # The pipeline's heartbeat. Every hour it pushes work downhill: triage what
@@ -303,6 +398,14 @@ def _advance():
             print(f"[advance] autosend failed: {e}")
 
     drain("prelabel", clips_queued, "?limit=50", passes=6)
+
+    # Re-balance the deal before anything trains on it. Cheap, idempotent,
+    # and it has to run ahead of the climb: a build that starts before the
+    # scenes are balanced trains on whatever share it happened to get.
+    try:
+        _deal_splits(sb)
+    except Exception as e:  # noqa: BLE001
+        print(f"[advance] could not re-deal the splits: {e}")
 
     # The ladder. Everything above this line moves footage toward being
     # labelled; nothing above it ever trains anything, which is why
