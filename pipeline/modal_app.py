@@ -300,6 +300,7 @@ def _deal_splits(sb):
 @app.function(image=base_image, secrets=[secret], timeout=3500,
               schedule=modal.Cron("*/30 * * * *"))
 def _advance():
+    import datetime as datetime_
     import os
     import requests
 
@@ -373,7 +374,32 @@ def _advance():
 
     # Order matters: a re-cut clip goes back to raw, so cut before screening
     # and it is boxed on the same beat rather than waiting for the next.
-    drain("triage", lambda: videos_in("discovered"), "?limit=25", passes=6)
+    # A daily ceiling on triage, because triage is the only stage that spends
+    # real money per item and the only one the beat can run away with. Raising
+    # the frame width to 1536 multiplied the cost of a video roughly tenfold
+    # and shipped without one: the beat then triaged eight hundred videos
+    # overnight, unattended, and emptied a twenty-five dollar balance before
+    # anyone was awake to see it. The change was right and the missing ceiling
+    # was not.
+    #
+    # Counted over videos rather than dollars on purpose — a video is a thing
+    # this process can actually count, whereas a balance is somewhere else and
+    # only knowable after the fact.
+    cap = int(os.environ.get("TRIAGE_DAILY_CAP", 300))
+    try:
+        since = (datetime_.datetime.now(datetime_.timezone.utc)
+                 - datetime_.timedelta(hours=24)).isoformat()
+        done_today = (sb.table("pipeline_videos")
+                      .select("video_id", count="exact", head=True)
+                      .not_.is_("triage_score", "null")
+                      .gte("updated_at", since).execute().count or 0)
+    except Exception as e:  # noqa: BLE001 — an uncountable day is not a licence
+        print(f"[advance] could not count today's triage: {e}")
+        done_today = cap
+    if done_today >= cap:
+        print(f"[advance] triage held: {done_today} videos in 24h, cap {cap}")
+    else:
+        drain("triage", lambda: videos_in("discovered"), "?limit=25", passes=6)
     drain("recut", clips_to_recut, "?limit=25", passes=4)
     drain("clip", lambda: videos_in("approved") or clips_unpreviewed(), "", passes=4)
     drain("screen", lambda: clips_in("raw"), "?limit=20")
