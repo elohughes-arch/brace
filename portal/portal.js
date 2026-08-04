@@ -414,7 +414,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04m';
+const BUILD = '2026-08-04n';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -3099,57 +3099,85 @@ async function loadPartners() {
 // by itself, and a ground that said yes once is worth more than a search
 // query that happens to still work.
 const PARTNER_STAGES = ['prospect', 'contacted', 'talking', 'agreed', 'declined', 'lapsed'];
+const PARTNER_KINDS = ['brand', 'influencer', 'podcast', 'ground', 'school', 'club',
+  'maker', 'media', 'retailer', 'event', 'channel', 'other'];
 
 function partnershipsView() {
   if (state.loading) return '<div class="empty">Loading…</div>';
   const rows = state.partners || [];
   const by = (st) => rows.filter((r) => r.status === st);
-  const agreed = by('agreed');
-  // Live channels we already crawl that nobody has a relationship with. The
-  // gap between what we take and what we have asked for is the number worth
-  // watching, not the count of partners.
+  const live = rows.filter((r) => !['declined', 'lapsed'].includes(r.status));
+  const today = new Date().toISOString().slice(0, 10);
+  // Anything with a next step whose date has arrived. A tracker that does not
+  // tell you what is overdue is a list, and a list is what gets ignored.
+  const due = live.filter((r) => r.next_at && r.next_at <= today)
+    .sort((a, b) => (a.next_at < b.next_at ? -1 : 1));
   const known = new Set(rows.map((r) => (r.handle || '').toLowerCase()).filter(Boolean));
   const unasked = (state.sources || [])
     .filter((s) => s.kind === 'channel' && !known.has((s.ref || '').toLowerCase()));
+
+  const card = (r) => `
+    <div class="row"><div class="main">
+      <div class="t">${esc(r.name)}
+        <span class="s">${esc(r.kind)}${r.owner ? ` · ${esc(r.owner)}` : ''}</span></div>
+      <div class="s">${r.reach ? `${esc(r.reach)} · ` : ''}${esc(r.value || r.terms || '')}
+        ${r.next_step ? `<br><b>Next:</b> ${esc(r.next_step)}${r.next_at ? ` · ${esc(r.next_at)}${r.next_at <= today ? ' — due' : ''}` : ''}` : ''}</div>
+    </div><div class="n">${r.url ? `<a class="s" href="${esc(r.url)}" target="_blank" rel="noopener">open ↗</a>` : ''}</div></div>`;
 
   return `
     <div class="crm-head">
       <div>
         <h1>Partnerships</h1>
-        <p>Who the footage comes from, and what they agreed to. Discovery finds
-           channels; this is the record of having asked. A ground that says yes
-           gives a back catalogue shot on the cameras we are building for, from
-           angles a search never surfaces — and permission is the one part of
-           sourcing that does not scale on its own.</p>
+        <p>Everyone worth a relationship — brands, influencers, podcasts, grounds,
+           schools, events — and where each conversation got to. Some bring
+           footage, some bring reach, some bring credibility. What they have in
+           common is that none of them arrive from a search query, and none of
+           them scale on their own.</p>
       </div>
     </div>
 
     <div class="stats">
-      ${stat(fmt(agreed.length), 'Agreed', 'footage we may use', !agreed.length)}
+      ${stat(fmt(by('agreed').length), 'Agreed', 'signed or shaking hands', !by('agreed').length)}
       ${stat(fmt(by('talking').length + by('contacted').length), 'In conversation', 'asked, not yet settled')}
       ${stat(fmt(by('prospect').length), 'To approach', 'identified, not contacted')}
-      ${stat(fmt(unasked.length), 'Crawled unasked', unasked.length ? 'channels we take from with no record of asking' : 'nothing untracked', unasked.length > 0)}
+      ${stat(fmt(due.length), 'Needing a nudge', due.length ? 'next step is due' : 'nothing overdue', due.length > 0)}
+      ${stat(fmt(unasked.length), 'Crawled unasked', unasked.length ? 'taken from, never asked' : 'nothing untracked', unasked.length > 0)}
     </div>
 
+    ${due.length ? `
     <section class="panel" style="margin-top:18px">
-      <div class="p-head"><span class="p-title">Everyone, by where the conversation got to</span></div>
+      <div class="p-head"><span class="p-title">Do these first</span>
+        <span class="s">next step due or passed</span></div>
+      ${due.map(card).join('')}
+    </section>` : ''}
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">The pipeline</span>
+        <span class="s">${fmt(live.length)} live · ${fmt(rows.length)} tracked</span></div>
       ${rows.length ? PARTNER_STAGES.filter((st) => by(st).length).map((st) => `
-        <div class="row"><div class="main"><div class="t">${esc(st)}</div>
-          <div class="s">${by(st).map((r) => `${esc(r.name)}${r.handle ? ` <span class="s">${esc(r.handle)}</span>` : ''}`).join(' · ')}</div>
-        </div><div class="n">${fmt(by(st).length)}</div></div>`).join('')
-    : '<div class="empty">No partnerships recorded yet. Everything being crawled is being crawled on nobody\'s say-so.</div>'}
+        <div class="p-head" style="margin-top:14px"><span class="p-title">${esc(st)}</span>
+          <span class="s">${fmt(by(st).length)}</span></div>
+        ${by(st).map(card).join('')}`).join('')
+    : '<div class="empty">Nobody tracked yet. Add the first below.</div>'}
     </section>
 
-    ${unasked.length ? `
     <section class="panel" style="margin-top:18px">
-      <div class="p-head"><span class="p-title">Crawled, but never asked</span>
-        <span class="s">${fmt(unasked.length)} channel${unasked.length === 1 ? '' : 's'}</span></div>
-      <div class="s" style="padding:6px 0">${unasked.map((u) => esc(u.ref)).join(' · ')}</div>
-      <p class="foot-note">Not a legal opinion and not an accusation — third-party
-         footage is being used for training either way. It is a list of the
-         people worth talking to: each one is already producing exactly the
-         footage the model wants, and asking turns a scrape into a supply.</p>
-    </section>` : ''}
+      <div class="p-head"><span class="p-title">Add a partnership</span></div>
+      <div class="runrow" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+        <input id="pt-name" class="mini" placeholder="Name" style="min-width:180px">
+        <select id="pt-kind" class="mini">${PARTNER_KINDS.map((k) => `<option>${k}</option>`).join('')}</select>
+        <select id="pt-status" class="mini">${PARTNER_STAGES.map((k) => `<option>${k}</option>`).join('')}</select>
+        <input id="pt-owner" class="mini" placeholder="Who is carrying it" style="min-width:150px">
+        <input id="pt-reach" class="mini" placeholder="Reach / audience" style="min-width:150px">
+        <input id="pt-url" class="mini" placeholder="Link" style="min-width:170px">
+        <input id="pt-value" class="mini" placeholder="What each side gets" style="min-width:220px">
+        <input id="pt-next" class="mini" placeholder="Next step" style="min-width:180px">
+        <input id="pt-nextat" class="mini" type="date">
+        <button class="btn mini-btn" id="pt-add">Add</button>
+      </div>
+      <p class="foot-note">A next step with a date is what turns this from a list
+         into a tracker — anything dated and passed surfaces at the top.</p>
+    </section>
   `;
 }
 
@@ -4304,6 +4332,21 @@ function paint(force = false) {
   document.getElementById('batch')?.addEventListener('change', (e) => {
     batch = Number(e.target.value) || 10;
   });
+  document.getElementById('pt-add')?.addEventListener('click', async () => {
+    const v = (id) => (document.getElementById(id)?.value || '').trim();
+    if (!v('pt-name')) return;
+    const { error } = await supabase.from('partnerships').insert({
+      name: v('pt-name'), kind: v('pt-kind'), status: v('pt-status'),
+      owner: v('pt-owner') || null, reach: v('pt-reach') || null,
+      url: v('pt-url') || null, value: v('pt-value') || null,
+      next_step: v('pt-next') || null, next_at: v('pt-nextat') || null,
+    });
+    if (error) { note(`could not add — ${error.message}`, 'bad'); paint(); return; }
+    state.partners = await loadPartners();
+    note('partnership added', 'good');
+    paint(true);
+  });
+
   document.querySelectorAll('[data-stage]').forEach((b) =>
     b.addEventListener('click', () => {
       const stage = b.dataset.stage;
