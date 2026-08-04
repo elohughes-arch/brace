@@ -964,7 +964,8 @@ def triage(request: fastapi.Request):
     import tempfile
 
     from pathlib import Path
-    from triage import sample_frames, score_frames, KEEP_THRESHOLD, POV_CAMERAS
+    from triage import (sample_frames, score_frames, KEEP_THRESHOLD,
+                        POV_CAMERAS, MODEL)
 
     limit = min(int(request.query_params.get("limit", 10) or 10), 500)
 
@@ -1053,6 +1054,12 @@ def triage(request: fastapi.Request):
                 # footage was shot on is something to group and count by,
                 # not a string to read.
                 "camera": r.get("camera") or None,
+                # The model that actually judged this video. Spend used to be
+                # priced by whichever model was configured at the moment you
+                # asked, so switching the default re-priced the whole past —
+                # which is how eight hundred Sonnet videos came to be billed at
+                # Haiku rates. Recorded per row, history stays put.
+                "triage_model": MODEL,
                 "triage_notes": f"[{r.get('camera', '?')}] {shots_heard} shots heard · {r.get('notes', '')}",
                 "triage_in_tokens": r.get("in_tokens"),
                 "triage_out_tokens": r.get("out_tokens"),
