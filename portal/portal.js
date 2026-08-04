@@ -414,7 +414,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04l';
+const BUILD = '2026-08-04m';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1994,7 +1994,7 @@ async function runStage(stage, query = {}) {
 
 const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'impossible', 'findings', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, impossible: [], clipTotal: null, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, partners: [], scores: null, impossible: [], clipTotal: null, loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -2065,6 +2065,7 @@ function shell(body) {
           ${item('health', 'Health', (state.health || []).filter((h) => healthStatus(h)[0] !== 'ok').length)}
           </div>` : `
           <a href="#control" class="navhead">Agentic</a>`}
+          <a href="#partnerships" class="navhead ${view === 'partnerships' ? 'on' : ''}">Partnerships${(state.partners || []).filter((p) => p.status === 'agreed').length ? ` <b>${fmt((state.partners || []).filter((p) => p.status === 'agreed').length)}</b>` : ''}</a>
           <a href="#findings" class="navhead ${view === 'findings' ? 'on' : ''}">Findings</a>
           <a href="#productivity" class="navhead ${view === 'productivity' ? 'on' : ''}">Productivity${state.counts?.todo ? ` <b>${fmt(state.counts.todo)}</b>` : ''}</a>
           <a href="#costs" class="navhead ${view === 'costs' ? 'on' : ''}">Costs</a>
@@ -3086,6 +3087,72 @@ function verdictDrill() {
 // dataset is made of and what any of it is worth. The numbers are stated
 // plainly, including the ones that are unflattering — a figure you cannot
 // see is a figure you cannot act on.
+async function loadPartners() {
+  const { data, error } = await supabase.from('partnerships')
+    .select('*').order('status').order('name');
+  return error ? [] : (data || []);
+}
+
+// Where the footage comes from, as relationships rather than URLs. Sources
+// records what to crawl; this records who agreed to it. The distinction
+// matters more as the set grows: permission is the thing that does not scale
+// by itself, and a ground that said yes once is worth more than a search
+// query that happens to still work.
+const PARTNER_STAGES = ['prospect', 'contacted', 'talking', 'agreed', 'declined', 'lapsed'];
+
+function partnershipsView() {
+  if (state.loading) return '<div class="empty">Loading…</div>';
+  const rows = state.partners || [];
+  const by = (st) => rows.filter((r) => r.status === st);
+  const agreed = by('agreed');
+  // Live channels we already crawl that nobody has a relationship with. The
+  // gap between what we take and what we have asked for is the number worth
+  // watching, not the count of partners.
+  const known = new Set(rows.map((r) => (r.handle || '').toLowerCase()).filter(Boolean));
+  const unasked = (state.sources || [])
+    .filter((s) => s.kind === 'channel' && !known.has((s.ref || '').toLowerCase()));
+
+  return `
+    <div class="crm-head">
+      <div>
+        <h1>Partnerships</h1>
+        <p>Who the footage comes from, and what they agreed to. Discovery finds
+           channels; this is the record of having asked. A ground that says yes
+           gives a back catalogue shot on the cameras we are building for, from
+           angles a search never surfaces — and permission is the one part of
+           sourcing that does not scale on its own.</p>
+      </div>
+    </div>
+
+    <div class="stats">
+      ${stat(fmt(agreed.length), 'Agreed', 'footage we may use', !agreed.length)}
+      ${stat(fmt(by('talking').length + by('contacted').length), 'In conversation', 'asked, not yet settled')}
+      ${stat(fmt(by('prospect').length), 'To approach', 'identified, not contacted')}
+      ${stat(fmt(unasked.length), 'Crawled unasked', unasked.length ? 'channels we take from with no record of asking' : 'nothing untracked', unasked.length > 0)}
+    </div>
+
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Everyone, by where the conversation got to</span></div>
+      ${rows.length ? PARTNER_STAGES.filter((st) => by(st).length).map((st) => `
+        <div class="row"><div class="main"><div class="t">${esc(st)}</div>
+          <div class="s">${by(st).map((r) => `${esc(r.name)}${r.handle ? ` <span class="s">${esc(r.handle)}</span>` : ''}`).join(' · ')}</div>
+        </div><div class="n">${fmt(by(st).length)}</div></div>`).join('')
+    : '<div class="empty">No partnerships recorded yet. Everything being crawled is being crawled on nobody\'s say-so.</div>'}
+    </section>
+
+    ${unasked.length ? `
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Crawled, but never asked</span>
+        <span class="s">${fmt(unasked.length)} channel${unasked.length === 1 ? '' : 's'}</span></div>
+      <div class="s" style="padding:6px 0">${unasked.map((u) => esc(u.ref)).join(' · ')}</div>
+      <p class="foot-note">Not a legal opinion and not an accusation — third-party
+         footage is being used for training either way. It is a list of the
+         people worth talking to: each one is already producing exactly the
+         footage the model wants, and asking turns a scrape into a supply.</p>
+    </section>` : ''}
+  `;
+}
+
 function findingsView() {
   if (state.loading) return '<div class="empty">Loading the findings…</div>';
   const f = state.findings;
@@ -4206,6 +4273,7 @@ function paint(force = false) {
     : view === 'triage' ? triageClipsView()
     : view === 'labelling' ? labellingView()
     : view === 'impossible' ? impossibleView()
+    : view === 'partnerships' ? partnershipsView()
     : view === 'findings' ? findingsView()
     : view === 'mastersheet' ? mastersheetView()
     : view === 'strategy' ? strategyView()
@@ -4787,6 +4855,7 @@ async function refresh() {
       view === 'health' ? settle(loadCredits(), state.credits) : Promise.resolve(state.credits),
       view === 'labelling' ? settle(loadModels(), state.models) : Promise.resolve(state.models),
       view === 'findings' ? settle(loadFindings(), state.findings) : Promise.resolve(state.findings),
+      view === 'partnerships' ? settle(loadPartners(), state.partners) : Promise.resolve(state.partners),
       view === 'impossible' ? settle(loadImpossible(), state.impossible) : Promise.resolve(state.impossible),
       view === 'triage' ? settle(loadScores(), state.scores) : Promise.resolve(state.scores),
     ]);
