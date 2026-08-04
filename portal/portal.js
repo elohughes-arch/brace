@@ -405,6 +405,7 @@ const RUNS = [
   { stage: 'recut', label: 'Re-cut', busy: 'Re-cutting', desc: 'Cut again the clips whose start and end you have edited by hand, then send them back through screening. Needs Modal.' },
   { stage: 'dataset', label: 'Build set', busy: 'Building', desc: 'Assemble a training set from the boxes we already hold — no Roboflow involved. The overlay filter runs on the way out, so the reticle never reaches the model. Needs Modal.' },
   { stage: 'train', label: 'Train', busy: 'Training', desc: 'Fine-tune our own clay detector on that set. Once one exists, screening uses it instead of Grounding DINO — better on this subject and far cheaper per frame. Needs Modal.' },
+  { stage: 'rejudge', label: 'Re-judge verdicts', busy: 'Re-judging', desc: 'Call the outcome again on clips already judged, using the current tracking and crop size. The verdict is the product, and a clip judged before a crop or tracking fix was judged on less than the model can see now. Needs Modal.' },
   { stage: 'climb', label: 'Climb a rung', busy: 'Climbing', desc: 'Take the next rung of the ladder: build the set for every phase up to it and train on that, easiest first. The beat does this on its own — this is only for when you would rather not wait. Needs Modal.' },
   { stage: 'scrub', label: 'Scrub labels', busy: 'Scrubbing', desc: 'Re-run the current overlay filter over every clip already screened, so red dots and crosshairs stored as clays are re-labelled as the reticle. Anything it corrects goes back in the upload queue to replace the bad copy in Roboflow. Needs Modal.' },
   { stage: 'ingest', label: 'Add a dataset', busy: 'Ingesting', desc: 'Fold somebody else’s clay dataset into ours. Paste a Roboflow Universe address as workspace/project/version, or a link to a zip of a YOLO dataset. Borrowed images only ever join the training split — valid and test stay our own footage, so the score keeps meaning what it means. Needs Modal.',
@@ -413,7 +414,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04i';
+const BUILD = '2026-08-04j';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
