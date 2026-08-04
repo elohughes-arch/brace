@@ -28,17 +28,25 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Sonnet by default, not Haiku. Haiku was chosen when the job looked like
-# "score eight thumbnails against a rubric", which it is well within reach of
-# — but the job is actually "find a two-inch disc against a sky", and it was
-# being asked at a resolution where that disc did not exist. Sonnet 5 reads
-# high-resolution images, which is the half of the fix that the frame width
-# below cannot supply on its own.
+# Haiku, at the larger frame width below.
 #
-# The cost is real but small: measured at 4,342 input tokens a video on the
-# old frames, Haiku ran about £0.003 a video against roughly £0.03 on Sonnet
-# at the larger size. Set TRIAGE_MODEL to trade it back down.
-MODEL = os.environ.get("TRIAGE_MODEL", "claude-sonnet-5")
+# The triage fix and the model change were shipped in the same commit and the
+# win was credited to both, which was sloppy: they were never separated, and
+# the evidence points almost entirely at the resolution. A clay two pixels
+# across is not a model-capability problem, it is an information problem —
+# Haiku can read a clay that is thirty-five pixels, it could not read one that
+# was two. Nothing about the rubric is beyond it.
+#
+# The cost difference is not marginal. Image tokens dominate, and at 1536 a
+# video runs about 15,000 of them: roughly £0.015 on Haiku against £0.03 on
+# Sonnet. Run unattended over eight hundred videos a night that is the
+# difference between twelve pounds and twenty-four — which is how a
+# twenty-five dollar balance disappeared overnight without anyone watching.
+#
+# Set TRIAGE_MODEL=claude-sonnet-5 to trade back up, ideally after measuring
+# whether it actually scores better at this frame width rather than assuming
+# it does.
+MODEL = os.environ.get("TRIAGE_MODEL", "claude-haiku-4-5")
 
 # 0-10. Six is 'usable footage with visible clays'; below that the clip stage
 # would be cutting around shots we could never label.
