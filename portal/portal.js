@@ -405,16 +405,16 @@ const RUNS = [
   { stage: 'recut', label: 'Re-cut', busy: 'Re-cutting', desc: 'Cut again the clips whose start and end you have edited by hand, then send them back through screening. Needs Modal.' },
   { stage: 'dataset', label: 'Build set', busy: 'Building', desc: 'Assemble a training set from the boxes we already hold — no Roboflow involved. The overlay filter runs on the way out, so the reticle never reaches the model. Needs Modal.' },
   { stage: 'train', label: 'Train', busy: 'Training', desc: 'Fine-tune our own clay detector on that set. Once one exists, screening uses it instead of Grounding DINO — better on this subject and far cheaper per frame. Needs Modal.' },
-  { stage: 'rejudge', label: 'Re-judge verdicts', busy: 'Re-judging', desc: 'Call the outcome again on clips already judged, using the current tracking and crop size. The verdict is the product, and a clip judged before a crop or tracking fix was judged on less than the model can see now. Needs Modal.' },
-  { stage: 'climb', label: 'Climb a rung', busy: 'Climbing', desc: 'Take the next rung of the ladder: build the set for every phase up to it and train on that, easiest first. The beat does this on its own — this is only for when you would rather not wait. Needs Modal.' },
-  { stage: 'scrub', label: 'Scrub labels', busy: 'Scrubbing', desc: 'Re-run the current overlay filter over every clip already screened, so red dots and crosshairs stored as clays are re-labelled as the reticle. Anything it corrects goes back in the upload queue to replace the bad copy in Roboflow. Needs Modal.' },
-  { stage: 'ingest', label: 'Add a dataset', busy: 'Ingesting', desc: 'Fold somebody else’s clay dataset into ours. Paste a Roboflow Universe address as workspace/project/version, or a link to a zip of a YOLO dataset. Borrowed images only ever join the training split — valid and test stay our own footage, so the score keeps meaning what it means. Needs Modal.',
+  { hand: true, stage: 'rejudge', label: 'Re-judge verdicts', busy: 'Re-judging', desc: 'Call the outcome again on clips already judged, using the current tracking and crop size. The verdict is the product, and a clip judged before a crop or tracking fix was judged on less than the model can see now. Needs Modal.' },
+  { hand: true, stage: 'climb', label: 'Climb a rung', busy: 'Climbing', desc: 'Take the next rung of the ladder: build the set for every phase up to it and train on that, easiest first. The beat does this on its own — this is only for when you would rather not wait. Needs Modal.' },
+  { hand: true, stage: 'scrub', label: 'Scrub labels', busy: 'Scrubbing', desc: 'Re-run the current overlay filter over every clip already screened, so red dots and crosshairs stored as clays are re-labelled as the reticle. Anything it corrects goes back in the upload queue to replace the bad copy in Roboflow. Needs Modal.' },
+  { hand: true, stage: 'ingest', label: 'Add a dataset', busy: 'Ingesting', desc: 'Fold somebody else’s clay dataset into ours. Paste a Roboflow Universe address as workspace/project/version, or a link to a zip of a YOLO dataset. Borrowed images only ever join the training split — valid and test stay our own footage, so the score keeps meaning what it means. Needs Modal.',
     ask: 'Roboflow Universe address as workspace/project/version, or a link to a zipped YOLO dataset' },
 ];
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04j';
+const BUILD = '2026-08-04k';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2200,6 +2200,22 @@ function controlView() {
          Health page says whether the beat is still running.</p>
     </section>
 
+    <section class="panel" style="margin-top:18px">
+      <div class="p-head"><span class="p-title">Run by hand</span>
+        <span class="s">the beat never reaches these on its own</span></div>
+      <div class="runrow" style="margin-top:10px">
+        ${RUNS.filter((r) => r.hand).map((r) => `
+          <button class="btn btn-ghost mini-btn" data-stage="${r.stage}"
+            title="${esc(r.desc)}" ${running ? 'disabled' : ''}>
+            ${running === r.stage ? `${r.busy}…` : r.label}</button>`).join('')}
+      </div>
+      <p class="foot-note">Re-judging calls the outcome again on clips already
+         judged — worth a pass after any change to tracking or crop size, since
+         a clip judged before one was judged on less than the model can see now.
+         Scrubbing re-filters stored boxes. Climbing takes the next rung early
+         rather than waiting for the beat.</p>
+    </section>
+
     <div class="grid" style="margin-top:18px">
       <section class="panel">
         <div class="p-head"><span class="p-title">The machine runs itself</span></div>
@@ -2217,7 +2233,7 @@ function controlView() {
               <option value="500" ${batch === 500 ? 'selected' : ''}>everything in the queue</option>
             </select></div>
           <div class="runrow">
-            ${RUNS.map((r) => `
+            ${RUNS.filter((r) => !r.hand).map((r) => `
               <button class="btn ${r.primary ? '' : 'btn-ghost'} mini-btn" data-stage="${r.stage}"
                 title="${esc(r.desc)}" ${running ? 'disabled' : ''}>
                 ${running === r.stage ? `${r.busy}…` : r.label}</button>`).join('')}
