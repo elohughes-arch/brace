@@ -414,7 +414,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04k';
+const BUILD = '2026-08-04l';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -3413,7 +3413,14 @@ function labellingView() {
       'Seventh', 'Eighth'];
     const panel = [
       ...(ai.length ? ai.map(([o, c], i) => metric(
-        ai.length > 1 ? `${ord[i] || `Clay ${i + 1}`} clay` : 'Verdict',
+        // Named by the shot, not by where the clay sits. On a simultaneous
+        // pair both are in the air at once and any spatial rule — left to
+        // right, high to low — breaks the moment they cross, which on a
+        // crosser pair is most of the flight. Order of engagement is always
+        // defined, needs no convention memorised, and is already how
+        // _shot_track resolves a clay to a bang: so the owner's index and the
+        // machine's index cannot drift apart.
+        ai.length > 1 ? `${ord[i] || `Shot ${i + 1}`} shot` : 'Verdict',
         o ? show(o, c) : '—', vc(o)))
         : [metric('Verdict', '—')]),
       k.clay_colour && k.clay_colour !== 'unknown' ? metric('Clay', esc(k.clay_colour)) : '',
