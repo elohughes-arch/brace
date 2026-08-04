@@ -3147,17 +3147,36 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
             crop = frame[b:d, a:c]
             if crop.size == 0:
                 return frame, False
-            if crop.shape[0] < 384:   # a distant clay enlarges to legible
-                s = 384.0 / crop.shape[0]
-                crop = cv2.resize(crop, (max(1, int(crop.shape[1] * s)), 384))
+            # 384 was too small, for the same reason 768 was too small at
+            # triage: the question is not "is there a clay" but "did a piece
+            # come off it", and the evidence is a puff of dust a few pixels
+            # across. A clay at forty yards is around ten pixels in the raw
+            # frame; the crop runs 2.2x its size, so normalising the result to
+            # 384 left the disc about seventeen pixels wide and the fragments
+            # below one. The judge was not misreading the evidence, it was
+            # being handed an image the evidence had been resized out of.
+            #
+            # This is an upscale, so it adds no detail — what it adds is
+            # tokens. A vision model spends its budget by resolution, and at
+            # 384 it has almost none to spend on the few pixels that carry the
+            # answer. The measured symptom is one-directional and exactly what
+            # too little resolution predicts: seventeen clips called a miss
+            # that a person called a hit, against four the other way.
+            tall = int(os.environ.get("VERDICT_CROP_PX", 768))
+            if crop.shape[0] < tall:
+                s = tall / float(crop.shape[0])
+                crop = cv2.resize(crop, (max(1, int(crop.shape[1] * s)), tall),
+                                  interpolation=cv2.INTER_CUBIC)
             return crop, True
 
         def shrink(frame):
-            """A full frame costs four times a crop. Send it smaller."""
+            """A full frame costs four times a crop. Send it smaller — but
+            not so small that a break is invisible in the wide shot too."""
+            wide = int(os.environ.get("VERDICT_FRAME_PX", 1024))
             h, w = frame.shape[:2]
-            if w <= 768:
+            if w <= wide:
                 return frame
-            return cv2.resize(frame, (768, max(1, int(h * 768.0 / w))))
+            return cv2.resize(frame, (wide, max(1, int(h * float(wide) / w))))
 
         blocks = []
         for n, i in enumerate(picks, 1):
