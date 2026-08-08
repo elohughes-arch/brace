@@ -3272,3 +3272,566 @@ def _judge_shot(row, frames, fps, step, boxes_per_frame=None, extra_offset=0.0):
     except Exception as e:  # noqa: BLE001 — a verdict is never worth a crash
         print(f"[prelabel] verdict failed for {row.get('clip_id')}: {e}")
         return None, None, None
+
+
+# --------------------------------------------------------------- prototype
+
+# The bench. An owner drops their own footage on the Prototype page and the
+# hybrid model judges it end to end: the audio finds the bangs, the detector
+# finds the clay, and a Kalman state lets detection and motion relay — the
+# tracker tells the detector where to trust a weak box, camera-compensated
+# motion carries the track through frames the detector missed, and the way
+# the track *ends* is the verdict's strongest evidence. A clay that broke
+# stops being one object; a clay that was missed sails out of frame. Same
+# absence of detections, opposite meanings — which is exactly the thing the
+# frame-by-frame judge cannot see.
+#
+# Everything here is deterministic and the result carries its working, per
+# shot: which frames came from the detector, which from motion, where the
+# burst was and how strong. The point of the bench is not the verdict, it
+# is being able to argue with it.
+
+PROTO_CONF_LO = 0.12    # kept only inside the track's own gate
+PROTO_MAX_SHOTS = 12
+PROTO_MAX_DURATION_S = 20 * 60
+PROTO_PRE_S, PROTO_POST_S = 0.5, 1.3    # window either side of a bang
+
+
+def _pnote(sb, run_id, status, note):
+    """Progress the page can watch. Best-effort, never worth a crash."""
+    try:
+        sb.table("prototype_runs").update(
+            {"status": status, "note": note}).eq("id", run_id).execute()
+    except Exception as e:  # noqa: BLE001
+        print(f"[prototype] note lost: {e}")
+
+
+def _hear_shots(path):
+    """Shot times from the audio track alone, in seconds.
+
+    A shotgun at a gun-mounted microphone is the loudest, sharpest thing
+    that will ever be on the tape: near full-scale, and rising from quiet
+    to peak inside a couple of hundredths of a second. So two tests, both
+    against the clip's own noise floor rather than fixed numbers: loud for
+    this recording, and *suddenly* loud — most of the energy arriving in
+    under 80 ms. A launcher thud is loud but slow; wind is loud but steady;
+    speech is neither. Music will fool it, and the bench reports the times
+    it heard so a fooled run is visible rather than mysterious.
+    """
+    import subprocess
+
+    import numpy as np
+
+    r = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "1",
+         "-ar", "16000", "-f", "s16le", "-"],
+        capture_output=True, timeout=300)
+    if r.returncode != 0 or len(r.stdout) < 16000:      # no track, or < 0.5 s
+        return []
+    x = np.frombuffer(r.stdout, np.int16).astype(np.float32) / 32768.0
+
+    hop, win = 160, 320                                  # 10 ms hop, 20 ms window
+    n = (len(x) - win) // hop
+    if n < 20:
+        return []
+    idx = np.arange(n)[:, None] * hop + np.arange(win)[None, :]
+    e = np.sqrt((x[idx] ** 2).mean(axis=1))              # rms envelope
+
+    floor = float(np.median(e))
+    mad = float(np.median(np.abs(e - floor))) or 1e-4
+    # Rise against the quietest moment of the preceding 80 ms: the attack.
+    prior = np.array([e[max(0, i - 8):i].min() if i else e[0] for i in range(n)])
+    rise = e - prior
+
+    loud = e > max(floor + 8 * mad, 0.02)
+    sharp = rise > 0.6 * e
+    cand = np.where(loud & sharp)[0]
+    if not len(cand):
+        return []
+
+    # Local maxima only, at least 0.35 s apart — one bang, one time.
+    times = []
+    last = -10.0
+    for i in cand:
+        t = i * hop / 16000.0
+        if t - last < 0.35:
+            if times and e[i] > times[-1][1]:
+                times[-1] = (t, e[i])
+                last = t
+            continue
+        times.append((t, e[i]))
+        last = t
+    times.sort(key=lambda p: -p[1])
+    return sorted(t for t, _ in times[:PROTO_MAX_SHOTS])
+
+
+def _proto_camera(prev_gray, gray, box):
+    """The camera's own movement between two frames, as an affine transform.
+
+    Tracked on background corners with the clay masked out — let the
+    estimator see the clay and it partly locks on, and the compensation
+    then cancels the very motion being measured. RANSAC so the few corners
+    that land on wad, smoke or the barrel cannot drag the fit.
+    """
+    import cv2
+    import numpy as np
+
+    mask = None
+    if box is not None:
+        mask = np.full(prev_gray.shape, 255, np.uint8)
+        x0, y0, x1, y1 = (int(v) for v in box)
+        cv2.rectangle(mask, (x0 - 24, y0 - 24), (x1 + 24, y1 + 24), 0, -1)
+    corners = cv2.goodFeaturesToTrack(prev_gray, maxCorners=200,
+                                      qualityLevel=0.01, minDistance=12, mask=mask)
+    if corners is None or len(corners) < 12:
+        return None
+    moved, ok, _ = cv2.calcOpticalFlowPyrLK(
+        prev_gray, gray, corners, None, winSize=(21, 21), maxLevel=3)
+    if moved is None:
+        return None
+    good = ok.ravel() == 1
+    if good.sum() < 12:
+        return None
+    m, _ = cv2.estimateAffinePartial2D(corners[good], moved[good],
+                                       method=cv2.RANSAC, ransacReprojThreshold=2.5)
+    return m
+
+
+def _proto_blobs(prev_gray, gray, transform, prev_blobs):
+    """What moved that the camera did not: warp, difference, threshold, label.
+
+    Otsu rather than a fixed cut because sky, treeline and low sun leave
+    residuals on completely different scales. Each blob gets a velocity by
+    nearest-neighbour against the previous frame's blobs — crude, but at
+    30 fps nothing has moved far enough for better to pay for itself.
+    """
+    import math
+
+    import cv2
+    import numpy as np
+
+    h, w = gray.shape
+    warped = prev_gray if transform is None else cv2.warpAffine(
+        prev_gray, transform, (w, h), flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE)
+    diff = cv2.GaussianBlur(cv2.absdiff(warped, gray), (5, 5), 0)
+    _, binary = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    count, _, stats, cents = cv2.connectedComponentsWithStats(binary, 8)
+    blobs = []
+    for i in range(1, count):
+        area = float(stats[i, cv2.CC_STAT_AREA])
+        if area < 6 or area > (w * h) * 0.02:    # noise floor / surviving seam
+            continue
+        cx, cy = float(cents[i][0]), float(cents[i][1])
+        vx = vy = 0.0
+        if prev_blobs:
+            near = min(prev_blobs, key=lambda p: math.hypot(p[0] - cx, p[1] - cy))
+            if math.hypot(near[0] - cx, near[1] - cy) < 60:
+                vx, vy = cx - near[0], cy - near[1]
+        blobs.append((cx, cy, area, vx, vy))
+    return blobs
+
+
+def _proto_burst(blobs, origin, later_blobs):
+    """How much this frame's motion looks like a clay coming apart.
+
+    Three things happen at once in a break and all three are demanded,
+    because each alone has an innocent cause: several fragments where there
+    was one object (a bird trips this), moving outward from a shared point
+    (a second clay trips this), and slowing hard, having lost their mass
+    (a compensation seam trips this). Nothing innocent trips all three.
+    """
+    import math
+
+    ox, oy = origin
+    near = [b for b in blobs if math.hypot(b[0] - ox, b[1] - oy) < 90]
+    if len(near) < 3:
+        return None
+    radial = []
+    for cx, cy, _, vx, vy in near:
+        dx, dy = cx - ox, cy - oy
+        d = math.hypot(dx, dy)
+        if d > 1e-3:
+            radial.append((vx * dx + vy * dy) / d)
+    if not radial:
+        return None
+    diverge = sum(radial) / len(radial)
+    if diverge <= 0:
+        return None
+    speed = sum(math.hypot(b[3], b[4]) for b in near) / len(near) or 1e-3
+    later = (sum(math.hypot(b[3], b[4]) for b in later_blobs) / len(later_blobs)
+             if later_blobs else speed)
+    decel = max(0.0, (speed - later) / speed)
+    strength = (0.45 * min(1.0, (len(near) - 2) / 6.0)
+                + 0.35 * min(1.0, diverge / 12.0)
+                + 0.20 * min(1.0, decel / 0.5))
+    return {"strength": round(strength, 3), "fragments": len(near),
+            "divergence": round(diverge, 2), "decel": round(decel, 3)}
+
+
+def _proto_judge_window(frames, fps, boxes_per_frame, shot_i, w, h):
+    """One bang, one verdict, with the working attached.
+
+    The relay in one paragraph: a constant-acceleration Kalman state is the
+    shared truth. High-confidence detections seed and correct it freely.
+    Low-confidence detections — the clay at distance, blurred against the
+    treeline, exactly where the detector is weakest — are kept only inside
+    the state's own uncertainty gate, where the prior has done the work the
+    threshold was standing in for. Motion blobs cover the frames detection
+    missed entirely, at higher measurement noise because a residual centroid
+    is a looser fix than a box. When nothing offers, the track coasts on
+    prediction, briefly. And after the bang, every frame's residual motion
+    around the tracked position is scored for fragmentation.
+    """
+    import math
+    import os
+
+    import cv2
+    import numpy as np
+
+    conf_hi = float(os.environ.get("SCREEN_THRESHOLD", 0.32))
+    kf = cv2.KalmanFilter(6, 2)
+    dt = 1.0
+    kf.transitionMatrix = np.array([
+        [1, 0, dt, 0, .5 * dt * dt, 0], [0, 1, 0, dt, 0, .5 * dt * dt],
+        [0, 0, 1, 0, dt, 0], [0, 0, 0, 1, 0, dt],
+        [0, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 1]], np.float32)
+    kf.measurementMatrix = np.eye(2, 6, dtype=np.float32)
+    kf.processNoiseCov = np.diag([1, 1, 4, 4, 12, 12]).astype(np.float32)
+    kf.errorCovPost = np.eye(6, dtype=np.float32) * 200.0
+
+    GATE = 9.21                       # chi-square, 2 dof, ~99%
+    state = "searching"
+    coast = 0
+    tracked = det_frames = low_used = motion_frames = coasted = 0
+    burst = None
+    last_pos = None
+    path = 0.0
+    prev_gray = None
+    prev_blobs = []
+    predicted = None
+    last_box = None
+
+    def in_gate(x, y):
+        if predicted is None:
+            return 0.0
+        vx = max(float(kf.errorCovPre[0, 0]), 1.0)
+        vy = max(float(kf.errorCovPre[1, 1]), 1.0)
+        d2 = (x - predicted[0]) ** 2 / vx + (y - predicted[1]) ** 2 / vy
+        return d2 if d2 <= GATE else None
+
+    blob_history = {}
+    for i, frame in enumerate(frames):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blobs = []
+        if prev_gray is not None and state != "lost":
+            m = _proto_camera(prev_gray, gray, last_box)
+            blobs = _proto_blobs(prev_gray, gray, m, prev_blobs)
+            blob_history[i] = blobs
+
+        if state in ("tracking", "coasting"):
+            kf.predict()
+            predicted = (float(kf.statePre[0]), float(kf.statePre[1]))
+
+            # The break is checked before association: after fragmentation
+            # there is no single object left for either modality to match.
+            if i >= shot_i and last_pos is not None and blobs:
+                later = [b for j in range(i + 1, min(i + 5, len(frames)))
+                         for b in blob_history.get(j, [])]
+                ev = _proto_burst(blobs, last_pos, later)
+                if ev and (burst is None or ev["strength"] > burst["strength"]):
+                    ev["frame"] = i
+                    burst = ev
+                if ev and ev["strength"] > 0.45:
+                    state = "burst"
+                    break
+
+        best = None                    # (score, x, y, source, conf, box)
+        for b in boxes_per_frame.get(i, []):
+            x0, y0, x1, y1 = b["xyxy"]
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            conf = b["conf"]
+            if state == "searching":
+                if conf >= conf_hi:
+                    s = conf
+                    if best is None or s > best[0]:
+                        best = (s, cx, cy, "detector", conf, b["xyxy"])
+                continue
+            g = in_gate(cx, cy)
+            if conf >= conf_hi and g is None:
+                continue               # a strong box off-track is another object
+            if conf < conf_hi and g is None:
+                continue               # a weak box earns nothing outside the gate
+            s = conf * 2.0 - (g or 0.0) * 0.1
+            if best is None or s > best[0]:
+                best = (s, cx, cy, "detector", conf, b["xyxy"])
+
+        if best is None and state in ("tracking", "coasting") and blobs:
+            cands = [(a - (g or 0), cx, cy) for cx, cy, a, _, _ in blobs
+                     if (g := in_gate(cx, cy)) is not None]
+            if cands:
+                _, cx, cy = max(cands)
+                best = (0.0, cx, cy, "motion", 0.0, None)
+
+        if best is not None:
+            _, cx, cy, source, conf, box = best
+            if state == "searching":
+                kf.statePost = np.array([[cx], [cy], [0], [0], [0], [0]], np.float32)
+                state = "tracking"
+            else:
+                kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * (
+                    4.0 if source == "detector" else 25.0)
+                kf.correct(np.array([[np.float32(cx)], [np.float32(cy)]]))
+                state = "tracking"
+            if last_pos:
+                path += math.hypot(cx - last_pos[0], cy - last_pos[1])
+            last_pos = (cx, cy)
+            last_box = box
+            coast = 0
+            tracked += 1
+            if source == "detector":
+                det_frames += 1
+                if conf < conf_hi:
+                    low_used += 1
+            else:
+                motion_frames += 1
+        elif state in ("tracking", "coasting"):
+            coast += 1
+            coasted += 1
+            state = "coasting" if coast <= 6 else "lost"
+            if state == "lost" and predicted:
+                last_pos = predicted
+
+        prev_gray, prev_blobs = gray, blobs
+
+    # Where did it end, and what does that mean?
+    edge = False
+    if last_pos:
+        edge = not (0.08 * w < last_pos[0] < 0.92 * w
+                    and 0.08 * h < last_pos[1] < 0.92 * h)
+
+    evidence = {
+        "track_state": state, "frames_tracked": tracked,
+        "detector_frames": det_frames, "weak_boxes_rescued": low_used,
+        "motion_frames": motion_frames, "coasted_frames": coasted,
+        "burst": burst, "path_px": round(path, 1),
+        "ended_at_edge": edge,
+    }
+
+    if tracked < 3:
+        return "unclear", 0.2, "the detector never locked onto a clay", evidence
+    s = burst["strength"] if burst else 0.0
+    survived = state != "burst" and tracked > 0 and (
+        burst is None or det_frames > 0)
+    if s >= 0.55:
+        # A strong burst with the track carrying on afterwards is a piece
+        # coming off, not the clay dying: chipped.
+        if state in ("tracking", "coasting") and det_frames >= 5:
+            return ("chipped", min(0.9, 0.5 + 0.4 * s),
+                    f"fragment burst ({burst['fragments']} pieces) but the clay flew on", evidence)
+        return ("hit", min(0.95, 0.6 + 0.35 * s),
+                f"fragment burst — {burst['fragments']} pieces diverging at frame {burst['frame']}", evidence)
+    if s >= 0.35:
+        if state == "burst" or not survived:
+            return ("hit", 0.45 + 0.3 * s,
+                    "a modest burst, and the track died with it", evidence)
+        return ("chipped", 0.4 + 0.3 * s,
+                "a small burst the clay survived", evidence)
+    if edge or state in ("tracking", "coasting"):
+        return ("miss", min(0.85, 0.5 + 0.03 * det_frames),
+                "no fragmentation — the clay flew on"
+                + (" and left the frame" if edge else ""), evidence)
+    return ("unclear", 0.35,
+            "the track ended mid-frame with no visible break", evidence)
+
+
+@app.function(image=gpu_image, secrets=[secret], gpu="T4", timeout=2700,
+              volumes={MEDIA: volume})
+def _prototype_worker(run_id: str):
+    import json
+    import os
+    import time
+    from pathlib import Path
+
+    import cv2
+
+    t0 = time.time()
+    sb = _sb()
+    row = (sb.table("prototype_runs").select("*")
+           .eq("id", run_id).single().execute().data)
+    if not row:
+        print(f"[prototype] no such run {run_id}")
+        return
+    _pnote(sb, run_id, "processing", "fetching the footage")
+
+    try:
+        volume.reload()
+        local = f"/tmp/proto-{run_id}.mp4"
+        with open(local, "wb") as f:
+            f.write(sb.storage.from_("prototype").download(row["file_path"]))
+
+        cap = cv2.VideoCapture(local)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = total / fps if fps else 0
+        cap.release()
+        if not total or not w:
+            raise ValueError("could not read the video — is it a video file?")
+        if duration > PROTO_MAX_DURATION_S:
+            raise ValueError(
+                f"{duration/60:.0f} minutes is past the bench's 20-minute limit")
+
+        _pnote(sb, run_id, "processing", "listening for shots")
+        t_audio = time.time()
+        shots = _hear_shots(local)
+        audio_ms = int((time.time() - t_audio) * 1000)
+        if not shots:
+            sb.table("prototype_runs").update({
+                "status": "done",
+                "note": "no shots heard on the audio track",
+                "result": {"video": {"w": w, "h": h, "fps": round(fps, 2),
+                                     "duration_s": round(duration, 1)},
+                           "shots": [],
+                           "timings": {"audio_ms": audio_ms,
+                                       "total_ms": int((time.time() - t0) * 1000)}},
+            }).eq("id", run_id).execute()
+            return
+
+        # The same detector the pipeline screens with — our own weights when
+        # a run has produced them, Grounding DINO when not — but at a floor
+        # far below the screening threshold. The weak boxes are not noise
+        # here: they are the relay's whole point, kept only when the track's
+        # gate vouches for them.
+        yolo = proc = gdino = None
+        model_name = "grounding-dino"
+        if os.environ.get("DETECTOR", "auto") != "dino":
+            best = _latest_weights(sb)
+            if best:
+                from ultralytics import YOLO
+                yolo = YOLO(best)
+                model_name = Path(best).parent.name or "yolo"
+        if yolo is None:
+            import torch  # noqa: F401
+            from transformers import (AutoModelForZeroShotObjectDetection,
+                                      AutoProcessor)
+            proc = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
+            gdino = AutoModelForZeroShotObjectDetection.from_pretrained(
+                "IDEA-Research/grounding-dino-base").to("cuda")
+
+        imgsz = int(os.environ.get("DETECT_IMGSZ", 960))
+        results, detect_ms, motion_ms = [], 0, 0
+        cap = cv2.VideoCapture(local)
+        for n, t in enumerate(shots):
+            _pnote(sb, run_id, "processing",
+                   f"shot {n + 1} of {len(shots)} — tracking the clay")
+            start = max(0.0, t - PROTO_PRE_S)
+            cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000)
+            need = int((PROTO_PRE_S + PROTO_POST_S) * fps)
+            frames = []
+            while len(frames) < need:
+                ok, fr = cap.read()
+                if not ok:
+                    break
+                frames.append(fr)
+            if len(frames) < 5:
+                continue
+            shot_i = min(int((t - start) * fps), len(frames) - 1)
+
+            t_det = time.time()
+            boxes_per_frame = {}
+            if yolo is not None:
+                for s in range(0, len(frames), 16):
+                    chunk = frames[s:s + 16]
+                    for j, r in enumerate(yolo.predict(chunk, conf=PROTO_CONF_LO,
+                                                       imgsz=imgsz, verbose=False)):
+                        bs = [{"xyxy": list(map(float, b)), "conf": float(c)}
+                              for b, c in zip(r.boxes.xyxy.cpu().tolist(),
+                                              r.boxes.conf.cpu().tolist())]
+                        if bs:
+                            boxes_per_frame[s + j] = bs
+            else:
+                import torch
+                for i, fr in enumerate(frames):
+                    rgb = cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)
+                    inputs = proc(images=rgb,
+                                  text="flying clay pigeon. small orange disc. "
+                                       "small black disc in sky.",
+                                  return_tensors="pt").to("cuda")
+                    with torch.no_grad():
+                        out = gdino(**inputs)
+                    res = proc.post_process_grounded_object_detection(
+                        out, inputs.input_ids, threshold=PROTO_CONF_LO,
+                        target_sizes=[rgb.shape[:2]])[0]
+                    bs = [{"xyxy": list(map(float, bb)), "conf": float(sc)}
+                          for bb, sc in zip(res["boxes"].tolist(),
+                                            res["scores"].tolist())]
+                    if bs:
+                        boxes_per_frame[i] = bs
+            detect_ms += int((time.time() - t_det) * 1000)
+
+            t_mot = time.time()
+            verdict, conf, why, evidence = _proto_judge_window(
+                frames, fps, boxes_per_frame, shot_i, w, h)
+            motion_ms += int((time.time() - t_mot) * 1000)
+
+            results.append({
+                "t": round(t, 2), "verdict": verdict,
+                "confidence": round(conf, 2), "why": why,
+                "shot_type": _shot_type(boxes_per_frame, w, h),
+                "evidence": evidence,
+            })
+        cap.release()
+
+        summary = {"hit": 0, "chipped": 0, "miss": 0, "unclear": 0}
+        for r in results:
+            summary[r["verdict"]] += 1
+        sb.table("prototype_runs").update({
+            "status": "done",
+            "note": " · ".join(f"{v} {k}" for k, v in summary.items() if v)
+                    or "shots heard, none judged",
+            "result": {
+                "video": {"w": w, "h": h, "fps": round(fps, 2),
+                          "duration_s": round(duration, 1)},
+                "model": {"detector": model_name, "imgsz": imgsz,
+                          "conf_floor": PROTO_CONF_LO},
+                "shots": results,
+                "timings": {"audio_ms": audio_ms, "detect_ms": detect_ms,
+                            "judge_ms": motion_ms,
+                            "total_ms": int((time.time() - t0) * 1000)},
+            },
+        }).eq("id", run_id).execute()
+        _noted(sb, {"stage": "prototype", "shots": len(results),
+                    **{k: v for k, v in summary.items() if v}})
+        try:
+            os.remove(local)
+        except OSError:
+            pass
+    except Exception as e:  # noqa: BLE001 — the row is how failure reaches the page
+        print(f"[prototype] {run_id} failed: {e}")
+        _pnote(sb, run_id, "error", str(e)[:300])
+
+
+@app.function(image=base_image, secrets=[secret], timeout=300)
+@web_endpoint(method="POST")
+def prototype(request: fastapi.Request):
+    if not _authorised(request):
+        return UNAUTHORISED
+    run = (request.query_params.get("run") or "").strip()
+    if not run:
+        return fastapi.responses.JSONResponse(
+            {"error": "no run id"}, status_code=400)
+    sb = _sb()
+    row = (sb.table("prototype_runs").select("id,status")
+           .eq("id", run).limit(1).execute().data or [None])[0]
+    if not row:
+        return fastapi.responses.JSONResponse(
+            {"error": "no such run"}, status_code=404)
+    _pnote(sb, run, "queued", "waiting for a machine")
+    call = _prototype_worker.spawn(run)
+    return {"stage": "prototype", "started": True, "run": run,
+            "detail": "judging on Modal — the page will fill in as it goes",
+            "call_id": getattr(call, "object_id", None)}

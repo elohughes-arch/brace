@@ -841,3 +841,56 @@ select.inp { appearance: none; }
    red — this is the top of the ladder, not the bottom of it. */
 .clipsend.impossible { border-color: rgba(203,190,147,.45); color: var(--champagne); }
 .clipsend.impossible:hover { background: rgba(203,190,147,.10); }
+
+/* ---------- The prototype bench ---------- */
+/* The drop zone invites; everything below it is evidence, set quiet. */
+.proto-drop { display: flex; flex-direction: column; gap: 6px; align-items: center;
+  text-align: center; padding: 34px 20px; margin-bottom: 18px; cursor: pointer;
+  border: 1.5px dashed var(--line-strong); border-radius: var(--r-lg);
+  background: var(--bg-raised); color: var(--text-1);
+  transition: border-color .15s var(--ease-out), background .15s var(--ease-out); }
+.proto-drop:hover, .proto-drop.over { border-color: var(--clay); background: var(--bg-raised2); }
+.proto-drop b { font-weight: 600; }
+.proto-drop .s { color: var(--text-3); max-width: 52ch; }
+
+.proto-run { margin-bottom: 14px; }
+.pnote { color: var(--text-3); margin: 4px 0 8px; }
+.ppill { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
+  padding: 3px 10px; border-radius: var(--r-pill); border: 1px solid var(--line-strong);
+  color: var(--text-2); white-space: nowrap; }
+.ppill-live { color: var(--champagne); border-color: rgba(203,190,147,.45); }
+.ppill-done { color: var(--hit); border-color: rgba(111,190,114,.45); }
+.ppill-bad { color: var(--destructive); border-color: rgba(224,112,95,.45); }
+
+.pshots { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
+.pshot { border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: 12px 14px; background: var(--bg); }
+.pshot-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pshot-head .linky { margin-left: auto; }
+.pwhy { color: var(--text-2); margin: 6px 0 8px; }
+.pev { display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+  font-size: 12px; color: var(--text-3); }
+.pev + .pev { margin-top: 4px; }
+
+/* The verdict, colour-coded to what it means for the shooter. */
+.pv { font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  padding: 3px 10px; border-radius: var(--r-pill); }
+.pv i { font-style: normal; font-weight: 500; opacity: .75; }
+.pv-hit { background: rgba(111,190,114,.16); color: var(--hit); }
+.pv-chipped { background: rgba(203,190,147,.16); color: var(--champagne); }
+.pv-miss { background: rgba(224,112,95,.14); color: var(--destructive); }
+.pv-unclear { background: rgba(255,255,255,.08); color: var(--text-2); }
+
+/* Burst strength, drawn rather than merely printed. */
+.pmeter { display: inline-block; width: 72px; height: 6px; border-radius: 3px;
+  background: rgba(255,255,255,.08); vertical-align: middle; overflow: hidden; }
+.pmeter i { display: block; height: 100%; background: var(--clay); border-radius: 3px; }
+
+.pplayer { width: 100%; max-height: 420px; border-radius: var(--r-md);
+  background: #000; margin: 8px 0; }
+.pacts { display: flex; gap: 16px; margin-top: 8px; }
+.pacts .warn { color: var(--destructive); }
+.pjson { margin-top: 10px; padding: 12px; font-size: 11px; line-height: 1.5;
+  font-family: ui-monospace, Menlo, monospace; color: var(--text-2);
+  background: var(--bg-sunken); border: 1px solid var(--line);
+  border-radius: var(--r-md); overflow-x: auto; max-height: 380px; }

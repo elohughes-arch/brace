@@ -414,7 +414,7 @@ const RUNS = [
 
 // Bumped with every deploy. It is here for one reason: from the browser
 // there is otherwise no way to tell a missing feature from a stale cache.
-const BUILD = '2026-08-04n';
+const BUILD = '2026-08-08a';
 
 const log = [];
 const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1992,9 +1992,9 @@ async function runStage(stage, query = {}) {
 
 /* ---------- shell ---------- */
 
-const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'impossible', 'findings', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents'].find((v) => location.hash === `#${v}`) || 'office';
+const viewFromHash = () => ['control', 'review', 'sources', 'triage', 'labelling', 'impossible', 'findings', 'mastersheet', 'strategy', 'export', 'health', 'rejected', 'productivity', 'costs', 'documents', 'prototype', 'partnerships'].find((v) => location.hash === `#${v}`) || 'office';
 let view = viewFromHash();
-let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, partners: [], scores: null, impossible: [], clipTotal: null, loading: true };
+let state = { email: '', counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, partners: [], scores: null, impossible: [], clipTotal: null, proto: [], loading: true };
 let sheetFilter = 'all';
 let watching = null;   // video_id with its player open on the rejected audit
 let clipPage = 0;   // 40 clips a page, grouped by video
@@ -2017,7 +2017,7 @@ let dashEpoch = -1;
 const dashboardIsCurrent = () => dashEpoch === epoch;
 
 const AGENTIC_VIEWS = ['control', 'review', 'sources', 'triage', 'rejected',
-  'labelling', 'impossible', 'mastersheet', 'export', 'health'];
+  'labelling', 'impossible', 'mastersheet', 'export', 'health', 'prototype'];
 
 /* The portal's front door: four rooms, pick one. The wordmark up top
    always leads back here. */
@@ -2062,6 +2062,7 @@ function shell(body) {
           ${item('impossible', 'The impossible', state.counts?.impossible)}
           ${item('mastersheet', 'Mastersheet')}
           ${item('export', 'Export')}
+          ${item('prototype', 'Prototype', (state.proto || []).filter((r) => r.status === 'processing' || r.status === 'queued').length)}
           ${item('health', 'Health', (state.health || []).filter((h) => healthStatus(h)[0] !== 'ok').length)}
           </div>` : `
           <a href="#control" class="navhead">Agentic</a>`}
@@ -3181,6 +3182,141 @@ function partnershipsView() {
   `;
 }
 
+/* ---------- prototype ---------- */
+
+// The bench. Drop your own footage on it and the hybrid model — detector and
+// camera-compensated motion relaying through one Kalman state — judges every
+// bang it hears, and shows its working: which frames each modality carried,
+// where the burst was, how strong, and why the verdict fell the way it did.
+// The point is not the verdict; it is being able to argue with it.
+
+const protoOpen = new Set();   // runs unfolded to their evidence, across repaints
+
+async function loadProto() {
+  const { data, error } = await supabase.from('prototype_runs')
+    .select('id,created_at,email,filename,file_path,status,note,result')
+    .order('created_at', { ascending: false }).limit(20);
+  if (error) throw error;
+  return data || [];
+}
+
+async function protoUpload(file) {
+  if (!file) return;
+  if (!/^video\//.test(file.type || '') && !/\.(mp4|mov|m4v|avi|mkv|webm)$/i.test(file.name)) {
+    note('that does not look like a video file', 'bad');
+    return;
+  }
+  if (file.size > 500 * 1024 * 1024) {
+    note('500 MB is the bench ceiling — trim the video first', 'bad');
+    return;
+  }
+  note(`uploading ${file.name}…`);
+  const path = `${crypto.randomUUID()}/${file.name.replace(/[^\w.\- ]+/g, '_')}`;
+  const up = await supabase.storage.from('prototype')
+    .upload(path, file, { contentType: file.type || 'video/mp4' });
+  if (up.error) {
+    note(`upload failed — ${up.error.message}`, 'bad');
+    return;
+  }
+  const ins = await supabase.from('prototype_runs')
+    .insert({ email: state.email, filename: file.name, file_path: path })
+    .select('id').single();
+  if (ins.error) {
+    note(`could not record the run — ${ins.error.message}`, 'bad');
+    return;
+  }
+  state.proto = await loadProto().catch(() => state.proto);
+  paint(true);
+  await runStage('prototype', { run: ins.data.id });
+  state.proto = await loadProto().catch(() => state.proto);
+  paint(true);
+}
+
+function protoVerdictChip(v, conf) {
+  return `<span class="pv pv-${esc(v)}">${esc(v)}${conf != null ? ` <i>${Math.round(conf * 100)}%</i>` : ''}</span>`;
+}
+
+function protoShotCard(s, runId, i) {
+  const ev = s.evidence || {};
+  const burst = ev.burst;
+  const mmssT = `${Math.floor(s.t / 60)}:${String(Math.floor(s.t % 60)).padStart(2, '0')}`;
+  const meter = (v) => `<span class="pmeter"><i style="width:${Math.round((v || 0) * 100)}%"></i></span>`;
+  return `
+    <div class="pshot">
+      <div class="pshot-head">
+        <span class="s">shot ${i + 1} · ${mmssT}${s.shot_type ? ` · ${esc(s.shot_type)}` : ''}</span>
+        ${protoVerdictChip(s.verdict, s.confidence)}
+        <a href="#" class="linky" data-proto-play="${esc(runId)}" data-t="${s.t}">watch</a>
+      </div>
+      <div class="s pwhy">${esc(s.why || '')}</div>
+      <div class="pev">
+        <span title="frames the detector held the clay">detector ${ev.detector_frames ?? 0}</span>
+        <span title="weak boxes the track's gate vouched for — the relay working">rescued ${ev.weak_boxes_rescued ?? 0}</span>
+        <span title="frames carried by camera-compensated motion alone">motion ${ev.motion_frames ?? 0}</span>
+        <span title="frames run on prediction with neither signal">coasted ${ev.coasted_frames ?? 0}</span>
+        <span title="how the track ended">${esc(ev.track_state || '—')}${ev.ended_at_edge ? ' · at the edge' : ''}</span>
+      </div>
+      ${burst ? `<div class="pev">burst ${meter(burst.strength)} ${burst.strength}
+        · ${burst.fragments} fragments · divergence ${burst.divergence}</div>`
+    : '<div class="pev s">no fragmentation seen</div>'}
+    </div>`;
+}
+
+function prototypeView() {
+  if (state.loading) return '<div class="empty">Loading the bench…</div>';
+  const runs = state.proto || [];
+  const pill = (r) => ({
+    uploaded: '<span class="ppill">uploaded</span>',
+    queued: '<span class="ppill">queued</span>',
+    processing: '<span class="ppill ppill-live">judging…</span>',
+    done: '<span class="ppill ppill-done">done</span>',
+    error: '<span class="ppill ppill-bad">failed</span>',
+  }[r.status] || esc(r.status));
+  const card = (r) => {
+    const res = r.result || {};
+    const open = protoOpen.has(r.id);
+    const shots = res.shots || [];
+    return `
+    <div class="panel proto-run" data-proto="${esc(r.id)}">
+      <div class="p-head">
+        <span class="p-title">${esc(r.filename || 'footage')}</span>
+        <span class="s">${new Date(r.created_at).toLocaleString()} · ${esc((r.email || '').split('@')[0])}</span>
+        ${pill(r)}
+      </div>
+      ${r.note ? `<div class="s pnote">${esc(r.note)}</div>` : ''}
+      ${r.status === 'done' && res.model ? `
+        <div class="s pnote">judged by ${esc(res.model.detector)} at ${res.model.imgsz}px,
+          confidence floor ${res.model.conf_floor} — weak boxes live or die by the track's gate</div>` : ''}
+      ${r.status === 'done' && !shots.length ? '<div class="empty">No shots heard on the audio track.</div>' : ''}
+      ${shots.length ? `
+        <div class="pshots">${shots.map((s, i) => protoShotCard(s, r.id, i)).join('')}</div>
+        <video class="pplayer" id="pv-${esc(r.id)}" controls preload="none" playsinline style="display:none"></video>
+        ${res.timings ? `<div class="s pnote">heard shots in ${(res.timings.audio_ms / 1000).toFixed(1)}s
+          · detector ${(res.timings.detect_ms / 1000).toFixed(1)}s
+          · tracking + motion ${((res.timings.judge_ms || 0) / 1000).toFixed(1)}s
+          · ${((res.timings.total_ms || 0) / 1000).toFixed(0)}s end to end</div>` : ''}` : ''}
+      <div class="pacts">
+        ${r.status === 'error' || r.status === 'uploaded' ? `<a href="#" class="linky" data-proto-rerun="${esc(r.id)}">run again</a>` : ''}
+        ${r.status === 'done' && shots.length ? `<a href="#" class="linky" data-proto-fold="${esc(r.id)}">${open ? 'fold the evidence' : 'unfold the evidence'}</a>` : ''}
+        <a href="#" class="linky warn" data-proto-bin="${esc(r.id)}">delete</a>
+      </div>
+      ${open && shots.length ? `<pre class="pjson">${esc(JSON.stringify(res, null, 2))}</pre>` : ''}
+    </div>`;
+  };
+  return `
+    <div class="crm-head"><div><h1>Prototype</h1>
+      <div class="sub">The bench. Upload shooting footage and the hybrid model —
+      our detector and motion analysis relaying through one tracker — judges
+      every shot it hears, and shows its working.</div></div></div>
+    <label class="proto-drop" id="proto-drop">
+      <input type="file" id="proto-file" accept="video/*,.mp4,.mov,.m4v" style="display:none" />
+      <b>Drop footage here, or click to choose</b>
+      <span class="s">MP4 or MOV, up to 500 MB and 20 minutes. The audio finds the
+      bangs; the model judges each one. A few minutes for a typical clip.</span>
+    </label>
+    ${runs.length ? runs.map(card).join('') : '<div class="panel"><div class="empty">Nothing on the bench yet.</div></div>'}`;
+}
+
 function findingsView() {
   if (state.loading) return '<div class="empty">Loading the findings…</div>';
   const f = state.findings;
@@ -3919,6 +4055,7 @@ function signature() {
     clipPage, clipOwner, aiPage, sheetFilter, watching, rejSort, aiSort, pilePicked.size,
     queuePicked.size, sweeping,
     lastTouched, ytOpen.size, scoreWindow, (state.impossible || []).length, JSON.stringify(state.scores || {}),
+    (state.proto || []).map((r) => r.id + r.status + (r.note || '') + (protoOpen.has(r.id) ? 'o' : '')).join(),
     state.clips.map((k) => k.clip_id + (k.preview_url ? 'v' : '') + (k.needs_recut ? 'r' : '')
       + k.clip_start + k.clip_end + JSON.stringify(k.presentations || []) + JSON.stringify(k.clay_colours || [])
       + (k.weather || '') + JSON.stringify(k.backgrounds || [])
@@ -4311,6 +4448,7 @@ function paint(force = false) {
     : view === 'productivity' ? productivityView()
     : view === 'costs' ? costsView()
     : view === 'documents' ? documentsView()
+    : view === 'prototype' ? prototypeView()
     : view === 'control' ? controlView()
     : officeView());
 
@@ -4346,6 +4484,68 @@ function paint(force = false) {
     note('partnership added', 'good');
     paint(true);
   });
+
+  // ---- the prototype bench ----
+  const drop = document.getElementById('proto-drop');
+  if (drop) {
+    document.getElementById('proto-file')?.addEventListener('change', (e) => {
+      protoUpload(e.target.files?.[0]);
+      e.target.value = '';
+    });
+    ['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => {
+      e.preventDefault();
+      drop.classList.add('over');
+    }));
+    ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => {
+      e.preventDefault();
+      drop.classList.remove('over');
+    }));
+    drop.addEventListener('drop', (e) => protoUpload(e.dataTransfer?.files?.[0]));
+  }
+  document.querySelectorAll('[data-proto-rerun]').forEach((a) =>
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      runStage('prototype', { run: a.dataset.protoRerun });
+    }));
+  document.querySelectorAll('[data-proto-fold]').forEach((a) =>
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      const id = a.dataset.protoFold;
+      protoOpen.has(id) ? protoOpen.delete(id) : protoOpen.add(id);
+      paint(true);
+    }));
+  document.querySelectorAll('[data-proto-bin]').forEach((a) =>
+    a.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const id = a.dataset.protoBin;
+      const run = (state.proto || []).find((r) => r.id === id);
+      if (!run) return;
+      // The bytes first, then the row — a row without its video is tidier
+      // than a video nothing points at.
+      await supabase.storage.from('prototype').remove([run.file_path]).catch(() => {});
+      const { error } = await supabase.from('prototype_runs').delete().eq('id', id);
+      note(error ? `could not delete — ${error.message}` : 'run deleted', error ? 'bad' : 'good');
+      state.proto = (state.proto || []).filter((r) => r.id !== id);
+      paint(true);
+    }));
+  // Watch a shot: sign a URL for the stored footage on first use, then seek
+  // to just before the bang. The signature outlives any sitting: an hour.
+  document.querySelectorAll('[data-proto-play]').forEach((a) =>
+    a.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const run = (state.proto || []).find((r) => r.id === a.dataset.protoPlay);
+      const player = document.getElementById(`pv-${a.dataset.protoPlay}`);
+      if (!run || !player) return;
+      if (!player.src) {
+        const { data, error } = await supabase.storage.from('prototype')
+          .createSignedUrl(run.file_path, 3600);
+        if (error) { note(`could not open the footage — ${error.message}`, 'bad'); return; }
+        player.src = data.signedUrl;
+      }
+      player.style.display = 'block';
+      player.currentTime = Math.max(0, Number(a.dataset.t || 0) - 1.5);
+      player.play().catch(() => { /* the controls are there */ });
+    }));
 
   document.querySelectorAll('[data-stage]').forEach((b) =>
     b.addEventListener('click', () => {
@@ -4871,7 +5071,10 @@ async function refresh() {
     const slow = tick % 4 === 1;
     const settle = (p, fallback) => Promise.resolve(p).then(
       (v) => v, (e) => { note(`one panel could not load — ${e.message || e}`, 'bad'); return fallback; });
-    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits, models, findings, scores, impossible] = await Promise.all([
+    // One name per promise, in the same order, or the tail of this list quietly
+    // reads its neighbour's data — partnerships once landed in `scores` and the
+    // triage scoreboard read stale for weeks because of exactly that.
+    const [counts, queue, sources, issues, spend, coverage, clips, sent, rej, splitPrev, ai, trials, sheet, progress, cats, exp, health, pile, prod, costs, docs, disc, activity, credits, models, findings, partners, impossible, scores, proto] = await Promise.all([
       settle(loadCounts(), state.counts),
       view === 'review' ? settle(loadQueue(), state.queue) : Promise.resolve(state.queue),
       view === 'sources' ? settle(loadSources(), state.sources) : Promise.resolve(state.sources),
@@ -4901,6 +5104,7 @@ async function refresh() {
       view === 'partnerships' ? settle(loadPartners(), state.partners) : Promise.resolve(state.partners),
       view === 'impossible' ? settle(loadImpossible(), state.impossible) : Promise.resolve(state.impossible),
       view === 'triage' ? settle(loadScores(), state.scores) : Promise.resolve(state.scores),
+      view === 'prototype' ? settle(loadProto(), state.proto) : Promise.resolve(state.proto),
     ]);
     state.counts = counts;
     state.queue = queue;
@@ -4915,8 +5119,10 @@ async function refresh() {
     state.ai = ai;
     state.models = models;
     state.findings = findings;
+    state.partners = partners;
     state.scores = scores;
     state.impossible = impossible;
+    state.proto = proto;
     state.trials = trials;
     state.sheet = sheet;
     state.progress = progress;
@@ -4950,7 +5156,7 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard(email) {
   const mine = epoch;
-  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, scores: null, impossible: [], clipTotal: null, loading: true };
+  state = { email, counts: null, queue: [], sources: [], issues: [], spend: null, coverage: [], clips: [], sent: [], rej: { rows: [], total: 0 }, ai: [], sheet: [], sheetErr: '', progress: [], cats: [], split: [], exp: null, health: [], pile: { rows: [], total: 0 }, trials: null, prod: null, costs: null, docs: null, disc: [], activity: [], credits: null, models: [], findings: null, partners: [], scores: null, impossible: [], clipTotal: null, proto: [], loading: true };
   dashEpoch = mine;
   paint(true);        // a gate screen may be up; never skip the first draw
   await refresh();
